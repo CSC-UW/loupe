@@ -135,6 +135,19 @@ def nice_time_range(t_arrays):
     )
 
 
+def resolve_low_profile_x(
+    low_profile_x: bool | None, total_subplots: int
+) -> bool:
+    """Resolve the effective low-profile X-axis mode.
+
+    When the caller does not specify a preference, Loupe defaults to the
+    low-profile layout once three or more total subplots are loaded.
+    """
+    if low_profile_x is not None:
+        return bool(low_profile_x)
+    return total_subplots >= 3
+
+
 def clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
@@ -462,8 +475,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         video3_path=None,
         frame_times3_path=None,
         image_path=None,
-        fixed_scale=False,
-        low_profile_x=False,
+        fixed_scale=True,
+        low_profile_x: bool | None = None,
         # Matrix viewer arguments
         matrix_timestamps=None,
         matrix_yvals=None,
@@ -471,6 +484,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         matrix_colors=None,
         # xarray series (pre-converted list[Series])
         xr_series=None,
+        # Pre-converted MatrixSeries from df_loader
+        matrix_series_list=None,
+        # Overlay mode
+        overlay_groups=None,
+        overlay_colors=None,
     ):
         super().__init__()
         self.setWindowTitle("Loupe — Multi-Trace + Video + Labeling")
@@ -490,6 +508,13 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_sel_regions: list[pg.LinearRegionItem] = []
         self.plot_label_regions: list[list[pg.LinearRegionItem]] = []
         self.hovered_plot = None  # *** FIX 2: Track which plot is hovered ***
+
+        # Overlay mode
+        self.overlay_mode: bool = False
+        self.overlay_groups: list = []  # list[OverlayGroup]
+        self.overlay_colors: list[tuple] = []
+        self._plot_to_curves: list[list[pg.PlotDataItem]] = []
+        self._plot_to_series: list[list[int]] = []
 
         # Matrix viewer data and plots
         self.matrix_series: list[MatrixSeries] = []
@@ -539,7 +564,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._select_end = None
         self._is_zoom_drag = False
         self.fixed_scale = bool(fixed_scale)
-        self.low_profile_x = bool(low_profile_x)
+        self._low_profile_x_preference = low_profile_x
+        self.low_profile_x = resolve_low_profile_x(
+            self._low_profile_x_preference, total_subplots=0
+        )
 
         # Video
         self.video_frame_times = None
@@ -611,9 +639,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._video_thread.start()
         self._video2_thread.start()
         self._video3_thread.start()
-        # Prefer xarray series if provided, then explicit file list, then dir
-        if xr_series:
-            self.set_series(xr_series)
+        # Prefer overlay groups, then xarray series, then explicit file list, then dir
+        if overlay_groups:
+            self.set_overlay_series(overlay_groups, colors=overlay_colors)
+        elif xr_series:
+            self.set_series(xr_series, colors=colors)
         elif data_files:
             # Allow flexible formats: list[str], comma-separated strings, or "[a,b]".
             def _normalize_file_list(df):
@@ -673,6 +703,29 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._load_matrix_data(
                 matrix_timestamps, matrix_yvals, alpha_vals, matrix_colors
             )
+
+        # Load pre-converted MatrixSeries (from df_loader)
+        if matrix_series_list:
+            self.matrix_series = matrix_series_list
+            self._refresh_low_profile_x()
+            self.matrix_height_factors = [1.0] * len(matrix_series_list)
+            self.matrix_visible = [True] * len(matrix_series_list)
+            self.subplot_order = None
+            self._update_status(
+                f"Loaded {len(matrix_series_list)} matrix series from DataFrame."
+            )
+            if self.series:
+                self._rebuild_all_plots()
+            else:
+                self._update_time_range_from_matrix()
+                self._create_matrix_only_plots()
+
+    def _refresh_low_profile_x(self) -> None:
+        """Update low-profile X mode from explicit preference or subplot count."""
+        total_subplots = len(self.series) + len(self.matrix_series)
+        self.low_profile_x = resolve_low_profile_x(
+            self._low_profile_x_preference, total_subplots
+        )
 
     def eventFilter(self, obj, ev):
         try:
@@ -1287,7 +1340,12 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _show_subplot_control_dialog(self):
         """Show a comprehensive dialog to control subplot heights, visibility, and order."""
-        total_subplots = len(self.series) + len(self.matrix_series)
+        n_ts_plots = (
+            len(self.overlay_groups)
+            if self.overlay_mode
+            else len(self.series)
+        )
+        total_subplots = n_ts_plots + len(self.matrix_series)
         if total_subplots == 0:
             QtWidgets.QMessageBox.information(
                 self, "Subplot Control", "No subplots loaded."
@@ -1295,21 +1353,19 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         # Ensure all control lists are properly sized
-        while len(self.plot_height_factors) < len(self.series):
+        while len(self.plot_height_factors) < n_ts_plots:
             self.plot_height_factors.append(1.0)
         while len(self.matrix_height_factors) < len(self.matrix_series):
             self.matrix_height_factors.append(1.0)
-        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
-            self.series
-        ):
-            self.trace_visible = [True] * len(self.series)
+        if not hasattr(self, "trace_visible") or len(self.trace_visible) != n_ts_plots:
+            self.trace_visible = [True] * n_ts_plots
         while len(self.matrix_visible) < len(self.matrix_series):
             self.matrix_visible.append(True)
 
         # Initialize subplot order if not set
         if self.subplot_order is None:
             self.subplot_order = []
-            for i in range(len(self.series)):
+            for i in range(n_ts_plots):
                 self.subplot_order.append(("ts", i))
             for i in range(len(self.matrix_series)):
                 self.subplot_order.append(("matrix", i))
@@ -1344,7 +1400,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         def create_row_widget(plot_type, idx):
             """Create a widget for a single row in the list."""
             if plot_type == "ts":
-                name = self.series[idx].name
+                if self.overlay_mode:
+                    name = self.overlay_groups[idx].label
+                else:
+                    name = self.series[idx].name
                 factor = self.plot_height_factors[idx]
                 visible = self.trace_visible[idx]
                 display_name = f"[TS] {name}"
@@ -1493,8 +1552,13 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         def reset_order():
             # Rebuild the default order
+            n_ts_reset = (
+                len(self.overlay_groups)
+                if self.overlay_mode
+                else len(self.series)
+            )
             self.subplot_order = []
-            for i in range(len(self.series)):
+            for i in range(n_ts_reset):
                 self.subplot_order.append(("ts", i))
             for i in range(len(self.matrix_series)):
                 self.subplot_order.append(("matrix", i))
@@ -1604,10 +1668,13 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _get_visible_subplot_order(self):
         """Get the list of visible subplots in their current order."""
         # Ensure visibility lists are properly sized
-        if not hasattr(self, "trace_visible") or len(self.trace_visible) != len(
-            self.series
-        ):
-            self.trace_visible = [True] * len(self.series)
+        n_ts = (
+            len(self.overlay_groups)
+            if self.overlay_mode
+            else len(self.series)
+        )
+        if not hasattr(self, "trace_visible") or len(self.trace_visible) != n_ts:
+            self.trace_visible = [True] * n_ts
         while len(self.matrix_visible) < len(self.matrix_series):
             self.matrix_visible.append(True)
 
@@ -1615,7 +1682,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         if self.subplot_order:
             order = self.subplot_order
         else:
-            order = [("ts", i) for i in range(len(self.series))]
+            order = [("ts", i) for i in range(n_ts)]
             order += [("matrix", i) for i in range(len(self.matrix_series))]
 
         # Filter to only visible plots
@@ -1826,8 +1893,29 @@ class LoupeApp(QtWidgets.QMainWindow):
         if folder:
             self._load_series_from_dir(folder)
 
-    def set_series(self, series_list):
+    def set_series(self, series_list, colors=None):
         self.series = series_list
+        self._refresh_low_profile_x()
+
+        # Assign per-trace colours (RGBA tuples or default white).
+        if colors and len(colors) == len(series_list):
+            parsed = []
+            for c in colors:
+                if isinstance(c, str):
+                    c = c.strip().lstrip("#")
+                    try:
+                        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+                        a = int(c[6:8], 16) if len(c) == 8 else 255
+                        parsed.append((r, g, b, a))
+                    except Exception:
+                        parsed.append((255, 255, 255, 255))
+                elif isinstance(c, (tuple, list)) and len(c) >= 3:
+                    parsed.append(tuple(c[:4]) if len(c) >= 4 else (*c[:3], 255))
+                else:
+                    parsed.append((255, 255, 255, 255))
+            self.series_colors = parsed
+        else:
+            self.series_colors = [(255, 255, 255, 255)] * len(series_list)
 
         self.plot_area.clear()
         self.plots.clear()
@@ -1874,6 +1962,118 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.trace_visible = [True] * len(self.series)
         self._apply_trace_visibility()
 
+    # Default overlay color palette
+    _DEFAULT_OVERLAY_COLORS = [
+        (100, 200, 255, 255),  # light blue
+        (255, 150, 50, 255),  # orange
+        (100, 255, 100, 255),  # green
+        (255, 100, 255, 255),  # magenta
+        (255, 255, 100, 255),  # yellow
+        (255, 100, 100, 255),  # red
+        (100, 255, 255, 255),  # cyan
+        (200, 150, 255, 255),  # lavender
+    ]
+
+    def set_overlay_series(self, overlay_groups, colors=None):
+        """Load overlay groups into the viewer.
+
+        Parameters
+        ----------
+        overlay_groups : list[OverlayGroup]
+            Groups of traces to overlay on shared subplots.
+        colors : list or None
+            One color per source DataArray. Accepts hex strings or RGB(A) tuples.
+        """
+        self._stop_playback_if_playing()
+        self.overlay_mode = True
+        self.overlay_groups = overlay_groups
+
+        # Determine number of source DataArrays
+        n_sources = 0
+        for g in overlay_groups:
+            for tr in g.traces:
+                n_sources = max(n_sources, tr.source_idx + 1)
+
+        # Parse overlay colors
+        if colors and len(colors) >= n_sources:
+            parsed = []
+            for c in colors:
+                if isinstance(c, str):
+                    c = c.strip().lstrip("#")
+                    try:
+                        r, g_, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+                        a = int(c[6:8], 16) if len(c) == 8 else 255
+                        parsed.append((r, g_, b, a))
+                    except Exception:
+                        parsed.append((255, 255, 255, 255))
+                elif isinstance(c, (tuple, list)) and len(c) >= 3:
+                    parsed.append(tuple(c[:4]) if len(c) >= 4 else (*c[:3], 255))
+                else:
+                    parsed.append((255, 255, 255, 255))
+            self.overlay_colors = parsed
+        else:
+            self.overlay_colors = list(self._DEFAULT_OVERLAY_COLORS[:n_sources])
+            # Extend with white if more sources than palette entries
+            while len(self.overlay_colors) < n_sources:
+                self.overlay_colors.append((255, 255, 255, 255))
+
+        # Flatten all traces into self.series for data storage
+        self.series = []
+        self._plot_to_series = []
+        series_idx = 0
+        for group in overlay_groups:
+            indices = []
+            for tr in group.traces:
+                self.series.append(Series(tr.name, tr.t, tr.y))
+                indices.append(series_idx)
+                series_idx += 1
+            self._plot_to_series.append(indices)
+
+        self._refresh_low_profile_x()
+
+        # Clear existing plots
+        self.plot_area.clear()
+        self.plots.clear()
+        self.curves.clear()
+        self._plot_to_curves.clear()
+        self.plot_cur_lines.clear()
+        self.plot_sel_regions.clear()
+        self.plot_label_regions.clear()
+        self.matrix_plots.clear()
+        self.matrix_items.clear()
+        self.matrix_cur_lines.clear()
+        self.matrix_sel_regions.clear()
+        self.matrix_label_regions.clear()
+        self._matrix_line_items.clear()
+
+        # Height factors and visibility are per-plot (per overlay group)
+        self.plot_height_factors = [1.0] * len(overlay_groups)
+        self.trace_visible = [True] * len(overlay_groups)
+        self.subplot_order = None
+
+        # Calculate time range
+        t_arrays = [s.t for s in self.series]
+        for ms in self.matrix_series:
+            if len(ms.timestamps) > 0:
+                t_arrays.append(ms.timestamps)
+        self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
+        self.window_start = self.t_global_min
+        self.cursor_time = self.window_start
+
+        # Create all plots
+        self._create_all_plots()
+
+        self._apply_x_range()
+        self._update_nav_slider_from_window()
+        self._update_status(
+            f"Loaded {len(overlay_groups)} overlay groups "
+            f"({len(self.series)} total traces)."
+        )
+        self._update_hypnogram_extents()
+        QtCore.QTimer.singleShot(0, self._align_left_axes)
+        QtCore.QTimer.singleShot(100, self._align_left_axes)
+        self._apply_trace_visibility()
+
     def set_xarray(self, data, filter_dict=None):
         """Load xarray DataArray(s) into the viewer.
 
@@ -1896,6 +2096,83 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         tuples = convert_xarray_inputs(data)
         self.set_series([Series(n, t, y) for n, t, y in tuples])
+
+    def set_matrix_df(
+        self,
+        data,
+        *,
+        time_col: str = "time",
+        y_col: str = "source_id",
+        group_col: str | list[str] | None = None,
+        alpha_col: str | None = None,
+        name: str = "events",
+        colors=None,
+        alpha_range: tuple[float, float] = (0.3, 1.0),
+    ):
+        """Load a Polars DataFrame as matrix/raster plots.
+
+        Parameters
+        ----------
+        data : pl.DataFrame, list[pl.DataFrame], or str
+            In-memory DataFrame(s), or a path to a parquet file.
+        time_col : str
+            Column with event timestamps (seconds).
+        y_col : str
+            Column for matrix row assignment.
+        group_col : str or list[str] or None
+            Column(s) to split into separate subplots.
+        alpha_col : str or None
+            Column for per-event opacity.
+        name : str
+            Base name for the matrix subplots.
+        colors : dict, list, tuple or None
+            Color specification per group.
+        alpha_range : tuple[float, float]
+            ``(min_alpha, max_alpha)`` for normalizing *alpha_col*.
+        """
+        from loupe.df_loader import (
+            dataframe_to_matrix_series,
+            load_dataframe_from_parquet,
+        )
+
+        if isinstance(data, str):
+            data = load_dataframe_from_parquet(data, time_col=time_col)
+
+        if not isinstance(data, list):
+            data = [data]
+
+        all_ms: list[MatrixSeries] = []
+        for i, mdf in enumerate(data):
+            prefix = name if len(data) == 1 else f"{name}_{i}"
+            all_ms.extend(
+                dataframe_to_matrix_series(
+                    mdf,
+                    time_col=time_col,
+                    y_col=y_col,
+                    group_col=group_col,
+                    alpha_col=alpha_col,
+                    name=prefix,
+                    colors=colors,
+                    alpha_range=alpha_range,
+                )
+            )
+
+        if not all_ms:
+            return
+
+        self.matrix_series = all_ms
+        self._refresh_low_profile_x()
+        self.matrix_height_factors = [1.0] * len(all_ms)
+        self.matrix_visible = [True] * len(all_ms)
+        self.subplot_order = None
+        if self.series:
+            self._rebuild_all_plots()
+        else:
+            self._update_time_range_from_matrix()
+            self._create_matrix_only_plots()
+        self._update_status(
+            f"Loaded {len(all_ms)} matrix series from DataFrame."
+        )
 
     # ---------- Matrix Viewer ----------
     def _load_matrix_data(self, timestamps_paths, yvals_paths, alpha_paths, colors):
@@ -2028,6 +2305,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         if matrix_series:
             self.matrix_series = matrix_series
+            self._refresh_low_profile_x()
             # Initialize height factors and visibility for matrix plots
             self.matrix_height_factors = [1.0] * len(matrix_series)
             self.matrix_visible = [True] * len(matrix_series)
@@ -2058,6 +2336,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not self.matrix_series:
             return
 
+        self._refresh_low_profile_x()
         self.window_start = self.t_global_min
         self.cursor_time = self.window_start
 
@@ -2175,6 +2454,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
         self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
+        self._refresh_low_profile_x()
 
         # Create all plots
         self._create_all_plots()
@@ -2194,6 +2474,9 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _create_all_plots(self):
         """Create time series and matrix plots in the layout."""
+        if self.overlay_mode:
+            self._create_overlay_plots()
+            return
         master_plot = None
         row_idx = 0
         total_plots = len(self.series) + len(self.matrix_series)
@@ -2371,6 +2654,171 @@ class LoupeApp(QtWidgets.QMainWindow):
             row_idx += 1
 
         # Apply custom plot heights (includes matrix row heights logic)
+        self._apply_custom_plot_heights()
+
+    def _create_overlay_plots(self):
+        """Create plots for overlay mode: multiple curves per subplot."""
+        master_plot = None
+        row_idx = 0
+        total_plots = len(self.overlay_groups) + len(self.matrix_series)
+        self._plot_to_curves = []
+
+        for grp_idx, group in enumerate(self.overlay_groups):
+            vb = SelectableViewBox()
+            vb.sigWheelScrolled.connect(self._page)
+            vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+            vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+
+            plt = HoverablePlotItem(viewBox=vb)
+            plt.sigHovered.connect(self._on_plot_hovered)
+            self.plot_area.addItem(plt, row=row_idx, col=0)
+
+            plt.setLabel("left", group.label)
+            is_last = row_idx == total_plots - 1
+            plt.setLabel("bottom", "Time", units="s" if is_last else None)
+            plt.showGrid(x=True, y=True, alpha=0.15)
+            plt.addLegend(offset=(10, 10))
+            plt.enableAutoRange("x", False)
+
+            if self.low_profile_x and not is_last:
+                try:
+                    plt.setLabel("bottom", "")
+                    bax = plt.getAxis("bottom")
+                    bax.setStyle(showValues=True, tickLength=0)
+                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                    bax.setHeight(12)
+                except Exception:
+                    pass
+
+            try:
+                lf = QtGui.QFont()
+                lf.setPointSize(9)
+                plt.getAxis("left").setStyle(tickFont=lf)
+            except Exception:
+                pass
+
+            # Create one curve per trace in this group
+            group_curves = []
+            for tr in group.traces:
+                pen_color = self.overlay_colors[tr.source_idx]
+                pen = pg.mkPen(pen_color, width=1)
+                curve = pg.PlotDataItem([], [], pen=pen, name=tr.name, antialias=False)
+                curve.setDownsampling(auto=True, method="peak")
+                curve.setClipToView(True)
+                plt.addItem(curve)
+                group_curves.append(curve)
+                # Also maintain flat curves list for compat
+                self.curves.append(curve)
+            self._plot_to_curves.append(group_curves)
+
+            # Cursor line and selection region (one per subplot)
+            cur_line = pg.InfiniteLine(
+                angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
+            )
+            plt.addItem(cur_line)
+
+            sel_region = pg.LinearRegionItem(
+                values=(0, 0), brush=pg.mkBrush(100, 200, 255, 40), movable=True
+            )
+            sel_region.setZValue(-10)
+            sel_region.hide()
+            plt.addItem(sel_region)
+            sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
+
+            self.plots.append(plt)
+            self.plot_cur_lines.append(cur_line)
+            self.plot_sel_regions.append(sel_region)
+            self.plot_label_regions.append([])
+
+            if master_plot is None:
+                master_plot = plt
+            else:
+                plt.setXLink(master_plot)
+
+            vb.sigDragStart.connect(self._on_drag_start)
+            vb.sigDragUpdate.connect(self._on_drag_update)
+            vb.sigDragFinish.connect(self._on_drag_finish)
+
+            # Fixed scale: compute Y range from ALL traces in group
+            if self.fixed_scale:
+                try:
+                    all_y = np.concatenate(
+                        [np.asarray(tr.y, dtype=float) for tr in group.traces]
+                    )
+                    lo = float(np.nanpercentile(all_y, 1.0))
+                    hi = float(np.nanpercentile(all_y, 99.0))
+                    if not np.isfinite(lo) or not np.isfinite(hi):
+                        raise ValueError("non-finite percentiles")
+                    if hi <= lo:
+                        hi = lo + 1.0
+                    pad = 0.05 * (hi - lo)
+                    plt.enableAutoRange("y", False)
+                    plt.setYRange(lo - pad, hi + pad, padding=0)
+                except Exception:
+                    plt.enableAutoRange("y", False)
+            else:
+                plt.enableAutoRange("y", True)
+
+            row_idx += 1
+
+        # Create matrix plots (same as _create_all_plots)
+        for idx, ms in enumerate(self.matrix_series):
+            vb = SelectableViewBox()
+            vb.sigWheelScrolled.connect(self._page)
+            vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+            vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+
+            plt = HoverablePlotItem(viewBox=vb)
+            plt.sigHovered.connect(self._on_plot_hovered)
+            self.plot_area.addItem(plt, row=row_idx, col=0)
+
+            plt.setLabel("left", ms.name)
+            is_last = row_idx == total_plots - 1
+            plt.setLabel("bottom", "Time", units="s" if is_last else None)
+            plt.showGrid(x=True, y=True, alpha=0.15)
+            plt.enableAutoRange("x", False)
+            plt.enableAutoRange("y", False)
+
+            unique_y = np.unique(ms.yvals)
+            if len(unique_y) > 0:
+                y_min = float(unique_y[0]) - 0.5
+                y_max = float(unique_y[-1]) + 0.5
+                plt.setYRange(y_min, y_max, padding=0)
+
+            scatter = pg.ScatterPlotItem(size=5, pen=None)
+            plt.addItem(scatter)
+
+            cur_line = pg.InfiniteLine(
+                angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
+            )
+            plt.addItem(cur_line)
+
+            sel_region = pg.LinearRegionItem(
+                values=(0, 0), brush=pg.mkBrush(100, 200, 255, 40), movable=True
+            )
+            sel_region.setZValue(-10)
+            sel_region.hide()
+            plt.addItem(sel_region)
+            sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
+
+            self.matrix_plots.append(plt)
+            self.matrix_items.append(scatter)
+            self.matrix_cur_lines.append(cur_line)
+            self.matrix_sel_regions.append(sel_region)
+            self.matrix_label_regions.append([])
+            self._matrix_line_items.append([])
+
+            if master_plot is None:
+                master_plot = plt
+            else:
+                plt.setXLink(master_plot)
+
+            vb.sigDragStart.connect(self._on_drag_start)
+            vb.sigDragUpdate.connect(self._on_drag_update)
+            vb.sigDragFinish.connect(self._on_drag_finish)
+
+            row_idx += 1
+
         self._apply_custom_plot_heights()
 
     def _matrix_segment_for_window(
@@ -3164,6 +3612,45 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     # ---------- Export / Import ----------
 
+    def load_labels(self, path: str) -> None:
+        """Load labels from a CSV file.
+
+        Parameters
+        ----------
+        path : str
+            Path to a CSV file with columns ``start_s``, ``end_s``,
+            ``label``, and optionally ``note``.
+        """
+        loaded_labels = []
+        loaded_notes = {}
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader)
+
+            has_notes = len(header) >= 4 and header[3] == "note"
+            if header[:3] != ["start_s", "end_s", "label"]:
+                raise ValueError("CSV header does not match expected format.")
+
+            for row in reader:
+                if not row:
+                    continue
+                start = float(row[0])
+                end = float(row[1])
+                label = str(row[2])
+                loaded_labels.append({"start": start, "end": end, "label": label})
+
+                if has_notes and len(row) >= 4 and row[3].strip():
+                    loaded_notes[(start, end)] = row[3]
+
+        self.labels = sorted(loaded_labels, key=lambda x: x["start"])
+        self.label_notes = loaded_notes
+        self.label_history = [(lab["start"], lab["end"]) for lab in self.labels]
+        self._merge_adjacent_same_labels()
+        self._redraw_all_labels()
+        self._update_status(
+            f"Loaded {len(self.labels)} labels from {os.path.basename(path)}"
+        )
+
     def _on_load_labels(self):
         self._stop_playback_if_playing()
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -3171,40 +3658,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         if not path:
             return
-
-        loaded_labels = []
-        loaded_notes = {}
         try:
-            with open(path, "r", newline="", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                header = next(reader)
-
-                # Support both old format (no notes) and new format (with notes)
-                has_notes = len(header) >= 4 and header[3] == "note"
-                if header[:3] != ["start_s", "end_s", "label"]:
-                    raise ValueError("CSV header does not match expected format.")
-
-                for row in reader:
-                    if not row:
-                        continue
-                    start = float(row[0])
-                    end = float(row[1])
-                    label = str(row[2])
-                    loaded_labels.append({"start": start, "end": end, "label": label})
-
-                    # Load note if present
-                    if has_notes and len(row) >= 4 and row[3].strip():
-                        loaded_notes[(start, end)] = row[3]
-
-            self.labels = sorted(loaded_labels, key=lambda x: x["start"])
-            self.label_notes = loaded_notes
-            self.label_history = [(lab["start"], lab["end"]) for lab in self.labels]
-            self._merge_adjacent_same_labels()
-            self._redraw_all_labels()
-            self._update_status(
-                f"Loaded {len(self.labels)} labels from {os.path.basename(path)}"
-            )
-
+            self.load_labels(path)
         except Exception as e:
             QtWidgets.QMessageBox.warning(
                 self, "Load error", f"Failed to load or parse labels file:\n\n{e}"
@@ -3472,9 +3927,17 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _refresh_curves(self):
         t0, t1 = self.window_start, self.window_start + self.window_len
         max_pts = self._target_pts()
-        for s, curve in zip(self.series, self.curves):
-            tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
-            curve.setData(tx, yx, _callSync="off")
+        if self.overlay_mode and self._plot_to_series:
+            for plot_idx, series_indices in enumerate(self._plot_to_series):
+                for local_idx, si in enumerate(series_indices):
+                    s = self.series[si]
+                    curve = self._plot_to_curves[plot_idx][local_idx]
+                    tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
+                    curve.setData(tx, yx, _callSync="off")
+        else:
+            for s, curve in zip(self.series, self.curves):
+                tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
+                curve.setData(tx, yx, _callSync="off")
 
         # Also refresh matrix plots
         self._refresh_matrix_plots()
@@ -3857,16 +4320,20 @@ def main():
         "--image", type=str, help="Path to static image file (.png, .jpg, etc.)"
     )
     parser.add_argument(
-        "--fixed_scale",
+        "--auto_scale",
         action="store_true",
         help=(
-            "Disable Y auto-scaling and apply fixed initial Y ranges from robust percentiles."
+            "Enable Y auto-scaling (default is fixed scale from robust percentiles)."
         ),
     )
     parser.add_argument(
         "--low_profile_x",
         action="store_true",
-        help=("Hide X-axis labels and ticks for all but the bottom plot."),
+        default=None,
+        help=(
+            "Hide X-axis labels and ticks for all but the bottom plot. "
+            "When omitted, this is enabled automatically for 3+ total subplots."
+        ),
     )
     # Matrix viewer arguments
     parser.add_argument(
@@ -3968,7 +4435,7 @@ def main():
         video3_path=args.video3,
         frame_times3_path=args.frame_times3,
         image_path=args.image,
-        fixed_scale=args.fixed_scale,
+        fixed_scale=not args.auto_scale,
         low_profile_x=args.low_profile_x,
         # Matrix viewer arguments
         matrix_timestamps=args.matrix_timestamps,

@@ -8,12 +8,36 @@ from __future__ import annotations
 
 import itertools
 import os
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
     import xarray as xr
+
+
+# ---------------------------------------------------------------------------
+# Overlay data structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class OverlayTrace:
+    """A single trace within an overlay group, from one source DataArray."""
+
+    name: str  # DataArray name (used for legend)
+    t: np.ndarray
+    y: np.ndarray
+    source_idx: int  # index of the source DataArray (for color assignment)
+
+
+@dataclass
+class OverlayGroup:
+    """A group of traces sharing the same overlay dimension value."""
+
+    label: str  # shared dimension value label, e.g. "syn1"
+    traces: list[OverlayTrace] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -190,3 +214,128 @@ def convert_xarray_inputs(
         results.extend(dataarray_to_series(da, name_prefix=prefix))
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Overlay conversion
+# ---------------------------------------------------------------------------
+
+
+def _extract_time_vals(da: xr.DataArray) -> np.ndarray:
+    """Extract time coordinate as float64 seconds."""
+    time_raw = da.coords["time"].values
+    if np.issubdtype(time_raw.dtype, np.datetime64):
+        t0 = time_raw[0]
+        return (time_raw - t0).astype("timedelta64[ns]").astype(float) / 1e9
+    return time_raw.astype(float)
+
+
+def convert_xarray_inputs_overlay(
+    data: list[xr.DataArray],
+    overlay_dim: str,
+) -> list[OverlayGroup]:
+    """Group traces from multiple DataArrays by a shared dimension.
+
+    Parameters
+    ----------
+    data : list[xr.DataArray]
+        Two or more DataArrays, each with ``'time'`` and ``overlay_dim``.
+    overlay_dim : str
+        Dimension to overlay on (e.g. ``'syn_id'``). Traces sharing the same
+        coordinate value on this dimension are grouped into a single subplot.
+
+    Returns
+    -------
+    list[OverlayGroup]
+        One group per unique value (or combination, if extra dims exist).
+    """
+    if len(data) < 2:
+        raise ValueError("overlay requires at least 2 DataArrays")
+
+    for i, da in enumerate(data):
+        if "time" not in da.dims:
+            raise ValueError(
+                f"DataArray {i} must have a 'time' dimension. Found: {da.dims}"
+            )
+        if overlay_dim not in da.dims:
+            raise ValueError(
+                f"DataArray {i} does not have overlay dimension '{overlay_dim}'. "
+                f"Found: {da.dims}"
+            )
+
+    # Determine source names
+    all_named = all(da.name for da in data)
+    source_names = [
+        str(da.name) if all_named else f"arr{i}" for i, da in enumerate(data)
+    ]
+
+    # Collect the union of overlay_dim values across all arrays
+    overlay_vals_set: dict[object, None] = {}  # ordered set via dict
+    for da in data:
+        for v in da.coords[overlay_dim].values:
+            overlay_vals_set[v] = None
+    overlay_vals = list(overlay_vals_set.keys())
+
+    # Determine extra non-time, non-overlay dims (iterate over these)
+    extra_dims = [d for d in data[0].dims if d not in ("time", overlay_dim)]
+
+    overlay_abbrev = _abbrev_dim(overlay_dim)
+    extra_abbrevs = [_abbrev_dim(d) for d in extra_dims]
+
+    # Build groups
+    groups: list[OverlayGroup] = []
+
+    if not extra_dims:
+        # Simple case: just overlay_dim
+        for val in overlay_vals:
+            label = f"{overlay_abbrev}{val}"
+            group = OverlayGroup(label=label)
+            for src_idx, da in enumerate(data):
+                if val not in da.coords[overlay_dim].values:
+                    continue
+                t = _extract_time_vals(da)
+                y = da.sel({overlay_dim: val}).values.astype(float)
+                group.traces.append(
+                    OverlayTrace(
+                        name=source_names[src_idx],
+                        t=t.copy(),
+                        y=y,
+                        source_idx=src_idx,
+                    )
+                )
+            if group.traces:
+                groups.append(group)
+    else:
+        # Extra dims: create one group per (overlay_val, extra_combo)
+        extra_coords = [data[0].coords[d].values for d in extra_dims]
+        for val in overlay_vals:
+            for combo in itertools.product(*extra_coords):
+                overlay_label = f"{overlay_abbrev}{val}"
+                extra_label = "-".join(
+                    f"{ab}{v}" for ab, v in zip(extra_abbrevs, combo)
+                )
+                label = f"{overlay_label}-{extra_label}"
+
+                group = OverlayGroup(label=label)
+                sel_extra = dict(zip(extra_dims, combo))
+
+                for src_idx, da in enumerate(data):
+                    if val not in da.coords[overlay_dim].values:
+                        continue
+                    if not all(d in da.dims for d in extra_dims):
+                        continue
+                    t = _extract_time_vals(da)
+                    sel_dict = {overlay_dim: val, **sel_extra}
+                    y = da.sel(sel_dict).values.astype(float)
+                    group.traces.append(
+                        OverlayTrace(
+                            name=source_names[src_idx],
+                            t=t.copy(),
+                            y=y,
+                            source_idx=src_idx,
+                        )
+                    )
+                if group.traces:
+                    groups.append(group)
+
+    return groups

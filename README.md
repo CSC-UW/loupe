@@ -134,7 +134,7 @@ Video:
 
 Display:
 - `--fixed_scale` — disable Y auto‑scaling; initial per‑trace Y limits are set from robust percentiles (1–99%) with padding.
-- `--low_profile_x` — hide X axis labels/ticks for all but the bottom trace; vertical grid lines are preserved on hidden axes.
+- `--low_profile_x` — hide X axis labels/ticks for all but the bottom trace; vertical grid lines are preserved on hidden axes. This is now the default automatically whenever Loupe launches with 3 or more total subplots.
 
 Matrix viewer:
 - `--matrix_timestamps FILE...` — list of .npy files with event timestamps for each matrix subplot.
@@ -294,7 +294,7 @@ Videos and threading
 
 Layout and sizing
 - Left plot spines (Y axes) are aligned by measuring axis widths and applying the maximum using `setWidth()`.
-- `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels.
+- `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels. If you do not pass the flag, Loupe now turns this on automatically when 3 or more total subplots are loaded at launch.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Stretches are applied only to video rows so you can reallocate space between Video 1 vs Videos 2/3 without fighting other controls.
 - Traces are placed in a `GraphicsLayoutWidget`; when you hide a subplot, the layout is rebuilt only with visible plots and X‑linking is re‑established.
 - Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Each plot has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically. Heights are applied using `setRowPreferredHeight` and `setRowStretchFactor` with very low minimum constraints to allow extreme shrinking.

@@ -17,15 +17,26 @@ def view(
     group: str | list[str] | None = None,
     variable: str = "data",
     filter_dict: dict | None = None,
+    # DataFrame / matrix parameters
+    matrix_df=None,
+    matrix_parquet: str | list[str] | None = None,
+    y_col: str = "source_id",
+    group_col: str | list[str] | None = None,
+    alpha_col: str | None = None,
+    matrix_name: str = "events",
+    matrix_colors=None,
+    alpha_range: tuple[float, float] = (0.3, 1.0),
+    overlay: str | None = None,
+    overlay_colors: list | None = None,
     **kwargs,
 ) -> LoupeApp:
-    """Launch the Loupe viewer with xarray data.
+    """Launch the Loupe viewer with xarray and/or DataFrame data.
 
     Parameters
     ----------
     data : xr.DataArray or list[xr.DataArray], optional
-        In-memory DataArray(s) to display. Each must have a ``'time'``
-        dimension.  All other dimension combinations become separate traces.
+        In-memory DataArray(s) to display as time-series traces.  Each must
+        have a ``'time'`` dimension.
     path : str or list[str], optional
         Path(s) to zarr or netCDF stores.  Mutually exclusive with *data*.
     group : str or list[str], optional
@@ -36,6 +47,33 @@ def view(
     filter_dict : dict, optional
         Dimension slicing applied to every loaded DataArray, e.g.
         ``{"syn_id": slice(3, 6), "time": slice(0, 1800)}``.
+    matrix_df : pl.DataFrame or list[pl.DataFrame], optional
+        In-memory Polars DataFrame(s) to display as matrix/raster plots.
+        Mutually exclusive with *matrix_parquet*.
+    matrix_parquet : str or list[str], optional
+        Path(s) to parquet file(s) to load as matrix/raster plots.
+        Mutually exclusive with *matrix_df*.
+    y_col : str
+        DataFrame column for matrix row assignment (default ``"source_id"``).
+    group_col : str or list[str] or None
+        DataFrame column(s) to split into separate matrix subplots.
+    alpha_col : str or None
+        DataFrame column for per-event opacity.
+    matrix_name : str
+        Base name for the matrix subplots (default ``"events"``).
+    matrix_colors : dict, list, tuple or None
+        Color specification per group (see :func:`df_loader.dataframe_to_matrix_series`).
+    alpha_range : tuple[float, float]
+        ``(min_alpha, max_alpha)`` for normalizing *alpha_col*.
+    overlay : str or None
+        Dimension name to overlay on (e.g. ``'syn_id'``).  When set, traces
+        from different DataArrays that share the same coordinate value on this
+        dimension are plotted on the same subplot.  Requires *data* to be a
+        list of at least 2 DataArrays.
+    overlay_colors : list or None
+        Optional list of colors (one per input DataArray) for overlay mode.
+        Each element can be a hex string (``'#RRGGBB'``) or an RGB(A) tuple.
+        If not specified, a default palette is used.
     **kwargs
         Forwarded to :class:`LoupeApp` (``video_path``,
         ``frame_times_path``, ``fixed_scale``, ``low_profile_x``, etc.).
@@ -49,31 +87,37 @@ def view(
 
     Examples
     --------
-    Jupyter notebook::
-
-        %gui qt6
-        import xarray as xr
-        from loupe import view
-
-        ds = xr.open_zarr("data.zarr", group="dmd_2")
-        da = ds["data"].sel(syn_id=slice(3, 6), time=slice(0, 1800)).load()
-        w = view(da)
-
-    Path-based::
+    xarray time-series::
 
         w = view(path="data.zarr", group="dmd_2",
                  filter_dict={"syn_id": slice(3, 6), "time": slice(0, 1800)})
+
+    DataFrame raster plot::
+
+        import polars as pl
+        ev = pl.read_parquet("glut_events.parquet")
+        w = view(matrix_df=ev, y_col="source_id", group_col="dmd",
+                 alpha_col="snr_denoised")
+
+    Combined::
+
+        w = view(path="traces.zarr", group="dmd_2",
+                 matrix_df=ev, y_col="source_id", group_col="dmd",
+                 alpha_col="snr_denoised")
     """
     from PySide6 import QtWidgets
 
     from loupe.app import LoupeApp, Series
     from loupe.xr_loader import (
         convert_xarray_inputs,
+        convert_xarray_inputs_overlay,
         load_xarray_from_path,
     )
 
     if data is not None and path is not None:
         raise ValueError("Provide either 'data' or 'path', not both.")
+    if matrix_df is not None and matrix_parquet is not None:
+        raise ValueError("Provide either 'matrix_df' or 'matrix_parquet', not both.")
 
     # ---- resolve path(s) to in-memory DataArrays --------------------------
     if path is not None:
@@ -99,9 +143,45 @@ def view(
 
     # ---- convert DataArray(s) → Series ------------------------------------
     xr_series: list[Series] | None = None
+    overlay_groups = None
     if data is not None:
-        tuples = convert_xarray_inputs(data)
-        xr_series = [Series(name, t, y) for name, t, y in tuples]
+        if overlay is not None:
+            if not isinstance(data, list):
+                data = [data]
+            overlay_groups = convert_xarray_inputs_overlay(data, overlay)
+        else:
+            tuples = convert_xarray_inputs(data)
+            xr_series = [Series(name, t, y) for name, t, y in tuples]
+
+    # ---- resolve DataFrame(s) to MatrixSeries -----------------------------
+    matrix_series_list = None
+    if matrix_parquet is not None:
+        from loupe.df_loader import load_dataframe_from_parquet
+
+        matrix_df = load_dataframe_from_parquet(matrix_parquet)
+
+    if matrix_df is not None:
+        from loupe.df_loader import dataframe_to_matrix_series
+
+        if not isinstance(matrix_df, list):
+            matrix_df = [matrix_df]
+        all_ms = []
+        for i, mdf in enumerate(matrix_df):
+            prefix = matrix_name if len(matrix_df) == 1 else f"{matrix_name}_{i}"
+            all_ms.extend(
+                dataframe_to_matrix_series(
+                    mdf,
+                    time_col="time",
+                    y_col=y_col,
+                    group_col=group_col,
+                    alpha_col=alpha_col,
+                    name=prefix,
+                    colors=matrix_colors,
+                    alpha_range=alpha_range,
+                )
+            )
+        if all_ms:
+            matrix_series_list = all_ms
 
     # ---- Qt event loop ----------------------------------------------------
     app = QtWidgets.QApplication.instance()
@@ -111,7 +191,13 @@ def view(
         app = QtWidgets.QApplication([])
         created_app = True
 
-    w = LoupeApp(xr_series=xr_series, **kwargs)
+    w = LoupeApp(
+        xr_series=xr_series,
+        matrix_series_list=matrix_series_list,
+        overlay_groups=overlay_groups,
+        overlay_colors=overlay_colors,
+        **kwargs,
+    )
     w.show()
 
     if created_app:
