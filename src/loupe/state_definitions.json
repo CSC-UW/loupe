@@ -1,26 +1,28 @@
 {
     "keymap": {
         "w": "Wake",
-        "q": "Quiet-Wake",
-        "b": "Brief-Arousal",
-        "2": "NREM-light",
-        "1": "NREM",
+        "q": "Wake_quiet",
+        "b": "Wake_brief_arousal",
+        "1": "NREM_SWS",
+        "2": "NREM_light",
+        "3": "NREM_spindle",
         "r": "REM",
+        "p": "REM_phasic",
         "a": "Artifact",
-        "t": "Transition-to-REM",
-        "u": "unclear",
-        "o": "ON",
-        "f": "OFF",
-        "s": "spindle"
+        "i": "intermediate_state",
+        "u": "unclear"
     },
+    
     "label_colors": {
         "Wake": [0, 209, 40, 60],
-        "Quiet-Wake": [79, 255, 168, 60],
-        "Brief-Arousal": [188, 255, 45, 60],
-        "NREM-light": [79, 247, 255, 60],
-        "NREM": [41, 30, 255, 60],
-        "Transition-to-REM": [255, 101, 224, 60],
+        "Wake_quiet": [79, 255, 168, 60],
+        "Wake_brief_arousal": [188, 255, 45, 60],
+        "NREM_light": [79, 247, 255, 60],
+        "NREM_SWS": [41, 30, 255, 60],
+        "NREM_spindle": [79, 247, 255, 60],
+        "Intermediate_state": [255, 101, 224, 60],
         "REM": [255, 30, 145, 60],
+        "REM_phasic": [255, 30, 145, 30],
         "Artifact": [255, 0, 0, 80],
         "unclear": [242, 255, 41, 50],
         "ITI": [79, 247, 255, 60],
@@ -28,7 +30,7 @@
         "NoGo": [255, 0, 0, 80],
         "Timeout": [255, 30, 145, 60],
         "ON": [0, 209, 40, 60],
-        "OFF": [247, 99, 99, 30],
-        "spindle": [79, 247, 255, 60]
+        "OFF": [247, 99, 99, 30]
+        
     }
 }
