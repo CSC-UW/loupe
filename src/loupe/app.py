@@ -1338,6 +1338,51 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         dlg.exec()
 
+    def _jump_to_epoch_by_offset(self, direction: int) -> None:
+        """Jump to the next (+1) or previous (-1) labelled epoch relative to cursor.
+
+        Centers the view on the epoch without changing window size,
+        using the same logic as the Jump to Epochs dialog.
+        """
+        if not self.labels:
+            return
+
+        cursor = self.cursor_time
+
+        if direction > 0:
+            # Find first epoch whose center is strictly after cursor
+            for lab in self.labels:
+                center = (lab["start"] + lab["end"]) / 2.0
+                if center > cursor:
+                    break
+            else:
+                return  # no epoch found ahead
+        else:
+            # Find last epoch whose center is strictly before cursor
+            found = None
+            for lab in self.labels:
+                center = (lab["start"] + lab["end"]) / 2.0
+                if center < cursor:
+                    found = lab
+                else:
+                    break
+            if found is None:
+                return
+            lab = found
+            center = (lab["start"] + lab["end"]) / 2.0
+
+        # Center view on the epoch (same as Jump to Epochs dialog)
+        new_start = center - self.window_len / 2.0
+        new_start = clamp(
+            new_start,
+            self.t_global_min,
+            max(self.t_global_min, self.t_global_max - self.window_len),
+        )
+        self.window_start = new_start
+        self.cursor_time = center
+        self._apply_x_range()
+        self._update_nav_slider_from_window()
+
     def _show_subplot_control_dialog(self):
         """Show a comprehensive dialog to control subplot heights, visibility, and order."""
         n_ts_plots = (
@@ -3548,6 +3593,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Toggle hypnogram zoom
         if ktxt == "z":
             self._toggle_hypnogram_zoom()
+            return
+
+        # Next / previous epoch navigation
+        if ktxt == "n":
+            self._jump_to_epoch_by_offset(+1)
+            return
+        if ktxt == "b":
+            self._jump_to_epoch_by_offset(-1)
             return
 
         super().keyPressEvent(ev)
