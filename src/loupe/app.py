@@ -382,6 +382,264 @@ class VideoWorker(QtCore.QObject):
             self.cap = None
 
 
+# ---------------- Label Summary Panel ----------------
+
+
+class StateComboDelegate(QtWidgets.QStyledItemDelegate):
+    """Dropdown delegate for the State column in the label summary table."""
+
+    def __init__(self, states: list[str], parent=None):
+        super().__init__(parent)
+        self._states = list(states)
+
+    def set_states(self, states: list[str]):
+        self._states = list(states)
+
+    def createEditor(self, parent, option, index):
+        combo = QtWidgets.QComboBox(parent)
+        for state in self._states:
+            combo.addItem(state)
+        return combo
+
+    def setEditorData(self, editor, index):
+        current = index.data()
+        idx = editor.findText(current or "")
+        if idx >= 0:
+            editor.setCurrentIndex(idx)
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.currentText(), QtCore.Qt.ItemDataRole.EditRole)
+
+
+class LabelSummaryBarWidget(QtWidgets.QWidget):
+    """Horizontal stacked color bar showing per-state labeling fractions."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(24)
+        self.segments: list[tuple[float, tuple, str]] = []
+
+    def set_data(self, segments: list[tuple[float, tuple, str]]):
+        """Set bar segments: list of (fraction, rgba_tuple, label_text)."""
+        self.segments = segments
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        try:
+            w, h = self.width(), self.height()
+            if not self.segments:
+                painter.fillRect(0, 0, w, h, QtGui.QColor(40, 40, 40))
+                return
+            x = 0.0
+            for frac, color, text in self.segments:
+                seg_w = frac * w
+                int_x = int(round(x))
+                int_w = int(round(x + seg_w)) - int_x
+                painter.fillRect(int_x, 0, int_w, h, QtGui.QColor(color[0], color[1], color[2]))
+                if int_w > 50:
+                    painter.setPen(QtGui.QColor(255, 255, 255))
+                    font = painter.font()
+                    font.setPointSize(8)
+                    painter.setFont(font)
+                    painter.drawText(
+                        int_x, 0, int_w, h,
+                        QtCore.Qt.AlignmentFlag.AlignCenter,
+                        text,
+                    )
+                x += seg_w
+        finally:
+            painter.end()
+
+
+class LabelSummaryWidget(QtWidgets.QWidget):
+    """Inline panel showing an editable table of all scored labels with summary stats."""
+
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self._refreshing = False
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+
+        # Table
+        self.table = QtWidgets.QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Start", "End", "Duration", "State", "Note"])
+        self.table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
+        )
+        self.table.setStyleSheet(
+            "QTableWidget { background-color: #1a1a1a; color: #ddd; gridline-color: #444; }"
+            "QHeaderView::section { background-color: #333; color: #ddd; border: 1px solid #444; padding: 2px; }"
+        )
+        # State column uses a dropdown delegate
+        self._state_delegate = StateComboDelegate(
+            sorted(main_window.label_colors.keys())
+        )
+        self.table.setItemDelegateForColumn(3, self._state_delegate)
+
+        self.table.cellChanged.connect(self._on_cell_changed)
+        layout.addWidget(self.table, 1)
+
+        # Summary text
+        self.summary_label = QtWidgets.QLabel("Fraction of total recording labelled: 0.0%")
+        self.summary_label.setStyleSheet("color: #ccc; padding: 2px;")
+        layout.addWidget(self.summary_label)
+
+        bar_header = QtWidgets.QLabel("Labelling by state:")
+        bar_header.setStyleSheet("color: #ccc; font-weight: bold; padding: 0px 2px;")
+        layout.addWidget(bar_header)
+
+        # Color bar
+        self.bar_widget = LabelSummaryBarWidget()
+        layout.addWidget(self.bar_widget)
+
+    def refresh(self):
+        """Repopulate table and summary from main_window.labels."""
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self.table.blockSignals(True)
+            self.table.setRowCount(0)
+            for i, lab in enumerate(self.main_window.labels):
+                self.table.insertRow(i)
+                start, end = float(lab["start"]), float(lab["end"])
+                duration = end - start
+                key = (start, end)
+                note = self.main_window.label_notes.get(key, "")
+
+                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{start:.3f}"))
+                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{end:.3f}"))
+                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{duration:.3f}"))
+                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(lab["label"]))
+                self.table.setItem(i, 4, QtWidgets.QTableWidgetItem(note))
+
+                # Store label index for mapping back
+                self.table.item(i, 0).setData(QtCore.Qt.ItemDataRole.UserRole, i)
+
+            self.table.resizeColumnsToContents()
+            self.table.blockSignals(False)
+            self._update_summary()
+            # Update known states for dropdown delegate
+            self._state_delegate.set_states(sorted(self.main_window.label_colors.keys()))
+        finally:
+            self._refreshing = False
+
+    def _update_summary(self):
+        """Recompute summary stats and update the bar widget."""
+        total_recording = self.main_window.t_global_max - self.main_window.t_global_min
+        if total_recording <= 0:
+            self.summary_label.setText("No recording loaded")
+            self.bar_widget.set_data([])
+            return
+
+        total_labelled = sum(
+            float(lab["end"]) - float(lab["start"])
+            for lab in self.main_window.labels
+        )
+        pct = (total_labelled / total_recording) * 100.0
+        self.summary_label.setText(
+            f"Fraction of total recording labelled: {pct:.1f}%"
+        )
+
+        # Per-state breakdown
+        state_durations: dict[str, float] = {}
+        for lab in self.main_window.labels:
+            dur = float(lab["end"]) - float(lab["start"])
+            state_durations[lab["label"]] = state_durations.get(lab["label"], 0.0) + dur
+
+        segments = []
+        for state, dur in sorted(state_durations.items(), key=lambda x: -x[1]):
+            frac = dur / total_recording
+            color = self.main_window.label_colors.get(state, (150, 150, 150, 80))
+            bar_color = (color[0], color[1], color[2], 255)
+            text = f"{state} {frac * 100:.0f}%"
+            segments.append((frac, bar_color, text))
+        self.bar_widget.set_data(segments)
+
+    def _migrate_note_key(self, old_key: tuple, new_key: tuple):
+        """Move a note entry from old (start, end) key to new key."""
+        if old_key in self.main_window.label_notes:
+            note = self.main_window.label_notes.pop(old_key)
+            self.main_window.label_notes[new_key] = note
+
+    def _on_cell_changed(self, row: int, col: int):
+        """Handle inline cell edits — validate and propagate to labels."""
+        if self._refreshing:
+            return
+        labels = self.main_window.labels
+        if row < 0 or row >= len(labels):
+            return
+
+        lab = labels[row]
+        old_start, old_end = float(lab["start"]), float(lab["end"])
+        old_key = (old_start, old_end)
+        item = self.table.item(row, col)
+        if item is None:
+            return
+        new_text = item.text().strip()
+
+        try:
+            if col == 0:  # Start
+                new_start = float(new_text)
+                if new_start >= old_end:
+                    raise ValueError("Start must be less than End")
+                if new_start < 0:
+                    raise ValueError("Start must be non-negative")
+                self._migrate_note_key(old_key, (new_start, old_end))
+                lab["start"] = new_start
+
+            elif col == 1:  # End
+                new_end = float(new_text)
+                if new_end <= old_start:
+                    raise ValueError("End must be greater than Start")
+                self._migrate_note_key(old_key, (old_start, new_end))
+                lab["end"] = new_end
+
+            elif col == 2:  # Duration
+                new_dur = float(new_text)
+                if new_dur <= 0:
+                    raise ValueError("Duration must be positive")
+                new_end = old_start + new_dur
+                self._migrate_note_key(old_key, (old_start, new_end))
+                lab["end"] = new_end
+
+            elif col == 3:  # State
+                if not new_text:
+                    raise ValueError("State cannot be empty")
+                lab["label"] = new_text
+
+            elif col == 4:  # Note
+                new_key = (float(lab["start"]), float(lab["end"]))
+                if new_text:
+                    self.main_window.label_notes[new_key] = new_text
+                elif new_key in self.main_window.label_notes:
+                    del self.main_window.label_notes[new_key]
+                # Note edits don't need visual redraw of label regions
+                return
+
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Invalid edit", str(e))
+            self.refresh()
+            return
+
+        # Re-sort, merge, and redraw (which also triggers refresh)
+        self.main_window.labels = sorted(labels, key=lambda x: float(x["start"]))
+        self.main_window._merge_adjacent_same_labels()
+        self.main_window._redraw_all_labels()
+
+
 class YAxisControlsDialog(QtWidgets.QDialog):
     def __init__(self, parent):
         super().__init__(parent)
@@ -474,7 +732,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         frame_times2_path=None,
         video3_path=None,
         frame_times3_path=None,
-        image_path=None,
         fixed_scale=True,
         low_profile_x: bool | None = None,
         # Matrix viewer arguments
@@ -606,9 +863,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Which video to use for frame-by-frame stepping (1, 2, or 3)
         self.frame_step_source = 1
 
-        # Static Image (hidden if second video is loaded)
-        self.static_image_pixmap = None
-
         # Hypnogram overview
         self.hypnogram_widget = None
         self.hypnogram_plot = None
@@ -695,8 +949,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._load_video2_data(video2_path, frame_times2_path)
         if video3_path and frame_times3_path:
             self._load_video3_data(video3_path, frame_times3_path)
-        elif image_path:
-            self._load_static_image(image_path)
 
         # Load matrix viewer data if provided
         if matrix_timestamps and matrix_yvals:
@@ -730,9 +982,7 @@ class LoupeApp(QtWidgets.QMainWindow):
     def eventFilter(self, obj, ev):
         try:
             if ev.type() == QtCore.QEvent.Type.Resize:
-                if obj is self.static_image_label:
-                    self._rescale_static_image()
-                elif obj is self.video_label:
+                if obj is self.video_label:
                     self._rescale_video_frame()
                 elif obj is self.video2_label:
                     self._rescale_video2_frame()
@@ -815,13 +1065,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.videos_layout.addWidget(self.video2_label, self.video2_stretch)
         self.video2_label.installEventFilter(self)
 
-        self.static_image_label = QtWidgets.QLabel("No image loaded")
-        self.static_image_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.static_image_label.setStyleSheet(
-            "background-color:#222;border:1px solid #444;"
-        )
-        rl.addWidget(self.static_image_label, 2)
-        self.static_image_label.installEventFilter(self)
+        # Label Summary panel (replaces former static image; hidden when 2+ videos)
+        self.label_summary_panel = LabelSummaryWidget(main_window=self)
+        rl.addWidget(self.label_summary_panel, 2)
 
         # Third video label (same size weighting as video2, stacked below)
         self.video3_label = QtWidgets.QLabel("No video 3")
@@ -1223,6 +1469,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             elif key in self.label_notes:
                 del self.label_notes[key]
             self._update_status()
+            if hasattr(self, "label_summary_panel"):
+                self.label_summary_panel.refresh()
 
     def _show_jump_to_epochs_dialog(self):
         """Show a table of all epochs for navigation and filtering."""
@@ -3043,7 +3291,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 raise ValueError("frame_times.npy must be 1-D")
             self.video2_frame_times = ft
             self._update_status(f"Loaded frame_times2 ({len(ft)} frames).")
-            self.static_image_label.hide()
+            self.label_summary_panel.hide()
             self.video2_label.show()
             self._request_initial_frame()
         except Exception as e:
@@ -3056,7 +3304,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Video2", msg or "Failed to open.")
         else:
             self._video2_is_open = True
-            self.static_image_label.hide()
+            self.label_summary_panel.hide()
             self.video2_label.show()
             self._request_initial_frame()
 
@@ -3084,7 +3332,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 raise ValueError("frame_times.npy must be 1-D")
             self.video3_frame_times = ft
             self._update_status(f"Loaded frame_times3 ({len(ft)} frames).")
-            self.static_image_label.hide()
+            self.label_summary_panel.hide()
             self.video3_label.show()
             self._request_initial_frame()
         except Exception as e:
@@ -3171,32 +3419,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             )
             self.video3_label.setPixmap(scaled)
 
-    def _load_static_image(self, path):
-        if not os.path.exists(path):
-            self.static_image_label.setText("Image not found")
-            return
-        pixmap = QtGui.QPixmap(path)
-        if pixmap.isNull():
-            self.static_image_label.setText("Failed to load image")
-            return
-        self.static_image_pixmap = pixmap
-        self.static_image_label.setText("")
-        self._rescale_static_image()
-
     def _on_splitter_moved(self, pos, index):
         self._rescale_video_frame()
-        self._rescale_static_image()
         self._rescale_video2_frame()
         self._rescale_video3_frame()
-
-    def _rescale_static_image(self):
-        if self.static_image_pixmap:
-            scaled = self.static_image_pixmap.scaled(
-                self.static_image_label.size(),
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
-            self.static_image_label.setPixmap(scaled)
 
     # ---------- Selection / labeling ----------
     def _show_y_axis_dialog(self):
@@ -3431,6 +3657,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self.matrix_label_regions[i].append(reg)
 
         self._redraw_hypnogram_labels()
+
+        # Keep the label summary panel in sync
+        if hasattr(self, "label_summary_panel"):
+            self.label_summary_panel.refresh()
 
     def _redraw_hypnogram_labels(self):
         if self.hypnogram_plot is None:
@@ -3998,7 +4228,6 @@ class LoupeApp(QtWidgets.QMainWindow):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._rescale_video_frame()
-        self._rescale_static_image()
         QtCore.QTimer.singleShot(50, self._refresh_curves)
         QtCore.QTimer.singleShot(60, self._align_left_axes)
 
@@ -4370,9 +4599,6 @@ def main():
         "--frame_times3", type=str, help="Path to third video frame times (.npy)"
     )
     parser.add_argument(
-        "--image", type=str, help="Path to static image file (.png, .jpg, etc.)"
-    )
-    parser.add_argument(
         "--auto_scale",
         action="store_true",
         help=(
@@ -4487,7 +4713,6 @@ def main():
         frame_times2_path=args.frame_times2,
         video3_path=args.video3,
         frame_times3_path=args.frame_times3,
-        image_path=args.image,
         fixed_scale=not args.auto_scale,
         low_profile_x=args.low_profile_x,
         # Matrix viewer arguments
