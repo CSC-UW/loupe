@@ -216,12 +216,54 @@ def convert_xarray_inputs(
     return results
 
 
+def _coord_values_per_trace(
+    da: xr.DataArray,
+    coord_name: str,
+    non_time_dims: list[str],
+) -> np.ndarray | None:
+    """Extract one value of *coord_name* per trace, in ``itertools.product`` order.
+
+    Returns *None* if the coordinate cannot be aligned to traces.
+    """
+    if coord_name not in da.coords:
+        return None
+    coord_vals = da.coords[coord_name].values
+    if len(non_time_dims) == 1:
+        return coord_vals
+    if len(non_time_dims) > 1:
+        target_dim = None
+        for d in non_time_dims:
+            if da.coords[coord_name].dims == (d,):
+                target_dim = d
+                break
+        if target_dim is None:
+            return None
+        dim_coords = [da.coords[d].values for d in non_time_dims]
+        dim_sizes = [len(c) for c in dim_coords]
+        target_idx = non_time_dims.index(target_dim)
+        target_vals = dim_coords[target_idx]
+        reps_before = 1
+        for j in range(target_idx):
+            reps_before *= dim_sizes[j]
+        reps_after = 1
+        for j in range(target_idx + 1, len(dim_sizes)):
+            reps_after *= dim_sizes[j]
+        return np.tile(np.repeat(target_vals, reps_after), reps_before)
+    return None
+
+
 def convert_xarray_inputs_with_order(
     da: xr.DataArray,
     order_by: str | None = None,
     descending: bool = False,
     name_prefix: str = "",
-) -> tuple[list[tuple[str, np.ndarray, np.ndarray]], np.ndarray | None, list[str]]:
+    color_by: str | None = None,
+) -> tuple[
+    list[tuple[str, np.ndarray, np.ndarray]],
+    np.ndarray | None,
+    list[str],
+    np.ndarray | None,
+]:
     """Convert a DataArray to series tuples with optional ordering metadata.
 
     Parameters
@@ -236,6 +278,9 @@ def convert_xarray_inputs_with_order(
         Reverse the ordering.
     name_prefix : str
         Prefix prepended to each trace name.
+    color_by : str or None
+        Coordinate name whose (categorical) values determine per-trace
+        color.  Extracted in the same order as the returned tuples.
 
     Returns
     -------
@@ -244,6 +289,8 @@ def convert_xarray_inputs_with_order(
         One value per trace, for ordering / spacing.
     trace_labels : list[str]
         Display label for each trace.
+    color_values : np.ndarray or None
+        One categorical value per trace, for coloring.
     """
     tuples = dataarray_to_series(da, name_prefix=name_prefix)
     labels = [t[0] for t in tuples]
@@ -253,33 +300,12 @@ def convert_xarray_inputs_with_order(
     order_values: np.ndarray | None = None
 
     if order_by is not None and order_by in da.coords:
-        # order_by names a coordinate — extract one value per trace
-        coord_vals = da.coords[order_by].values
-        if len(non_time_dims) == 1:
-            # Simple: one coord value per trace
-            order_values = coord_vals.astype(float)
-        elif len(non_time_dims) > 1:
-            # Find which dim order_by belongs to and tile for the product
-            target_dim = None
-            for d in non_time_dims:
-                if order_by in da.coords and da.coords[order_by].dims == (d,):
-                    target_dim = d
-                    break
-            if target_dim is not None:
-                dim_coords = [da.coords[d].values for d in non_time_dims]
-                dim_sizes = [len(c) for c in dim_coords]
-                target_idx = non_time_dims.index(target_dim)
-                target_vals = dim_coords[target_idx].astype(float)
-                # Tile to match itertools.product order
-                reps_before = 1
-                for j in range(target_idx):
-                    reps_before *= dim_sizes[j]
-                reps_after = 1
-                for j in range(target_idx + 1, len(dim_sizes)):
-                    reps_after *= dim_sizes[j]
-                order_values = np.tile(
-                    np.repeat(target_vals, reps_after), reps_before
-                )
+        raw = _coord_values_per_trace(da, order_by, non_time_dims)
+        if raw is not None:
+            try:
+                order_values = raw.astype(float)
+            except (ValueError, TypeError):
+                order_values = None
     elif order_by is None and len(non_time_dims) == 1:
         # Auto: use the single non-time dimension's coordinate values
         dim_name = non_time_dims[0]
@@ -289,6 +315,10 @@ def convert_xarray_inputs_with_order(
         except (ValueError, TypeError):
             order_values = np.arange(len(coord_vals), dtype=float)
 
+    color_values: np.ndarray | None = None
+    if color_by is not None:
+        color_values = _coord_values_per_trace(da, color_by, non_time_dims)
+
     # Apply ordering
     if order_values is not None and len(order_values) == len(tuples):
         sort_idx = np.argsort(order_values)
@@ -297,8 +327,10 @@ def convert_xarray_inputs_with_order(
         tuples = [tuples[i] for i in sort_idx]
         labels = [labels[i] for i in sort_idx]
         order_values = order_values[sort_idx]
+        if color_values is not None and len(color_values) == len(sort_idx):
+            color_values = color_values[sort_idx]
 
-    return tuples, order_values, labels
+    return tuples, order_values, labels, color_values
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,8 @@ class TraceConfig:
     traces_per_page : int or None
         How many traces to show at once in dense mode. ``None`` = all.
         Use Alt+scroll to page through the rest.
+    color_by : str or None
+        Coordinate name whose categorical values determine per-trace color.
     label : str or None
         Optional display name for this group.
     """
@@ -46,6 +48,7 @@ class TraceConfig:
     gain: float = 1.0
     step: int = 1
     traces_per_page: int | None = None
+    color_by: str | None = None
     label: str | None = None
 
 
@@ -74,6 +77,7 @@ def view(
     descending: bool = False,
     step: int = 1,
     traces_per_page: int | None = None,
+    color_by: str | None = None,
     window_len: float = 10.0,
     **kwargs,
 ) -> LoupeApp:
@@ -136,6 +140,9 @@ def view(
     traces_per_page : int or None
         How many traces to show at once in dense mode (None = all).
         Use Option+scroll to page through the rest.
+    color_by : str or None
+        Coordinate name whose categorical values determine per-trace color.
+        Uses a colorblind-friendly palette visible against the black background.
     **kwargs
         Forwarded to :class:`LoupeApp` (``video_path``,
         ``frame_times_path``, ``fixed_scale``, ``low_profile_x``, etc.).
@@ -222,6 +229,7 @@ def view(
                     gain=gain,
                     step=step,
                     traces_per_page=traces_per_page,
+                    color_by=color_by,
                 ))
 
     # ---- convert DataArray(s) → Series / DenseGroups ----------------------
@@ -246,11 +254,12 @@ def view(
                 else:
                     prefix = ""
                 if cfg.mode == "dense":
-                    tuples, order_vals, labels = convert_xarray_inputs_with_order(
+                    tuples, order_vals, labels, color_vals = convert_xarray_inputs_with_order(
                         cfg.data,
                         order_by=cfg.order_by,
                         descending=cfg.descending,
                         name_prefix=prefix,
+                        color_by=cfg.color_by,
                     )
                     series_objs = [Series(n, t, y) for n, t, y in tuples]
                     group_name = cfg.label or prefix or cfg.data.name or f"dense_{i}"
@@ -259,17 +268,19 @@ def view(
                         series=series_objs,
                         trace_labels=labels,
                         order_values=order_vals,
+                        color_values=color_vals,
                         descending=cfg.descending,
                         gain=cfg.gain,
                         step=cfg.step,
                         traces_per_page=cfg.traces_per_page,
                     ))
                 else:
-                    tuples, _, _ = convert_xarray_inputs_with_order(
+                    tuples, _, _, _ = convert_xarray_inputs_with_order(
                         cfg.data,
                         order_by=cfg.order_by,
                         descending=cfg.descending,
                         name_prefix=prefix,
+                        color_by=cfg.color_by,
                     )
                     stacked_series.extend(
                         Series(n, t, y) for n, t, y in tuples

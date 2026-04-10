@@ -147,6 +147,7 @@ class DenseGroup:
     series: list[Series]
     trace_labels: list[str]
     order_values: np.ndarray | None = None
+    color_values: np.ndarray | None = None
     descending: bool = False
     gain: float = 1.0
     step: int = 1
@@ -2595,6 +2596,20 @@ class LoupeApp(QtWidgets.QMainWindow):
         (200, 150, 255, 255),  # lavender
     ]
 
+    # Colorblind-friendly categorical palette (Tol 'light', sans pale grey/black).
+    # Light pastel hues picked for visibility against the black plot background.
+    _CATEGORY_COLORS = [
+        (153, 221, 255, 255),  # light cyan   #99DDFF
+        (238, 136, 102, 255),  # orange       #EE8866
+        (238, 221, 136, 255),  # light yellow #EEDD88
+        (255, 170, 187, 255),  # pink         #FFAABB
+        (119, 170, 221, 255),  # light blue   #77AADD
+        (68, 187, 153, 255),   # mint         #44BB99
+        (187, 204, 51, 255),   # pear         #BBCC33
+        (170, 170, 0, 255),    # olive        #AAAA00
+    ]
+    _CATEGORY_NA_COLOR = (160, 160, 160, 255)
+
     def set_overlay_series(self, overlay_groups, colors=None):
         """Load overlay groups into the viewer.
 
@@ -3582,6 +3597,43 @@ class LoupeApp(QtWidgets.QMainWindow):
         gaps = np.diff(offsets)
         return float(np.median(gaps)) * 0.5 if len(gaps) > 0 else 1.0
 
+    def _dense_category_map(self, group_idx: int) -> dict[str, tuple] | None:
+        """Build a stable category -> RGBA mapping for a dense group.
+
+        Returns *None* if the group has no ``color_values``.
+        """
+        group = self.dense_groups[group_idx]
+        if group.color_values is None or len(group.color_values) != len(group.series):
+            return None
+        seen: dict[str, tuple] = {}
+        palette = self._CATEGORY_COLORS
+        for v in group.color_values:
+            key = str(v)
+            if key in seen:
+                continue
+            seen[key] = palette[len(seen) % len(palette)]
+        return seen
+
+    def _dense_pens(self, group_idx: int) -> list:
+        """Return one pen per visible trace in a dense group.
+
+        Uses the categorical ``color_values`` mapping when present;
+        otherwise falls back to the default gray pen.
+        """
+        group = self.dense_groups[group_idx]
+        visible = self._dense_visible_indices(group_idx)
+        cat_map = self._dense_category_map(group_idx)
+        if cat_map is None:
+            default_pen = pg.mkPen((200, 200, 200), width=1)
+            return [default_pen] * len(visible)
+        na_keys = {"nan", "None", "", "NA", "<NA>"}
+        pens = []
+        for si in visible:
+            key = str(group.color_values[si])
+            color = self._CATEGORY_NA_COLOR if key in na_keys else cat_map.get(key, self._CATEGORY_NA_COLOR)
+            pens.append(pg.mkPen(color, width=1))
+        return pens
+
     def _create_dense_plot(self, group_idx: int, master_plot=None):
         """Create a single dense (EEG-style) PlotItem for a DenseGroup."""
         group = self.dense_groups[group_idx]
@@ -3617,10 +3669,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-        # Create curves
-        pen = pg.mkPen((200, 200, 200), width=1)
+        # Create curves (one pen per visible trace; may vary by color_by category)
+        pens = self._dense_pens(group_idx)
         curves: list[pg.PlotDataItem] = []
-        for _ in visible:
+        for pen in pens:
             curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
             curve.setZValue(5)
             plt.addItem(curve)
@@ -3734,9 +3786,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         offsets = self._dense_offsets(group_idx)
         visible_labels = [group.trace_labels[i] for i in visible]
 
-        pen = pg.mkPen((200, 200, 200), width=1)
+        pens = self._dense_pens(group_idx)
         curves: list[pg.PlotDataItem] = []
-        for _ in visible:
+        for pen in pens:
             curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
             curve.setZValue(5)
             plt.addItem(curve)
