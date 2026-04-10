@@ -227,7 +227,9 @@ def segment_for_window(t, y, t0, t1, max_pts=4000):
     bins = max(1, max_pts // 2)
     # bin edges across [t0, t1]
     edges = np.linspace(t0, t1, bins + 1)
-    # assign each timestamp to a bin index (0..bins-1)
+    # assign each timestamp to a bin index (0..bins-1).
+    # bi is monotonically non-decreasing because ts is sorted ascending,
+    # so we can skip an explicit sort and feed it directly to searchsorted.
     bi = np.clip(np.digitize(ts, edges) - 1, 0, bins - 1)
 
     # Timestamps are monotonic, so bin ids are already ordered.
