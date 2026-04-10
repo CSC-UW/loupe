@@ -916,6 +916,7 @@ class DenseViewControlsDialog(QtWidgets.QDialog):
                     float(offsets.max()) + margin,
                     padding=0,
                 )
+        self.main_window._setup_dense_vscrollbar_for_group(gi)
 
 
 
@@ -987,6 +988,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_height_factors: list[float] = []
         self.dense_visible: list[bool] = []
         self._dense_means: list[list[float]] = []
+        self.dense_vscrollbars: list[QtWidgets.QScrollBar] = []
+        self.dense_vscroll_proxies: list[QtWidgets.QGraphicsProxyWidget] = []
+        self._dense_vscroll_inverted: list[bool] = []
 
         # Matrix viewer data and plots
         self.matrix_series: list[MatrixSeries] = []
@@ -1275,18 +1279,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_scroll_area.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        # Horizontal layout: scroll area + optional dense vertical scrollbar
-        plot_hbox = QtWidgets.QHBoxLayout()
-        plot_hbox.setContentsMargins(0, 0, 0, 0)
-        plot_hbox.setSpacing(0)
-        plot_hbox.addWidget(self.plot_scroll_area, 1)
-
-        self.dense_vscrollbar = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical)
-        self.dense_vscrollbar.hide()
-        self.dense_vscrollbar.valueChanged.connect(self._on_dense_vscrollbar_changed)
-        plot_hbox.addWidget(self.dense_vscrollbar)
-
-        leftl.addLayout(plot_hbox, 1)
+        leftl.addWidget(self.plot_scroll_area, 1)
         splitter.addWidget(left)
 
         # right side
@@ -2535,6 +2528,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_cur_lines.clear()
         self.dense_sel_regions.clear()
         self.dense_label_regions.clear()
+        self.dense_vscrollbars.clear()
+        self.dense_vscroll_proxies.clear()
+        self._dense_vscroll_inverted.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
@@ -3073,6 +3069,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_cur_lines.clear()
         self.dense_sel_regions.clear()
         self.dense_label_regions.clear()
+        self.dense_vscrollbars.clear()
+        self.dense_vscroll_proxies.clear()
+        self._dense_vscroll_inverted.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
@@ -3211,6 +3210,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for gi in range(len(self.dense_groups)):
             plt = self._create_dense_plot(gi, master_plot=master_plot)
             self.plot_area.addItem(plt, row=row_idx, col=0)
+            self.plot_area.addItem(self.dense_vscroll_proxies[gi], row=row_idx, col=1)
             is_last = row_idx == total_plots - 1
             plt.setLabel("bottom", "Time", units="s" if is_last else None)
             if self.low_profile_x and not is_last:
@@ -3304,7 +3304,8 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Apply custom plot heights (includes matrix row heights logic)
         self._apply_custom_plot_heights()
-        self._setup_dense_vscrollbar()
+        self._setup_dense_vscrollbars()
+        self._constrain_scrollbar_column()
 
     def _create_overlay_plots(self):
         """Create plots for overlay mode: multiple curves per subplot."""
@@ -3670,6 +3671,47 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_sel_regions.append(sel_region)
         self.dense_label_regions.append([])
 
+        # Per-group vertical scrollbar as a proxy widget for the graphics layout.
+        # An explicit stylesheet is required: QScrollBar inside a QGraphicsProxyWidget
+        # doesn't reliably paint the native handle, so we draw it via CSS.
+        sb = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical)
+        sb.setFixedWidth(14)
+        sb.setStyleSheet(
+            """
+            QScrollBar:vertical {
+                background: #2a2a2a;
+                width: 14px;
+                margin: 0px;
+                border: 1px solid #444;
+            }
+            QScrollBar::handle:vertical {
+                background: #888;
+                min-height: 20px;
+                border-radius: 3px;
+                margin: 1px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #aaa;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+                background: none;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+            """
+        )
+        sb.hide()
+        proxy = QtWidgets.QGraphicsProxyWidget()
+        proxy.setWidget(sb)
+        sb.valueChanged.connect(
+            lambda val, gi=group_idx: self._on_dense_vscrollbar_changed(gi, val)
+        )
+        self.dense_vscrollbars.append(sb)
+        self.dense_vscroll_proxies.append(proxy)
+        self._dense_vscroll_inverted.append(False)
+
         return plt
 
     def _rebuild_dense_curves(self, group_idx: int):
@@ -3748,18 +3790,37 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             self.plot_area.setMinimumHeight(0)
 
-    # ---- Dense vertical scrollbar ------------------------------------------
-    def _setup_dense_vscrollbar(self):
-        """Configure the dense vertical scrollbar based on the first dense group."""
-        if not self.dense_groups or not self.dense_plots:
-            self.dense_vscrollbar.hide()
+    # ---- Dense vertical scrollbars ------------------------------------------
+    def _constrain_scrollbar_column(self):
+        """Set column constraints so scrollbar proxies stay narrow."""
+        if not self.dense_vscroll_proxies:
             return
-        gi = 0
+        try:
+            layout = self.plot_area.ci.layout
+            layout.setColumnStretchFactor(1, 0)
+            layout.setColumnMaximumWidth(1, 16)
+        except Exception:
+            pass
+
+    def _setup_dense_vscrollbars(self):
+        """Configure per-group dense vertical scrollbars."""
+        for gi in range(len(self.dense_groups)):
+            self._setup_dense_vscrollbar_for_group(gi)
+
+    def _setup_dense_vscrollbar_for_group(self, gi: int):
+        """Configure the vertical scrollbar for a single dense group."""
+        if gi >= len(self.dense_groups) or gi >= len(self.dense_plots) or gi >= len(self.dense_vscrollbars):
+            return
+        sb = self.dense_vscrollbars[gi]
         offsets = self._dense_offsets(gi)
         if len(offsets) < 2:
-            self.dense_vscrollbar.hide()
+            sb.hide()
             return
         group = self.dense_groups[gi]
+        tpp = group.traces_per_page
+        if tpp is None or tpp >= len(offsets):
+            sb.hide()
+            return
         margin = self._dense_offset_margin(offsets)
         total_min = float(offsets.min()) - margin
         total_max = float(offsets.max()) + margin
@@ -3769,49 +3830,52 @@ class LoupeApp(QtWidgets.QMainWindow):
         visible_span = y_range[1] - y_range[0]
 
         scale = 100.0
-        sb = self.dense_vscrollbar
         sb.blockSignals(True)
         sb.setMinimum(int(total_min * scale))
         sb.setMaximum(int((total_max - visible_span) * scale))
         sb.setPageStep(int(visible_span * scale))
         sb.setSingleStep(int(scale))
-        # When descending, scrollbar top = high Y, so invert
         if group.descending:
             sb.setValue(sb.maximum() - int(y_range[0] * scale) + sb.minimum())
         else:
             sb.setValue(int(y_range[0] * scale))
         sb.blockSignals(False)
         sb.show()
-        self._dense_vscroll_inverted = group.descending
+        self._dense_vscroll_inverted[gi] = group.descending
 
-    def _on_dense_vscrollbar_changed(self, value: int):
-        """Handle dense vertical scrollbar value change."""
-        if not self.dense_groups or not self.dense_plots:
+    def _on_dense_vscrollbar_changed(self, gi: int, value: int):
+        """Handle dense vertical scrollbar value change for group *gi*."""
+        if gi >= len(self.dense_groups) or gi >= len(self.dense_plots) or gi >= len(self.dense_vscrollbars):
             return
-        gi = 0
         plt = self.dense_plots[gi]
         vb = plt.getViewBox()
         y_range = vb.viewRange()[1]
         visible_span = y_range[1] - y_range[0]
-        sb = self.dense_vscrollbar
-        if getattr(self, "_dense_vscroll_inverted", False):
+        sb = self.dense_vscrollbars[gi]
+        if self._dense_vscroll_inverted[gi]:
             new_min = (sb.maximum() - value + sb.minimum()) / 100.0
         else:
             new_min = value / 100.0
         vb.setYRange(new_min, new_min + visible_span, padding=0)
 
-    def _sync_dense_vscrollbar_from_yrange(self):
-        """Update scrollbar position to match the dense plot's current Y-range."""
-        if not self.dense_groups or not self.dense_plots:
+    def _sync_dense_vscrollbar_from_yrange(self, gi: int | None = None):
+        """Update scrollbar position to match dense plot Y-range.  gi=None syncs all."""
+        if gi is not None:
+            self._sync_one_dense_vscrollbar(gi)
+        else:
+            for i in range(len(self.dense_vscrollbars)):
+                self._sync_one_dense_vscrollbar(i)
+
+    def _sync_one_dense_vscrollbar(self, gi: int):
+        if gi >= len(self.dense_vscrollbars) or gi >= len(self.dense_plots):
             return
-        if not self.dense_vscrollbar.isVisible():
+        sb = self.dense_vscrollbars[gi]
+        if not sb.isVisible():
             return
-        gi = 0
         plt = self.dense_plots[gi]
         y_range = plt.getViewBox().viewRange()[1]
-        sb = self.dense_vscrollbar
         sb.blockSignals(True)
-        if getattr(self, "_dense_vscroll_inverted", False):
+        if self._dense_vscroll_inverted[gi]:
             sb.setValue(sb.maximum() - int(y_range[0] * 100.0) + sb.minimum())
         else:
             sb.setValue(int(y_range[0] * 100.0))
@@ -3847,14 +3911,20 @@ class LoupeApp(QtWidgets.QMainWindow):
             y_range[1] + scroll_amount,
             padding=0,
         )
-        self._sync_dense_vscrollbar_from_yrange()
+        self._sync_dense_vscrollbar_from_yrange(gi)
         return True
 
     def _on_dense_vertical_smooth(self, direction: int):
-        """Shift+Alt+wheel: smooth vertical scroll on the first dense plot."""
+        """Shift+Alt+wheel: smooth vertical scroll on the hovered dense plot."""
         if not self.dense_groups or not self.dense_plots:
             return
+        # Find which dense plot to scroll: hovered, or default to first
         gi = 0
+        if self.hovered_plot is not None:
+            for i, plt in enumerate(self.dense_plots):
+                if plt is self.hovered_plot:
+                    gi = i
+                    break
         plt = self.dense_plots[gi]
         offsets = self._dense_offsets(gi)
         if len(offsets) < 2:
@@ -3869,7 +3939,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             y_range[1] + scroll_amount,
             padding=0,
         )
-        self._sync_dense_vscrollbar_from_yrange()
+        self._sync_dense_vscrollbar_from_yrange(gi)
 
     def _adjust_dense_gain(self, factor: float):
         """Scale gain for all dense groups (or hovered group) by *factor*."""
@@ -5351,6 +5421,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                     plt = self.dense_plots[idx]
                     plt.setVisible(True)
                     self.plot_area.addItem(plt, row=row, col=0)
+                    if idx < len(self.dense_vscroll_proxies):
+                        self.plot_area.addItem(
+                            self.dense_vscroll_proxies[idx], row=row, col=1
+                        )
 
                     if self.low_profile_x and not is_last:
                         try:
@@ -5433,6 +5507,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
             # Apply custom plot heights
             self._apply_custom_plot_heights()
+            self._constrain_scrollbar_column()
             self._update_plot_area_height()
             # Re-apply x-range to keep all linked
             self._apply_x_range()
