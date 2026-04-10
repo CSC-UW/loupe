@@ -9,7 +9,7 @@ pip install PySide6 pyqtgraph opencv-python numpy
 
 import os, sys, glob, csv, math, argparse, json
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pyqtgraph as pg
@@ -132,10 +132,26 @@ class LabelVisualBundle:
 
     plot_regions: list[tuple[int, pg.LinearRegionItem]]
     matrix_regions: list[tuple[int, pg.LinearRegionItem]]
+    dense_regions: list[tuple[int, pg.LinearRegionItem]]
     hypnogram_region: pg.LinearRegionItem | None
 
 
 MATRIX_ALPHA_LEVEL_COUNT = 11
+
+
+@dataclass
+class DenseGroup:
+    """A group of traces rendered on a single dense plot (EEG-style)."""
+
+    name: str
+    series: list[Series]
+    trace_labels: list[str]
+    order_values: np.ndarray | None = None
+    descending: bool = False
+    gain: float = 1.0
+    step: int = 1
+    traces_per_page: int | None = None
+    hidden_traces: set[int] = field(default_factory=set)
 
 
 # ---------------- Utilities ----------------
@@ -312,6 +328,42 @@ class SelectableViewBox(pg.ViewBox):
         else:
             self.sigWheelScrolled.emit(direction)
         ev.accept()
+
+
+class DenseViewBox(SelectableViewBox):
+    """ViewBox for dense plots — Alt+wheel gain, Shift+Alt+wheel vertical scroll."""
+
+    sigWheelGainAdjust = QtCore.Signal(int)
+    sigWheelVerticalSmooth = QtCore.Signal(int)
+
+    def wheelEvent(self, ev, axis=None):
+        try:
+            mods = QtWidgets.QApplication.keyboardModifiers()
+        except Exception:
+            mods = QtCore.Qt.KeyboardModifier.NoModifier
+        alt = bool(mods & QtCore.Qt.KeyboardModifier.AltModifier)
+        shift = bool(mods & QtCore.Qt.KeyboardModifier.ShiftModifier)
+        if alt:
+            dy = 0
+            if hasattr(ev, "delta"):
+                try:
+                    dy = ev.delta()
+                except Exception:
+                    dy = 0
+            else:
+                try:
+                    ad = ev.angleDelta()
+                    dy = ad.y() if hasattr(ad, "y") else 0
+                except Exception:
+                    dy = 0
+            direction = 1 if dy > 0 else -1
+            if shift:
+                self.sigWheelVerticalSmooth.emit(direction)
+            else:
+                self.sigWheelGainAdjust.emit(direction)
+            ev.accept()
+        else:
+            super().wheelEvent(ev, axis)
 
 
 # *** FIX 2: Create a PlotItem that signals when the mouse enters/leaves it ***
@@ -757,6 +809,116 @@ class YAxisControlsDialog(QtWidgets.QDialog):
             max_spin.setEnabled(True)
 
 
+class DenseViewControlsDialog(QtWidgets.QDialog):
+    """Non-modal dialog for adjusting dense view gain, spacing, and step."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Dense View Controls")
+        self.setModal(False)
+        self.main_window = parent
+
+        main_layout = QtWidgets.QVBoxLayout(self)
+        self._group_widgets: list[dict] = []
+
+        for gi, group in enumerate(self.main_window.dense_groups):
+            grp_box = QtWidgets.QGroupBox(group.name)
+            grp_layout = QtWidgets.QFormLayout(grp_box)
+
+            # Gain slider + spinbox
+            gain_layout = QtWidgets.QHBoxLayout()
+            gain_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            gain_slider.setRange(-200, 200)  # log10(gain) * 100
+            gain_slider.setValue(int(math.log10(max(1e-6, group.gain)) * 100))
+            gain_spin = QtWidgets.QDoubleSpinBox()
+            gain_spin.setRange(0.01, 100.0)
+            gain_spin.setDecimals(2)
+            gain_spin.setValue(group.gain)
+            gain_spin.setSingleStep(0.1)
+            gain_layout.addWidget(gain_slider, 3)
+            gain_layout.addWidget(gain_spin, 1)
+            grp_layout.addRow("Gain:", gain_layout)
+
+            # Step spinbox
+            step_spin = QtWidgets.QSpinBox()
+            step_spin.setRange(1, max(1, len(group.series)))
+            step_spin.setValue(group.step)
+            grp_layout.addRow("Step (nth trace):", step_spin)
+
+            # Traces per page spinbox (0 = all)
+            tpp_spin = QtWidgets.QSpinBox()
+            tpp_spin.setRange(0, max(1, len(group.series)))
+            tpp_spin.setSpecialValueText("All")
+            tpp_spin.setValue(group.traces_per_page or 0)
+            grp_layout.addRow("Traces per page:", tpp_spin)
+
+            main_layout.addWidget(grp_box)
+
+            widgets = {
+                "gain_slider": gain_slider,
+                "gain_spin": gain_spin,
+                "step_spin": step_spin,
+                "tpp_spin": tpp_spin,
+            }
+            self._group_widgets.append(widgets)
+
+            # Connect signals
+            gain_slider.valueChanged.connect(
+                lambda val, g=gi, sp=gain_spin: self._on_gain_slider(g, val, sp)
+            )
+            gain_spin.valueChanged.connect(
+                lambda val, g=gi, sl=gain_slider: self._on_gain_spin(g, val, sl)
+            )
+            step_spin.valueChanged.connect(
+                lambda val, g=gi: self._on_step_changed(g, val)
+            )
+
+            tpp_spin.valueChanged.connect(
+                lambda val, g=gi: self._on_tpp_changed(g, val)
+            )
+
+    def _on_gain_slider(self, gi: int, slider_val: int, spin: QtWidgets.QDoubleSpinBox):
+        gain = 10 ** (slider_val / 100.0)
+        spin.blockSignals(True)
+        spin.setValue(gain)
+        spin.blockSignals(False)
+        self.main_window.dense_groups[gi].gain = gain
+        self.main_window._refresh_dense_curves()
+
+    def _on_gain_spin(self, gi: int, val: float, slider: QtWidgets.QSlider):
+        val = max(0.01, val)
+        slider.blockSignals(True)
+        slider.setValue(int(math.log10(val) * 100))
+        slider.blockSignals(False)
+        self.main_window.dense_groups[gi].gain = val
+        self.main_window._refresh_dense_curves()
+
+    def _on_step_changed(self, gi: int, val: int):
+        self.main_window.dense_groups[gi].step = val
+        self.main_window._rebuild_dense_curves(gi)
+        self.main_window._refresh_dense_curves()
+
+    def _on_tpp_changed(self, gi: int, val: int):
+        group = self.main_window.dense_groups[gi]
+        group.traces_per_page = val if val > 0 else None
+        # Reset Y-range to show the requested page size
+        offsets = self.main_window._dense_offsets(gi)
+        if len(offsets) > 0:
+            plt = self.main_window.dense_plots[gi]
+            margin = self.main_window._dense_offset_margin(offsets)
+            tpp = group.traces_per_page
+            if tpp is not None and tpp < len(offsets):
+                page_max = float(offsets[min(tpp, len(offsets)) - 1])
+                plt.setYRange(float(offsets[0]) - margin, page_max + margin, padding=0)
+            else:
+                plt.setYRange(
+                    float(offsets.min()) - margin,
+                    float(offsets.max()) + margin,
+                    padding=0,
+                )
+
+
+
 # ---------------- Main window ----------------
 
 
@@ -774,6 +936,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         frame_times3_path=None,
         fixed_scale=True,
         low_profile_x: bool | None = None,
+        window_len: float = 10.0,
         # Matrix viewer arguments
         matrix_timestamps=None,
         matrix_yvals=None,
@@ -786,6 +949,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Overlay mode
         overlay_groups=None,
         overlay_colors=None,
+        # Dense mode
+        dense_groups=None,
     ):
         super().__init__()
         self.setWindowTitle("Loupe — Multi-Trace + Video + Labeling")
@@ -811,6 +976,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.overlay_colors: list[tuple] = []
         self._plot_to_curves: list[list[pg.PlotDataItem]] = []
         self._plot_to_series: list[list[int]] = []
+
+        # Dense mode (EEG-style stacked traces on a single axis)
+        self.dense_groups: list[DenseGroup] = []
+        self.dense_plots: list[pg.PlotItem] = []
+        self.dense_curves: list[list[pg.PlotCurveItem]] = []
+        self.dense_cur_lines: list[pg.InfiniteLine] = []
+        self.dense_sel_regions: list[pg.LinearRegionItem] = []
+        self.dense_label_regions: list[list[pg.LinearRegionItem]] = []
+        self.dense_height_factors: list[float] = []
+        self.dense_visible: list[bool] = []
+        self._dense_means: list[list[float]] = []
 
         # Matrix viewer data and plots
         self.matrix_series: list[MatrixSeries] = []
@@ -845,9 +1021,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.max_pts_per_plot = 4000
 
         # Window/cursor & labels
-        self.window_len = 10.0
+        self.window_len = float(window_len)
         self.window_start = 0.0
         self.cursor_time = 0.0
+        # Vertical paging for stacked-subplots view
+        self.trace_height_px = 120  # pixels per stacked subplot
 
         # Load state definitions from external config file
         self.keymap, self.label_colors = load_state_definitions()
@@ -945,11 +1123,22 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._video_thread.start()
         self._video2_thread.start()
         self._video3_thread.start()
+        # Store dense groups early (before set_series triggers plot creation)
+        if dense_groups:
+            self.dense_groups = dense_groups
+            self.dense_height_factors = [1.0] * len(dense_groups)
+            self.dense_visible = [True] * len(dense_groups)
+            # Cache per-trace means for display transform
+            self._dense_means = [
+                [float(np.nanmean(s.y)) for s in g.series]
+                for g in dense_groups
+            ]
+
         # Prefer overlay groups, then xarray series, then explicit file list, then dir
         if overlay_groups:
             self.set_overlay_series(overlay_groups, colors=overlay_colors)
-        elif xr_series:
-            self.set_series(xr_series, colors=colors)
+        elif xr_series or dense_groups:
+            self.set_series(xr_series or [], colors=colors)
         elif data_files:
             # Allow flexible formats: list[str], comma-separated strings, or "[a,b]".
             def _normalize_file_list(df):
@@ -1026,7 +1215,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _refresh_low_profile_x(self) -> None:
         """Update low-profile X mode from explicit preference or subplot count."""
-        total_subplots = len(self.series) + len(self.matrix_series)
+        total_subplots = len(self.series) + len(self.matrix_series) + len(self.dense_groups)
         self.low_profile_x = resolve_low_profile_x(
             self._low_profile_x_preference, total_subplots
         )
@@ -1069,12 +1258,35 @@ class LoupeApp(QtWidgets.QMainWindow):
         v.addWidget(splitter, 1)
         self.splitter = splitter
 
-        # left plots
+        # left plots (wrapped in scroll area for vertical paging)
         left = QtWidgets.QWidget()
         leftl = QtWidgets.QVBoxLayout(left)
         leftl.setContentsMargins(0, 0, 0, 0)
         self.plot_area = pg.GraphicsLayoutWidget()
-        leftl.addWidget(self.plot_area, 1)
+        self.plot_scroll_area = QtWidgets.QScrollArea()
+        self.plot_scroll_area.setWidgetResizable(True)
+        self.plot_scroll_area.setWidget(self.plot_area)
+        self.plot_scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        # Prevent scroll area from stealing PageUp/PageDown key events
+        self.plot_scroll_area.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.plot_scroll_area.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.plot_scroll_area.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        # Horizontal layout: scroll area + optional dense vertical scrollbar
+        plot_hbox = QtWidgets.QHBoxLayout()
+        plot_hbox.setContentsMargins(0, 0, 0, 0)
+        plot_hbox.setSpacing(0)
+        plot_hbox.addWidget(self.plot_scroll_area, 1)
+
+        self.dense_vscrollbar = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical)
+        self.dense_vscrollbar.hide()
+        self.dense_vscrollbar.valueChanged.connect(self._on_dense_vscrollbar_changed)
+        plot_hbox.addWidget(self.dense_vscrollbar)
+
+        leftl.addLayout(plot_hbox, 1)
         splitter.addWidget(left)
 
         # right side
@@ -1210,6 +1422,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         y_axis_action.setShortcut(QtGui.QKeySequence("Ctrl+D"))
         y_axis_action.triggered.connect(self._show_y_axis_dialog)
         mview.addAction(y_axis_action)
+
+        dense_ctrl_action = QtGui.QAction("Dense View Controls...", self)
+        dense_ctrl_action.setShortcut(QtGui.QKeySequence("Ctrl+G"))
+        dense_ctrl_action.triggered.connect(self._show_dense_controls_dialog)
+        mview.addAction(dense_ctrl_action)
 
         scroll_speed_action = QtGui.QAction("Adjust Smooth Scroll Speed...", self)
         scroll_speed_action.triggered.connect(self._adjust_scroll_speed)
@@ -1690,7 +1907,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if self.overlay_mode
             else len(self.series)
         )
-        total_subplots = n_ts_plots + len(self.matrix_series)
+        total_subplots = n_ts_plots + len(self.dense_groups) + len(self.matrix_series)
         if total_subplots == 0:
             QtWidgets.QMessageBox.information(
                 self, "Subplot Control", "No subplots loaded."
@@ -1702,16 +1919,22 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.plot_height_factors.append(1.0)
         while len(self.matrix_height_factors) < len(self.matrix_series):
             self.matrix_height_factors.append(1.0)
+        while len(self.dense_height_factors) < len(self.dense_groups):
+            self.dense_height_factors.append(1.0)
         if not hasattr(self, "trace_visible") or len(self.trace_visible) != n_ts_plots:
             self.trace_visible = [True] * n_ts_plots
         while len(self.matrix_visible) < len(self.matrix_series):
             self.matrix_visible.append(True)
+        while len(self.dense_visible) < len(self.dense_groups):
+            self.dense_visible.append(True)
 
         # Initialize subplot order if not set
         if self.subplot_order is None:
             self.subplot_order = []
             for i in range(n_ts_plots):
                 self.subplot_order.append(("ts", i))
+            for i in range(len(self.dense_groups)):
+                self.subplot_order.append(("dense", i))
             for i in range(len(self.matrix_series)):
                 self.subplot_order.append(("matrix", i))
 
@@ -1752,6 +1975,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                 factor = self.plot_height_factors[idx]
                 visible = self.trace_visible[idx]
                 display_name = f"[TS] {name}"
+            elif plot_type == "dense":
+                group = self.dense_groups[idx]
+                name = group.name
+                factor = self.dense_height_factors[idx]
+                visible = self.dense_visible[idx]
+                n = len(group.series)
+                display_name = f"[Dense/{n}] {name}"
             else:
                 name = self.matrix_series[idx].name
                 factor = self.matrix_height_factors[idx]
@@ -1796,6 +2026,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 new_factor = val / 100.0
                 if plot_type == "ts":
                     self.plot_height_factors[idx] = new_factor
+                elif plot_type == "dense":
+                    self.dense_height_factors[idx] = new_factor
                 else:
                     self.matrix_height_factors[idx] = new_factor
                 val_label.setText(f"{new_factor:.2f}x")
@@ -1808,6 +2040,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 is_visible = state != QtCore.Qt.CheckState.Checked.value
                 if plot_type == "ts":
                     self.trace_visible[idx] = is_visible
+                elif plot_type == "dense":
+                    self.dense_visible[idx] = is_visible
                 else:
                     self.matrix_visible[idx] = is_visible
                 self._apply_trace_visibility()
@@ -1826,15 +2060,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Populate the list widget based on current order
         for plot_type, idx in self.subplot_order:
             # Validate the entry
+            valid = False
             if plot_type == "ts" and idx < len(self.series):
-                row_data = create_row_widget(plot_type, idx)
-                row_widgets.append(row_data)
-                item = QtWidgets.QListWidgetItem()
-                item.setSizeHint(row_data["widget"].sizeHint())
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, (plot_type, idx))
-                list_widget.addItem(item)
-                list_widget.setItemWidget(item, row_data["widget"])
+                valid = True
+            elif plot_type == "dense" and idx < len(self.dense_groups):
+                valid = True
             elif plot_type == "matrix" and idx < len(self.matrix_series):
+                valid = True
+            if valid:
                 row_data = create_row_widget(plot_type, idx)
                 row_widgets.append(row_data)
                 item = QtWidgets.QListWidgetItem()
@@ -1869,6 +2102,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 rw["val_label"].setText("1.00x")
                 if rw["type"] == "ts":
                     self.plot_height_factors[rw["idx"]] = 1.0
+                elif rw["type"] == "dense":
+                    self.dense_height_factors[rw["idx"]] = 1.0
                 else:
                     self.matrix_height_factors[rw["idx"]] = 1.0
                 rw["slider"].blockSignals(False)
@@ -1885,6 +2120,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 rw["hide_check"].setChecked(False)
                 if rw["type"] == "ts":
                     self.trace_visible[rw["idx"]] = True
+                elif rw["type"] == "dense":
+                    self.dense_visible[rw["idx"]] = True
                 else:
                     self.matrix_visible[rw["idx"]] = True
                 rw["hide_check"].blockSignals(False)
@@ -1905,6 +2142,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.subplot_order = []
             for i in range(n_ts_reset):
                 self.subplot_order.append(("ts", i))
+            for i in range(len(self.dense_groups)):
+                self.subplot_order.append(("dense", i))
             for i in range(len(self.matrix_series)):
                 self.subplot_order.append(("matrix", i))
             # Close and reopen dialog to refresh
@@ -1951,6 +2190,22 @@ class LoupeApp(QtWidgets.QMainWindow):
                     )  # Scale stretch more aggressively
 
                     # Hide axis labels for very small plots (below 0.2x)
+                    if plt:
+                        self._configure_plot_for_height(plt, factor, is_matrix=False)
+
+                elif plot_type == "dense":
+                    factor = (
+                        self.dense_height_factors[idx]
+                        if idx < len(self.dense_height_factors)
+                        else 1.0
+                    )
+                    plt = (
+                        self.dense_plots[idx] if idx < len(self.dense_plots) else None
+                    )
+                    # Dense plots get more height by default
+                    preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor * 3))
+                    stretch = max(1, int(factor * 300))
+
                     if plt:
                         self._configure_plot_for_height(plt, factor, is_matrix=False)
 
@@ -2023,11 +2278,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         while len(self.matrix_visible) < len(self.matrix_series):
             self.matrix_visible.append(True)
 
+        while len(self.dense_visible) < len(self.dense_groups):
+            self.dense_visible.append(True)
+
         # Use subplot_order if set, otherwise default order
         if self.subplot_order:
             order = self.subplot_order
         else:
             order = [("ts", i) for i in range(n_ts)]
+            order += [("dense", i) for i in range(len(self.dense_groups))]
             order += [("matrix", i) for i in range(len(self.matrix_series))]
 
         # Filter to only visible plots
@@ -2035,6 +2294,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         for plot_type, idx in order:
             if plot_type == "ts":
                 if idx < len(self.trace_visible) and self.trace_visible[idx]:
+                    visible.append((plot_type, idx))
+            elif plot_type == "dense":
+                if idx < len(self.dense_visible) and self.dense_visible[idx]:
                     visible.append((plot_type, idx))
             else:  # matrix
                 if idx < len(self.matrix_visible) and self.matrix_visible[idx]:
@@ -2268,6 +2530,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
+        self.dense_plots.clear()
+        self.dense_curves.clear()
+        self.dense_cur_lines.clear()
+        self.dense_sel_regions.clear()
+        self.dense_label_regions.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
@@ -2281,8 +2548,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Reset subplot order when loading new data
         self.subplot_order = None
 
-        # Calculate time range from both time series and matrix data
+        # Calculate time range from time series, dense groups, and matrix data
         t_arrays = [s.t for s in self.series]
+        for g in self.dense_groups:
+            for s in g.series:
+                t_arrays.append(s.t)
         for ms in self.matrix_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
@@ -2295,7 +2565,13 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._apply_x_range()
         self._update_nav_slider_from_window()
-        self._update_status(f"Loaded {len(self.series)} series.")
+        n_dense = sum(len(g.series) for g in self.dense_groups)
+        parts = []
+        if self.series:
+            parts.append(f"{len(self.series)} series")
+        if n_dense:
+            parts.append(f"{n_dense} dense traces in {len(self.dense_groups)} group(s)")
+        self._update_status(f"Loaded {', '.join(parts) or '0 series'}.")
         self._update_hypnogram_extents()
         # Align left axes after layout settles
         QtCore.QTimer.singleShot(0, self._align_left_axes)
@@ -2792,6 +3068,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
+        self.dense_plots.clear()
+        self.dense_curves.clear()
+        self.dense_cur_lines.clear()
+        self.dense_sel_regions.clear()
+        self.dense_label_regions.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
@@ -2801,6 +3082,9 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Recalculate time range
         t_arrays = [s.t for s in self.series]
+        for g in self.dense_groups:
+            for s in g.series:
+                t_arrays.append(s.t)
         for ms in self.matrix_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
@@ -2830,7 +3114,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
         master_plot = None
         row_idx = 0
-        total_plots = len(self.series) + len(self.matrix_series)
+        total_plots = len(self.series) + len(self.dense_groups) + len(self.matrix_series)
 
         # Create time series plots first
         for idx, s in enumerate(self.series):
@@ -2923,6 +3207,25 @@ class LoupeApp(QtWidgets.QMainWindow):
 
             row_idx += 1
 
+        # Create dense plots
+        for gi in range(len(self.dense_groups)):
+            plt = self._create_dense_plot(gi, master_plot=master_plot)
+            self.plot_area.addItem(plt, row=row_idx, col=0)
+            is_last = row_idx == total_plots - 1
+            plt.setLabel("bottom", "Time", units="s" if is_last else None)
+            if self.low_profile_x and not is_last:
+                try:
+                    plt.setLabel("bottom", "")
+                    bax = plt.getAxis("bottom")
+                    bax.setStyle(showValues=True, tickLength=0)
+                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                    bax.setHeight(12)
+                except Exception:
+                    pass
+            if master_plot is None:
+                master_plot = plt
+            row_idx += 1
+
         # Create matrix plots
         for idx, ms in enumerate(self.matrix_series):
             vb = SelectableViewBox()
@@ -3001,6 +3304,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Apply custom plot heights (includes matrix row heights logic)
         self._apply_custom_plot_heights()
+        self._setup_dense_vscrollbar()
 
     def _create_overlay_plots(self):
         """Create plots for overlay mode: multiple curves per subplot."""
@@ -3245,6 +3549,336 @@ class LoupeApp(QtWidgets.QMainWindow):
             als = als[::step]
 
         return ts, ys, als
+
+    # ------------------------------------------------------------------ dense
+    def _dense_visible_indices(self, group_idx: int) -> list[int]:
+        """Return indices into group.series for visible traces."""
+        group = self.dense_groups[group_idx]
+        return [
+            i
+            for i in range(0, len(group.series), group.step)
+            if i not in group.hidden_traces
+        ]
+
+    def _dense_offsets(self, group_idx: int) -> np.ndarray:
+        """Compute Y-offsets for visible traces in a dense group."""
+        group = self.dense_groups[group_idx]
+        visible = self._dense_visible_indices(group_idx)
+        if group.order_values is not None and len(group.order_values) == len(group.series):
+            offsets = group.order_values[visible].astype(float)
+        else:
+            offsets = np.arange(len(visible), dtype=float)
+        return offsets
+
+    def _dense_offset_margin(self, offsets: np.ndarray) -> float:
+        """Compute a reasonable margin for dense plot Y-range."""
+        if len(offsets) < 2:
+            return 1.0
+        gaps = np.diff(offsets)
+        return float(np.median(gaps)) * 0.5 if len(gaps) > 0 else 1.0
+
+    def _create_dense_plot(self, group_idx: int, master_plot=None):
+        """Create a single dense (EEG-style) PlotItem for a DenseGroup."""
+        group = self.dense_groups[group_idx]
+        visible = self._dense_visible_indices(group_idx)
+        offsets = self._dense_offsets(group_idx)
+        visible_labels = [group.trace_labels[i] for i in visible]
+
+        vb = DenseViewBox()
+        vb.sigWheelScrolled.connect(self._page)
+        vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+        vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+        vb.sigWheelGainAdjust.connect(
+            lambda d: self._adjust_dense_gain(1.2 if d > 0 else 1 / 1.2)
+        )
+        vb.sigWheelVerticalSmooth.connect(self._on_dense_vertical_smooth)
+
+        plt = HoverablePlotItem(viewBox=vb)
+        plt.sigHovered.connect(self._on_plot_hovered)
+
+        plt.setLabel("left", group.name)
+        plt.showGrid(x=True, y=False, alpha=0.15)
+        plt.enableAutoRange("x", False)
+        plt.enableAutoRange("y", False)
+
+        # Y-axis ticks: trace labels at offset positions
+        left_axis = plt.getAxis("left")
+        tick_list = [(float(o), lbl) for o, lbl in zip(offsets, visible_labels)]
+        left_axis.setTicks([tick_list])
+        try:
+            lf = QtGui.QFont()
+            lf.setPointSize(8)
+            left_axis.setStyle(tickFont=lf)
+        except Exception:
+            pass
+
+        # Create curves
+        pen = pg.mkPen((200, 200, 200), width=1)
+        curves: list[pg.PlotCurveItem] = []
+        for _ in visible:
+            curve = pg.PlotCurveItem(pen=pen, antialias=False)
+            curve.setZValue(5)
+            plt.addItem(curve)
+            curves.append(curve)
+
+        # Cursor line
+        cur_line = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
+        )
+        plt.addItem(cur_line)
+
+        # Selection region for labeling
+        sel_region = pg.LinearRegionItem(
+            values=(0, 0), brush=pg.mkBrush(100, 200, 255, 40), movable=True
+        )
+        sel_region.setZValue(-10)
+        sel_region.hide()
+        plt.addItem(sel_region)
+        sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
+
+        # Set Y-range: show traces_per_page traces, or all if not set
+        if len(offsets) > 0:
+            margin = self._dense_offset_margin(offsets)
+            tpp = group.traces_per_page
+            if tpp is not None and tpp < len(offsets):
+                # Show the first tpp traces (lowest offsets)
+                page_max = float(offsets[min(tpp, len(offsets)) - 1])
+                plt.setYRange(
+                    float(offsets[0]) - margin,
+                    page_max + margin,
+                    padding=0,
+                )
+            else:
+                plt.setYRange(
+                    float(offsets.min()) - margin,
+                    float(offsets.max()) + margin,
+                    padding=0,
+                )
+
+        # X-link
+        if master_plot is not None:
+            plt.setXLink(master_plot)
+
+        # Connect drag signals for labeling
+        vb.sigDragStart.connect(self._on_drag_start)
+        vb.sigDragUpdate.connect(self._on_drag_update)
+        vb.sigDragFinish.connect(self._on_drag_finish)
+
+        self.dense_plots.append(plt)
+        self.dense_curves.append(curves)
+        self.dense_cur_lines.append(cur_line)
+        self.dense_sel_regions.append(sel_region)
+        self.dense_label_regions.append([])
+
+        return plt
+
+    def _rebuild_dense_curves(self, group_idx: int):
+        """Rebuild curve items for a dense group (after step/visibility change)."""
+        group = self.dense_groups[group_idx]
+        plt = self.dense_plots[group_idx]
+
+        # Remove old curves
+        for curve in self.dense_curves[group_idx]:
+            plt.removeItem(curve)
+
+        visible = self._dense_visible_indices(group_idx)
+        offsets = self._dense_offsets(group_idx)
+        visible_labels = [group.trace_labels[i] for i in visible]
+
+        pen = pg.mkPen((200, 200, 200), width=1)
+        curves: list[pg.PlotCurveItem] = []
+        for _ in visible:
+            curve = pg.PlotCurveItem(pen=pen, antialias=False)
+            curve.setZValue(5)
+            plt.addItem(curve)
+            curves.append(curve)
+        self.dense_curves[group_idx] = curves
+
+        # Update Y-axis ticks
+        left_axis = plt.getAxis("left")
+        tick_list = [(float(o), lbl) for o, lbl in zip(offsets, visible_labels)]
+        left_axis.setTicks([tick_list])
+
+        # Keep the same number of traces visible as before the rebuild
+        if len(offsets) > 0:
+            old_yrange = plt.getViewBox().viewRange()[1]
+            old_span = old_yrange[1] - old_yrange[0]
+            old_center = (old_yrange[0] + old_yrange[1]) / 2.0
+            # Clamp center to valid offset range
+            center = max(float(offsets.min()), min(float(offsets.max()), old_center))
+            half = old_span / 2.0
+            plt.setYRange(center - half, center + half, padding=0)
+
+    def _refresh_dense_curves(self):
+        """Update dense plot curves for the current window."""
+        if not self.dense_groups:
+            return
+        t0, t1 = self.window_start, self.window_start + self.window_len
+        max_pts = self._target_pts()
+        for gi, group in enumerate(self.dense_groups):
+            visible = self._dense_visible_indices(gi)
+            offsets = self._dense_offsets(gi)
+            curves = self.dense_curves[gi]
+            means = self._dense_means[gi]
+            for li, (si, offset) in enumerate(zip(visible, offsets)):
+                s = group.series[si]
+                tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
+                yx_display = (yx - means[si]) * group.gain + offset
+                curves[li].setData(tx, yx_display, _callSync="off")
+
+    def _vertical_page(self, direction: int):
+        """Scroll the plot scroll area up/down by one page."""
+        if not hasattr(self, "plot_scroll_area"):
+            return
+        sb = self.plot_scroll_area.verticalScrollBar()
+        page = self.plot_scroll_area.viewport().height()
+        sb.setValue(sb.value() + direction * page)
+
+    def _update_plot_area_height(self):
+        """Set plot_area minimum height so the scroll area shows a scrollbar when needed."""
+        visible = self._get_visible_subplot_order()
+        n = len(visible)
+        if n == 0:
+            return
+        # Desired height = n * trace_height_px, but at least the scroll area height
+        scroll_h = self.plot_scroll_area.viewport().height() if hasattr(self, "plot_scroll_area") else 600
+        desired = n * self.trace_height_px
+        if desired > scroll_h:
+            self.plot_area.setMinimumHeight(desired)
+        else:
+            self.plot_area.setMinimumHeight(0)
+
+    # ---- Dense vertical scrollbar ------------------------------------------
+    def _setup_dense_vscrollbar(self):
+        """Configure the dense vertical scrollbar based on the first dense group."""
+        if not self.dense_groups or not self.dense_plots:
+            self.dense_vscrollbar.hide()
+            return
+        gi = 0
+        offsets = self._dense_offsets(gi)
+        if len(offsets) < 2:
+            self.dense_vscrollbar.hide()
+            return
+        group = self.dense_groups[gi]
+        margin = self._dense_offset_margin(offsets)
+        total_min = float(offsets.min()) - margin
+        total_max = float(offsets.max()) + margin
+
+        plt = self.dense_plots[gi]
+        y_range = plt.getViewBox().viewRange()[1]
+        visible_span = y_range[1] - y_range[0]
+
+        scale = 100.0
+        sb = self.dense_vscrollbar
+        sb.blockSignals(True)
+        sb.setMinimum(int(total_min * scale))
+        sb.setMaximum(int((total_max - visible_span) * scale))
+        sb.setPageStep(int(visible_span * scale))
+        sb.setSingleStep(int(scale))
+        # When descending, scrollbar top = high Y, so invert
+        if group.descending:
+            sb.setValue(sb.maximum() - int(y_range[0] * scale) + sb.minimum())
+        else:
+            sb.setValue(int(y_range[0] * scale))
+        sb.blockSignals(False)
+        sb.show()
+        self._dense_vscroll_inverted = group.descending
+
+    def _on_dense_vscrollbar_changed(self, value: int):
+        """Handle dense vertical scrollbar value change."""
+        if not self.dense_groups or not self.dense_plots:
+            return
+        gi = 0
+        plt = self.dense_plots[gi]
+        vb = plt.getViewBox()
+        y_range = vb.viewRange()[1]
+        visible_span = y_range[1] - y_range[0]
+        sb = self.dense_vscrollbar
+        if getattr(self, "_dense_vscroll_inverted", False):
+            new_min = (sb.maximum() - value + sb.minimum()) / 100.0
+        else:
+            new_min = value / 100.0
+        vb.setYRange(new_min, new_min + visible_span, padding=0)
+
+    def _sync_dense_vscrollbar_from_yrange(self):
+        """Update scrollbar position to match the dense plot's current Y-range."""
+        if not self.dense_groups or not self.dense_plots:
+            return
+        if not self.dense_vscrollbar.isVisible():
+            return
+        gi = 0
+        plt = self.dense_plots[gi]
+        y_range = plt.getViewBox().viewRange()[1]
+        sb = self.dense_vscrollbar
+        sb.blockSignals(True)
+        if getattr(self, "_dense_vscroll_inverted", False):
+            sb.setValue(sb.maximum() - int(y_range[0] * 100.0) + sb.minimum())
+        else:
+            sb.setValue(int(y_range[0] * 100.0))
+        sb.blockSignals(False)
+
+    def _dense_vertical_page(self, direction: int):
+        """Page a dense plot vertically. Uses hovered plot, or first dense group."""
+        if not self.dense_groups or not self.dense_plots:
+            return False
+        # Find which dense plot to page: hovered, or default to first
+        gi = 0
+        if self.hovered_plot is not None:
+            found = False
+            for i, plt in enumerate(self.dense_plots):
+                if plt is self.hovered_plot:
+                    gi = i
+                    found = True
+                    break
+            if not found and self.hovered_plot in self.plots:
+                # Hovered plot is a stacked subplot — let caller handle it
+                return False
+
+        plt = self.dense_plots[gi]
+        offsets = self._dense_offsets(gi)
+        if len(offsets) < 2:
+            return True
+        vb = plt.getViewBox()
+        y_range = vb.viewRange()[1]
+        visible_span = y_range[1] - y_range[0]
+        scroll_amount = visible_span * direction
+        vb.setYRange(
+            y_range[0] + scroll_amount,
+            y_range[1] + scroll_amount,
+            padding=0,
+        )
+        self._sync_dense_vscrollbar_from_yrange()
+        return True
+
+    def _on_dense_vertical_smooth(self, direction: int):
+        """Shift+Alt+wheel: smooth vertical scroll on the first dense plot."""
+        if not self.dense_groups or not self.dense_plots:
+            return
+        gi = 0
+        plt = self.dense_plots[gi]
+        offsets = self._dense_offsets(gi)
+        if len(offsets) < 2:
+            return
+        vb = plt.getViewBox()
+        y_range = vb.viewRange()[1]
+        # Scroll by ~3 traces per notch
+        gap = float(np.median(np.diff(offsets)))
+        scroll_amount = gap * 3 * direction
+        vb.setYRange(
+            y_range[0] + scroll_amount,
+            y_range[1] + scroll_amount,
+            padding=0,
+        )
+        self._sync_dense_vscrollbar_from_yrange()
+
+    def _adjust_dense_gain(self, factor: float):
+        """Scale gain for all dense groups (or hovered group) by *factor*."""
+        if not self.dense_groups:
+            return
+        for group in self.dense_groups:
+            group.gain = max(0.001, group.gain * factor)
+        self._refresh_dense_curves()
+        self._update_status(f"Dense gain: {self.dense_groups[0].gain:.2f}x")
 
     def _refresh_matrix_plots(self):
         """Update matrix raster plots for current window."""
@@ -3571,6 +4205,19 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.y_axis_dialog.raise_()
         self.y_axis_dialog.activateWindow()
 
+    def _show_dense_controls_dialog(self):
+        if not self.dense_groups:
+            QtWidgets.QMessageBox.information(
+                self, "Dense View Controls", "No dense trace groups loaded."
+            )
+            return
+        if hasattr(self, "_dense_ctrl_dialog") and self._dense_ctrl_dialog is not None:
+            self._dense_ctrl_dialog.deleteLater()
+        self._dense_ctrl_dialog = DenseViewControlsDialog(self)
+        self._dense_ctrl_dialog.show()
+        self._dense_ctrl_dialog.raise_()
+        self._dense_ctrl_dialog.activateWindow()
+
     def _on_plot_hovered(self, plot, is_hovered):
         if is_hovered:
             self.hovered_plot = plot
@@ -3633,12 +4280,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         if self._select_start is None or self._select_end is None:
             for r in self.plot_sel_regions:
                 r.hide()
+            for r in self.dense_sel_regions:
+                r.hide()
             for r in self.matrix_sel_regions:
                 r.hide()
             return
         a = min(self._select_start, self._select_end)
         b = max(self._select_start, self._select_end)
         for r in self.plot_sel_regions:
+            r.setRegion((a, b))
+            r.show()
+        for r in self.dense_sel_regions:
             r.setRegion((a, b))
             r.show()
         for r in self.matrix_sel_regions:
@@ -3649,6 +4301,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._select_start = None
         self._select_end = None
         for r in self.plot_sel_regions:
+            r.hide()
+        for r in self.dense_sel_regions:
             r.hide()
         for r in self.matrix_sel_regions:
             r.hide()
@@ -3714,6 +4368,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         color = self.label_colors.get(name, (150, 150, 150, 80))
         plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
         matrix_regions: list[tuple[int, pg.LinearRegionItem]] = []
+        dense_regions: list[tuple[int, pg.LinearRegionItem]] = []
 
         for i, plt in enumerate(self.plots):
             if not self._is_trace_plot_visible(i):
@@ -3725,6 +4380,14 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(reg)
             plot_regions.append((i, reg))
 
+        for i, plt in enumerate(self.dense_plots):
+            reg = pg.LinearRegionItem(
+                values=(a, b), brush=pg.mkBrush(*color), movable=False
+            )
+            reg.setZValue(-20)
+            plt.addItem(reg)
+            dense_regions.append((i, reg))
+
         for i, plt in enumerate(self.matrix_plots):
             if not self._is_matrix_plot_visible(i):
                 continue
@@ -3735,12 +4398,13 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(reg)
             matrix_regions.append((i, reg))
 
-        if not plot_regions and not matrix_regions:
+        if not plot_regions and not matrix_regions and not dense_regions:
             return
 
         self._label_visuals[key] = LabelVisualBundle(
             plot_regions=plot_regions,
             matrix_regions=matrix_regions,
+            dense_regions=dense_regions,
             hypnogram_region=None,
         )
 
@@ -3750,6 +4414,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         for _i, item in bundle.plot_regions:
+            self._remove_graphics_item(item)
+
+        for _i, item in bundle.dense_regions:
             self._remove_graphics_item(item)
 
         for _i, item in bundle.matrix_regions:
@@ -4041,6 +4708,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._toggle_playback()
             return
 
+        # ]/[ = horizontal time page
         if key in (QtCore.Qt.Key.Key_BracketRight, QtCore.Qt.Key.Key_PageDown):
             self._page(+1)
             return
@@ -4377,6 +5045,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.enableAutoRange("x", False)
             plt.setXRange(*xr, padding=0.0)
 
+        # Also apply to dense plots
+        for plt in self.dense_plots:
+            plt.enableAutoRange("x", False)
+            plt.setXRange(*xr, padding=0.0)
+
         # Also apply to matrix plots
         for plt in self.matrix_plots:
             plt.enableAutoRange("x", False)
@@ -4412,6 +5085,8 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _update_cursor_lines(self):
         for ln in self.plot_cur_lines:
+            ln.setPos(self.cursor_time)
+        for ln in self.dense_cur_lines:
             ln.setPos(self.cursor_time)
         for ln in self.matrix_cur_lines:
             ln.setPos(self.cursor_time)
@@ -4465,7 +5140,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.window_cursor_slider.blockSignals(False)
 
     def _target_pts(self):
-        if not self.plots:
+        all_plots = self.plots or self.dense_plots
+        if not all_plots:
             return self.max_pts_per_plot
         target_plot = None
         for idx, plt in enumerate(self.plots):
@@ -4473,7 +5149,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 target_plot = plt
                 break
         if target_plot is None:
-            target_plot = self.plots[0]
+            target_plot = all_plots[0]
         vb = target_plot.getViewBox()
         px = max(300, int(vb.width()))
         return int(min(2 * px, self.max_pts_per_plot))
@@ -4497,7 +5173,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
                 curve.setData(tx, yx, _callSync="off")
 
-        # Also refresh matrix plots
+        # Also refresh dense and matrix plots
+        self._refresh_dense_curves()
         self._refresh_matrix_plots()
 
     def resizeEvent(self, ev):
@@ -4508,7 +5185,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _align_left_axes(self):
         try:
-            all_plots = list(self.plots) + list(self.matrix_plots)
+            all_plots = list(self.plots) + list(self.dense_plots) + list(self.matrix_plots)
             if not all_plots:
                 return
             widths = []
@@ -4668,6 +5345,34 @@ class LoupeApp(QtWidgets.QMainWindow):
                         except Exception:
                             pass
 
+                elif plot_type == "dense":
+                    if idx >= len(self.dense_plots):
+                        continue
+                    plt = self.dense_plots[idx]
+                    plt.setVisible(True)
+                    self.plot_area.addItem(plt, row=row, col=0)
+
+                    if self.low_profile_x and not is_last:
+                        try:
+                            plt.setLabel("bottom", "")
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=0)
+                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                            bax.setHeight(12)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            plt.setLabel(
+                                "bottom", "Time", units="s" if is_last else None
+                            )
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=-5)
+                            bax.setTextPen(pg.mkPen("w"))
+                            bax.setHeight(None)
+                        except Exception:
+                            pass
+
                 else:  # matrix
                     if idx >= len(self.matrix_plots):
                         continue
@@ -4711,6 +5416,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                     else False
                 ):
                     plt.setVisible(False)
+            for idx, plt in enumerate(self.dense_plots):
+                if (
+                    not self.dense_visible[idx]
+                    if idx < len(self.dense_visible)
+                    else False
+                ):
+                    plt.setVisible(False)
             for idx, plt in enumerate(self.matrix_plots):
                 if (
                     not self.matrix_visible[idx]
@@ -4721,6 +5433,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
             # Apply custom plot heights
             self._apply_custom_plot_heights()
+            self._update_plot_area_height()
             # Re-apply x-range to keep all linked
             self._apply_x_range()
             if self.labels:

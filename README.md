@@ -28,15 +28,24 @@ uv pip install loupe
 ```python
 %gui qt6
 import xarray as xr
-from loupe import view
+from loupe import view, TraceConfig
 
-# In-memory DataArray
+# In-memory DataArray (stacked subplots, one per trace)
 ds = xr.open_zarr("data.zarr", group="dmd_2")
 da = ds["data"].sel(syn_id=slice(3, 6), time=slice(0, 1800)).load()
 w = view(da)
 
-# Multiple DataArrays
-w = view([da1, da2])
+# Dense view — all traces on a single axis (EEG-style)
+w = view(da, dense=True, traces_per_page=16, order_by="y", descending=True)
+
+# Set initial time window to 30 seconds
+w = view(da, dense=True, window_len=30)
+
+# Mixed mode — per-DataArray display configuration
+w = view(data=[
+    TraceConfig(da1, mode="dense", gain=2.0, traces_per_page=20),
+    TraceConfig(da2, mode="stacked-subplots"),
+])
 
 # Path-based (loads and filters automatically)
 w = view(path="data.zarr", group="dmd_2",
@@ -91,6 +100,7 @@ python -m loupe.app \
 - All other dimension combinations are flattened into individual traces. For example, a DataArray with dims `(channel=2, syn_id=3, time=N)` produces 6 traces named `ch0-syn0`, `ch0-syn1`, etc.
 - Supports zarr and netCDF stores via path-based loading with optional dimension filtering.
 - Multiple DataArrays can be viewed simultaneously; traces are prefixed with the array name.
+- Each DataArray can be displayed in **stacked-subplots** mode (one subplot per trace, the default) or **dense** mode (all traces on a single axis with vertical offsets). See "Dense view" below.
 
 #### Videos
 - Provide `--video/--frame_times` for the first video, `--video2/--frame_times2` for the second, and `--video3/--frame_times3` for the third.
@@ -116,6 +126,29 @@ python -m loupe.app \
   - `alpha_vals` (optional): 1‑D array of alpha values (0.0 to 1.0) for each event
   - `matrix_colors`: hex color for each subplot (all events in a subplot share the same color)
 - Events are rendered as vertical lines centered within their row, with configurable height and thickness.
+
+#### Dense view
+The dense view plots many traces (potentially hundreds) on a single pair of axes, like an EEG viewer. Each trace is mean-subtracted, scaled by a gain factor, and offset vertically.
+
+Parameters (pass to `view()` or wrap in `TraceConfig`):
+- `dense=True` — enable dense mode for all DataArrays (convenience shorthand).
+- `mode="dense"` — enable dense mode via `TraceConfig`.
+- `order_by` — coordinate name to control trace ordering and vertical spacing (e.g., `"y"` for electrode depth). If not specified and there is exactly one non-time dimension, its coordinate values are used automatically.
+- `descending` — reverse the trace order (default `False`).
+- `gain` — amplitude gain multiplier (default `1.0`). Also adjustable at runtime via Alt+scroll or the Dense View Controls dialog (Ctrl+G).
+- `step` — show every *n*-th trace (default `1` = all).
+- `traces_per_page` — how many traces to show at once (default `None` = all). A vertical scrollbar appears when set. Adjustable at runtime via the Dense View Controls dialog.
+- `window_len` — initial time window duration in seconds (default `10.0`). Applies to all display modes, not just dense.
+
+When multiple DataArrays are loaded, each can independently be dense or stacked-subplots by wrapping in `TraceConfig`:
+```python
+from loupe import view, TraceConfig
+view(data=[
+    TraceConfig(lfp, mode="dense", order_by="y", descending=True, traces_per_page=16),
+    TraceConfig(emg, mode="stacked-subplots"),
+])
+```
+Both views share synchronized X (time) axes.
 
 ---
 
@@ -152,7 +185,8 @@ xarray:
 
 ### UI tour
 Left side:
-- Multi‑trace panel: stacked plots showing each loaded time series. Plots are X‑linked.
+- Multi‑trace panel: stacked subplots (one per trace) and/or dense plots (many traces on one axis), all X‑linked.
+- Dense plots include a vertical scrollbar showing position within the full trace set.
 - Click‑and‑drag inside any plot creates a selection region across all traces.
 - Each plot has a vertical cursor line synchronized across traces.
 
@@ -177,6 +211,12 @@ Navigation and windowing
 - Ctrl + wheel: cursor scrub within the current window (like dragging the cursor slider).
 - `[` `]` or PageUp/PageDown: page window left/right.
 - Window spinner: change window length; the app keeps the cursor anchored proportionally.
+
+Dense view controls
+- Alt + wheel: adjust trace gain (amplitude scaling) up/down.
+- Shift + Alt + wheel: smooth vertical scroll through traces (~3 traces per notch).
+- Vertical scrollbar (right edge): drag to scroll through traces; reflects current position.
+- Ctrl+G: open Dense View Controls dialog (gain slider, step, traces per page).
 
 Playback and frame stepping
 - Space: toggle playback (loops within current window).
@@ -216,7 +256,7 @@ Zoom & axes
 - `h`: toggle hypnogram visibility (frees vertical space for videos).
 
 Subplot management
-- Ctrl+H: open Subplot Control Board (height, visibility, order for all subplots).
+- Ctrl+H: open Subplot Control Board (height, visibility, order for all subplots — stacked, dense, and matrix).
 
 Video controls
 - View → Adjust Secondary Videos Size…: slider to reduce/enlarge Video 1's share so Video 2/3 gain space (live preview).
@@ -265,7 +305,9 @@ Import/Export labels
 ### Technical design
 
 Rendering and decimation
-- Each trace is rendered in a `pyqtgraph.PlotItem` using a custom windowed decimator:
+- **Stacked-subplots mode:** Each trace is rendered in its own `pyqtgraph.PlotItem`.
+- **Dense mode:** All traces in a group share a single `PlotItem`. Each trace is a `PlotCurveItem` with the transform `y_display = (y - mean) * gain + offset`, where the offset comes from coordinate values or integer indices. The Y-range viewport controls which traces are visible; a `QScrollBar` mirrors this range. Mean subtraction is cached at load time; gain is applied at display time on decimated data, making gain changes cheap.
+- Both modes use a custom windowed decimator:
   - `segment_for_window()` returns either raw samples (if under a threshold) or a peak‑preserving min/max per time bin (interleaved at bin centers) to preserve spikes/peaks.
   - Rendering budget per plot is adaptive to pixel width to ensure interactivity.
 - A custom `SelectableViewBox` disables the stock pan/zoom behavior and emits:
@@ -296,9 +338,9 @@ Layout and sizing
 - Left plot spines (Y axes) are aligned by measuring axis widths and applying the maximum using `setWidth()`.
 - `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels. If you do not pass the flag, Loupe now turns this on automatically when 3 or more total subplots are loaded at launch.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Stretches are applied only to video rows so you can reallocate space between Video 1 vs Videos 2/3 without fighting other controls.
-- Traces are placed in a `GraphicsLayoutWidget`; when you hide a subplot, the layout is rebuilt only with visible plots and X‑linking is re‑established.
-- Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Each plot has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically. Heights are applied using `setRowPreferredHeight` and `setRowStretchFactor` with very low minimum constraints to allow extreme shrinking.
-- Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing matrix plots above time series plots or interleaving them.
+- Traces are placed in a `GraphicsLayoutWidget` wrapped in a `QScrollArea` (for stacked-subplot vertical paging). Dense plots add a `QScrollBar` to the right of the plot area for vertical trace navigation.
+- Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Three plot types are supported: `"ts"` (stacked subplots), `"dense"`, and `"matrix"`. Each has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically.
+- Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing dense, matrix, and stacked-subplot plots in any order.
 
 Matrix viewer rendering
 - Matrix/raster plots display discrete events as vertical line segments.
@@ -333,7 +375,7 @@ Performance notes
 - Add new label keys or colors by editing `state_definitions.json`.
 - The labeling and rendering code paths are modular:
   - Label management: `_add_new_label`, `_clear_labels_in_range`, `_merge_adjacent_same_labels`, `_redraw_all_labels`, `_redraw_hypnogram_labels`.
-  - Rendering pipeline: `_apply_x_range`, `_refresh_curves`, `segment_for_window`.
+  - Rendering pipeline: `_apply_x_range`, `_refresh_curves`, `_refresh_dense_curves`, `segment_for_window`.
   - Video plumbing: `VideoWorker`, `_on_frame_ready`/`_on_frame2_ready`/`_on_frame3_ready`.
 
 ---

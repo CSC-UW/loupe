@@ -2,12 +2,51 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import xarray as xr
+
     from loupe.app import LoupeApp
 
-__all__ = ["view"]
+__all__ = ["view", "TraceConfig"]
+
+
+@dataclass
+class TraceConfig:
+    """Per-DataArray display configuration for :func:`view`.
+
+    Parameters
+    ----------
+    data : xr.DataArray
+        The DataArray to display.
+    mode : str
+        ``"stacked-subplots"`` (default) for one subplot per trace, or
+        ``"dense"`` for EEG-style offset traces on a single axis.
+    order_by : str or None
+        Coordinate name to control trace ordering and spacing.
+    descending : bool
+        Reverse the ordering given by *order_by*.
+    gain : float
+        Initial amplitude gain multiplier.
+    step : int
+        Show every *step*-th trace (dense mode only).
+    traces_per_page : int or None
+        How many traces to show at once in dense mode. ``None`` = all.
+        Use Alt+scroll to page through the rest.
+    label : str or None
+        Optional display name for this group.
+    """
+
+    data: xr.DataArray
+    mode: str = "stacked-subplots"
+    order_by: str | None = None
+    descending: bool = False
+    gain: float = 1.0
+    step: int = 1
+    traces_per_page: int | None = None
+    label: str | None = None
 
 
 def view(
@@ -28,6 +67,14 @@ def view(
     alpha_range: tuple[float, float] = (0.3, 1.0),
     overlay: str | None = None,
     overlay_colors: list | None = None,
+    # Dense / display mode convenience parameters
+    dense: bool = False,
+    gain: float = 1.0,
+    order_by: str | None = None,
+    descending: bool = False,
+    step: int = 1,
+    traces_per_page: int | None = None,
+    window_len: float = 10.0,
     **kwargs,
 ) -> LoupeApp:
     """Launch the Loupe viewer with xarray and/or DataFrame data.
@@ -74,6 +121,21 @@ def view(
         Optional list of colors (one per input DataArray) for overlay mode.
         Each element can be a hex string (``'#RRGGBB'``) or an RGB(A) tuple.
         If not specified, a default palette is used.
+    dense : bool
+        If True, display all DataArrays in dense (EEG-style) mode by default.
+        Ignored for items wrapped in :class:`TraceConfig`.
+    gain : float
+        Default amplitude gain multiplier (applied to all DataArrays not
+        wrapped in :class:`TraceConfig`).
+    order_by : str or None
+        Default coordinate name for trace ordering.
+    descending : bool
+        Reverse the ordering given by *order_by*.
+    step : int
+        Default trace step (dense mode only, 1 = show all).
+    traces_per_page : int or None
+        How many traces to show at once in dense mode (None = all).
+        Use Option+scroll to page through the rest.
     **kwargs
         Forwarded to :class:`LoupeApp` (``video_path``,
         ``frame_times_path``, ``fixed_scale``, ``low_profile_x``, etc.).
@@ -107,10 +169,11 @@ def view(
     """
     from PySide6 import QtWidgets
 
-    from loupe.app import LoupeApp, Series
+    from loupe.app import DenseGroup, LoupeApp, Series
     from loupe.xr_loader import (
         convert_xarray_inputs,
         convert_xarray_inputs_overlay,
+        convert_xarray_inputs_with_order,
         load_xarray_from_path,
     )
 
@@ -141,17 +204,80 @@ def view(
             for p, g in zip(paths, groups)
         ]
 
-    # ---- convert DataArray(s) → Series ------------------------------------
+    # ---- normalise data to list[TraceConfig] if needed --------------------
+    configs: list[TraceConfig] | None = None
+    if data is not None and overlay is None:
+        if not isinstance(data, list):
+            data = [data]
+        configs = []
+        for item in data:
+            if isinstance(item, TraceConfig):
+                configs.append(item)
+            else:
+                configs.append(TraceConfig(
+                    data=item,
+                    mode="dense" if dense else "stacked-subplots",
+                    order_by=order_by,
+                    descending=descending,
+                    gain=gain,
+                    step=step,
+                    traces_per_page=traces_per_page,
+                ))
+
+    # ---- convert DataArray(s) → Series / DenseGroups ----------------------
     xr_series: list[Series] | None = None
     overlay_groups = None
+    dense_groups: list[DenseGroup] | None = None
     if data is not None:
         if overlay is not None:
             if not isinstance(data, list):
                 data = [data]
             overlay_groups = convert_xarray_inputs_overlay(data, overlay)
-        else:
-            tuples = convert_xarray_inputs(data)
-            xr_series = [Series(name, t, y) for name, t, y in tuples]
+        elif configs is not None:
+            stacked_series: list[Series] = []
+            dense_list: list[DenseGroup] = []
+            use_prefix = len(configs) > 1
+            all_named = all(
+                getattr(c.data, "name", None) for c in configs
+            )
+            for i, cfg in enumerate(configs):
+                if use_prefix:
+                    prefix = str(cfg.data.name) if all_named else f"arr{i}"
+                else:
+                    prefix = ""
+                if cfg.mode == "dense":
+                    tuples, order_vals, labels = convert_xarray_inputs_with_order(
+                        cfg.data,
+                        order_by=cfg.order_by,
+                        descending=cfg.descending,
+                        name_prefix=prefix,
+                    )
+                    series_objs = [Series(n, t, y) for n, t, y in tuples]
+                    group_name = cfg.label or prefix or cfg.data.name or f"dense_{i}"
+                    dense_list.append(DenseGroup(
+                        name=str(group_name),
+                        series=series_objs,
+                        trace_labels=labels,
+                        order_values=order_vals,
+                        descending=cfg.descending,
+                        gain=cfg.gain,
+                        step=cfg.step,
+                        traces_per_page=cfg.traces_per_page,
+                    ))
+                else:
+                    tuples, _, _ = convert_xarray_inputs_with_order(
+                        cfg.data,
+                        order_by=cfg.order_by,
+                        descending=cfg.descending,
+                        name_prefix=prefix,
+                    )
+                    stacked_series.extend(
+                        Series(n, t, y) for n, t, y in tuples
+                    )
+            if stacked_series:
+                xr_series = stacked_series
+            if dense_list:
+                dense_groups = dense_list
 
     # ---- resolve DataFrame(s) to MatrixSeries -----------------------------
     matrix_series_list = None
@@ -196,6 +322,8 @@ def view(
         matrix_series_list=matrix_series_list,
         overlay_groups=overlay_groups,
         overlay_colors=overlay_colors,
+        dense_groups=dense_groups,
+        window_len=window_len,
         **kwargs,
     )
     w.show()
