@@ -306,10 +306,10 @@ Import/Export labels
 
 Rendering and decimation
 - **Stacked-subplots mode:** Each trace is rendered in its own `pyqtgraph.PlotItem`.
-- **Dense mode:** All traces in a group share a single `PlotItem`. Each trace is a `PlotCurveItem` with the transform `y_display = (y - mean) * gain + offset`, where the offset comes from coordinate values or integer indices. The Y-range viewport controls which traces are visible; a `QScrollBar` mirrors this range. Mean subtraction is cached at load time; gain is applied at display time on decimated data, making gain changes cheap.
-- Both modes use a custom windowed decimator:
-  - `segment_for_window()` returns either raw samples (if under a threshold) or a peak‑preserving min/max per time bin (interleaved at bin centers) to preserve spikes/peaks.
-  - Rendering budget per plot is adaptive to pixel width to ensure interactivity.
+- **Dense mode:** All traces in a group share a single `PlotItem`. Each trace is a `PlotDataItem` with the transform `y_display = (y - mean) * gain + offset`, where the offset comes from coordinate values or integer indices. The Y-range viewport controls which traces are visible; a `QScrollBar` mirrors this range. Mean subtraction is cached at load time; the per-trace transform is applied at refresh time to the windowed raw slice (two NumPy ops) before handing it to pyqtgraph.
+- Both modes rely on pyqtgraph's built-in peak-preserving decimation:
+  - On every pan/zoom, `_refresh_curves` / `_refresh_dense_curves` slice each series to the visible window via `np.searchsorted` and call `setData` on the underlying `PlotDataItem`.
+  - Each `PlotDataItem` is configured with `setDownsampling(auto=True, method="peak")` and `setClipToView(True)`, so pyqtgraph clips the slice to the viewbox and then performs a contiguous reshape-based min/max-per-bin reduction in C. The downsample factor is computed from the viewbox pixel width, so the rendering budget is adaptive to display size.
 - A custom `SelectableViewBox` disables the stock pan/zoom behavior and emits:
   - Drag start/update/finish signals (for selection)
   - Wheel events split into three intents:
@@ -355,8 +355,8 @@ Matrix viewer rendering
 
 Performance notes
 - OpenGL is enabled in pyqtgraph config when available; antialiasing is off for speed.
-- The decimation budget is bounded per plot and scales with plot pixel width.
-- Long‑duration datasets (hours) remain responsive due to windowed rendering.
+- Pyqtgraph's auto downsample factor scales with viewbox pixel width, so the decimation budget is bounded per plot and adapts to display size.
+- Long‑duration datasets (hours) remain responsive due to windowed slicing combined with pyqtgraph's peak‑preserving downsampling.
 
 ---
 
@@ -375,7 +375,7 @@ Performance notes
 - Add new label keys or colors by editing `state_definitions.json`.
 - The labeling and rendering code paths are modular:
   - Label management: `_add_new_label`, `_clear_labels_in_range`, `_merge_adjacent_same_labels`, `_redraw_all_labels`, `_redraw_hypnogram_labels`.
-  - Rendering pipeline: `_apply_x_range`, `_refresh_curves`, `_refresh_dense_curves`, `segment_for_window`.
+  - Rendering pipeline: `_apply_x_range`, `_refresh_curves`, `_refresh_dense_curves`.
   - Video plumbing: `VideoWorker`, `_on_frame_ready`/`_on_frame2_ready`/`_on_frame3_ready`.
 
 ---

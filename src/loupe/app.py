@@ -983,7 +983,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Dense mode (EEG-style stacked traces on a single axis)
         self.dense_groups: list[DenseGroup] = []
         self.dense_plots: list[pg.PlotItem] = []
-        self.dense_curves: list[list[pg.PlotCurveItem]] = []
+        self.dense_curves: list[list[pg.PlotDataItem]] = []
         self.dense_cur_lines: list[pg.InfiniteLine] = []
         self.dense_sel_regions: list[pg.LinearRegionItem] = []
         self.dense_label_regions: list[list[pg.LinearRegionItem]] = []
@@ -3158,9 +3158,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                 pen_color = (255, 255, 255)
             pen = pg.mkPen(pen_color, width=1)
             curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
+            plt.addItem(curve)
+            # NB: must follow addItem(), which resets these to the PlotItem defaults.
             curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
-            plt.addItem(curve)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -3356,9 +3357,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                 pen_color = self.overlay_colors[tr.source_idx]
                 pen = pg.mkPen(pen_color, width=1)
                 curve = pg.PlotDataItem([], [], pen=pen, name=tr.name, antialias=False)
+                plt.addItem(curve)
+                # NB: must follow addItem(), which resets these to the PlotItem defaults.
                 curve.setDownsampling(auto=True, method="peak")
                 curve.setClipToView(True)
-                plt.addItem(curve)
                 group_curves.append(curve)
                 # Also maintain flat curves list for compat
                 self.curves.append(curve)
@@ -3617,11 +3619,14 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Create curves
         pen = pg.mkPen((200, 200, 200), width=1)
-        curves: list[pg.PlotCurveItem] = []
+        curves: list[pg.PlotDataItem] = []
         for _ in visible:
-            curve = pg.PlotCurveItem(pen=pen, antialias=False)
+            curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
             curve.setZValue(5)
             plt.addItem(curve)
+            # NB: must follow addItem(), which resets these to the PlotItem defaults.
+            curve.setDownsampling(auto=True, method="peak")
+            curve.setClipToView(True)
             curves.append(curve)
 
         # Cursor line
@@ -3730,11 +3735,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         visible_labels = [group.trace_labels[i] for i in visible]
 
         pen = pg.mkPen((200, 200, 200), width=1)
-        curves: list[pg.PlotCurveItem] = []
+        curves: list[pg.PlotDataItem] = []
         for _ in visible:
-            curve = pg.PlotCurveItem(pen=pen, antialias=False)
+            curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
             curve.setZValue(5)
             plt.addItem(curve)
+            # NB: must follow addItem(), which resets these to the PlotItem defaults.
+            curve.setDownsampling(auto=True, method="peak")
+            curve.setClipToView(True)
             curves.append(curve)
         self.dense_curves[group_idx] = curves
 
@@ -3758,7 +3766,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not self.dense_groups:
             return
         t0, t1 = self.window_start, self.window_start + self.window_len
-        max_pts = self._target_pts()
         for gi, group in enumerate(self.dense_groups):
             visible = self._dense_visible_indices(gi)
             offsets = self._dense_offsets(gi)
@@ -3766,9 +3773,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             means = self._dense_means[gi]
             for li, (si, offset) in enumerate(zip(visible, offsets)):
                 s = group.series[si]
-                tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
-                yx_display = (yx - means[si]) * group.gain + offset
-                curves[li].setData(tx, yx_display, _callSync="off")
+                i0 = max(0, np.searchsorted(s.t, t0) - 1)
+                i1 = min(len(s.t), np.searchsorted(s.t, t1) + 1)
+                ts = s.t[i0:i1]
+                ys_display = (s.y[i0:i1] - means[si]) * group.gain + offset
+                curves[li].setData(ts, ys_display, _callSync="off")
 
     def _vertical_page(self, direction: int):
         """Scroll the plot scroll area up/down by one page."""
@@ -5228,7 +5237,6 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _refresh_curves(self):
         t0, t1 = self.window_start, self.window_start + self.window_len
-        max_pts = self._target_pts()
         if self.overlay_mode and self._plot_to_series:
             for plot_idx, series_indices in enumerate(self._plot_to_series):
                 if not self._is_trace_plot_visible(plot_idx):
@@ -5236,14 +5244,16 @@ class LoupeApp(QtWidgets.QMainWindow):
                 for local_idx, si in enumerate(series_indices):
                     s = self.series[si]
                     curve = self._plot_to_curves[plot_idx][local_idx]
-                    tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
-                    curve.setData(tx, yx, _callSync="off")
+                    i0 = max(0, np.searchsorted(s.t, t0) - 1)
+                    i1 = min(len(s.t), np.searchsorted(s.t, t1) + 1)
+                    curve.setData(s.t[i0:i1], s.y[i0:i1], _callSync="off")
         else:
             for idx, (s, curve) in enumerate(zip(self.series, self.curves)):
                 if not self._is_trace_plot_visible(idx):
                     continue
-                tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
-                curve.setData(tx, yx, _callSync="off")
+                i0 = max(0, np.searchsorted(s.t, t0) - 1)
+                i1 = min(len(s.t), np.searchsorted(s.t, t1) + 1)
+                curve.setData(s.t[i0:i1], s.y[i0:i1], _callSync="off")
 
         # Also refresh dense and matrix plots
         self._refresh_dense_curves()
