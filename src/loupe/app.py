@@ -123,6 +123,18 @@ class MatrixSeries:
     n_rows: int  # number of unique rows (max(yvals) + 1)
 
 
+LabelKey = tuple[float, float, str]
+
+
+@dataclass
+class LabelVisualBundle:
+    """Graphics items used to display a single labelled interval."""
+
+    plot_regions: list[pg.LinearRegionItem]
+    matrix_regions: list[pg.LinearRegionItem]
+    hypnogram_region: pg.LinearRegionItem | None
+
+
 # ---------------- Utilities ----------------
 
 
@@ -634,10 +646,8 @@ class LabelSummaryWidget(QtWidgets.QWidget):
             self.refresh()
             return
 
-        # Re-sort, merge, and redraw (which also triggers refresh)
-        self.main_window.labels = sorted(labels, key=lambda x: float(x["start"]))
-        self.main_window._merge_adjacent_same_labels()
-        self.main_window._redraw_all_labels()
+        # Re-sort, merge, and sync visuals (which also triggers refresh)
+        self.main_window._finalize_label_change()
 
 
 class YAxisControlsDialog(QtWidgets.QDialog):
@@ -817,6 +827,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.labels = []
         self.label_notes = {}  # Maps (start, end) tuple to note string
         self.label_history = []  # Track order of epoch creation for "most recent"
+        self._label_visuals: dict[LabelKey, LabelVisualBundle] = {}
         self._select_start = None
         self._select_end = None
         self._is_zoom_drag = False
@@ -1469,8 +1480,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             elif key in self.label_notes:
                 del self.label_notes[key]
             self._update_status()
-            if hasattr(self, "label_summary_panel"):
-                self.label_summary_panel.refresh()
+            self._refresh_label_summary()
 
     def _show_jump_to_epochs_dialog(self):
         """Show a table of all epochs for navigation and filtering."""
@@ -2210,6 +2220,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             self.series_colors = [(255, 255, 255, 255)] * len(series_list)
 
+        self._clear_all_label_visuals()
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
@@ -2254,6 +2265,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         ):
             self.trace_visible = [True] * len(self.series)
         self._apply_trace_visibility()
+        if self.labels:
+            self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
 
     # Default overlay color palette
     _DEFAULT_OVERLAY_COLORS = [
@@ -2325,6 +2338,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._refresh_low_profile_x()
 
         # Clear existing plots
+        self._clear_all_label_visuals()
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
@@ -2366,6 +2380,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._align_left_axes)
         QtCore.QTimer.singleShot(100, self._align_left_axes)
         self._apply_trace_visibility()
+        if self.labels:
+            self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
 
     def set_xarray(self, data, filter_dict=None):
         """Load xarray DataArray(s) into the viewer.
@@ -2634,6 +2650,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.cursor_time = self.window_start
 
         # Clear any existing plots
+        self._clear_all_label_visuals()
         self.plot_area.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
@@ -2719,6 +2736,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_x_range()
         self._update_nav_slider_from_window()
         self._update_hypnogram_extents()
+        if self.labels:
+            self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _rebuild_all_plots(self):
@@ -2728,6 +2747,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         old_cursor = self.cursor_time
 
         # Clear and rebuild
+        self._clear_all_label_visuals()
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
@@ -2762,7 +2782,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._apply_x_range()
         self._update_nav_slider_from_window()
-        self._redraw_all_labels()
+        self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _create_all_plots(self):
@@ -3521,6 +3541,137 @@ class LoupeApp(QtWidgets.QMainWindow):
         for r in self.matrix_sel_regions:
             r.hide()
 
+    def _label_key(self, label_data: dict) -> LabelKey:
+        return (
+            float(label_data["start"]),
+            float(label_data["end"]),
+            str(label_data["label"]),
+        )
+
+    def _remove_graphics_item(self, item) -> None:
+        try:
+            if item is not None and item.scene():
+                item.scene().removeItem(item)
+        except Exception:
+            pass
+
+    def _add_label_visual(self, label_data: dict) -> None:
+        key = self._label_key(label_data)
+        if key in self._label_visuals:
+            return
+
+        a, b, name = key
+        color = self.label_colors.get(name, (150, 150, 150, 80))
+        plot_regions: list[pg.LinearRegionItem] = []
+        matrix_regions: list[pg.LinearRegionItem] = []
+
+        for i, plt in enumerate(self.plots):
+            reg = pg.LinearRegionItem(
+                values=(a, b), brush=pg.mkBrush(*color), movable=False
+            )
+            reg.setZValue(-20)
+            plt.addItem(reg)
+            plot_regions.append(reg)
+            if i < len(self.plot_label_regions):
+                self.plot_label_regions[i].append(reg)
+
+        for i, plt in enumerate(self.matrix_plots):
+            reg = pg.LinearRegionItem(
+                values=(a, b), brush=pg.mkBrush(*color), movable=False
+            )
+            reg.setZValue(-20)
+            plt.addItem(reg)
+            matrix_regions.append(reg)
+            if i < len(self.matrix_label_regions):
+                self.matrix_label_regions[i].append(reg)
+
+        hypnogram_region = None
+        if self.hypnogram_plot is not None:
+            hypnogram_region = pg.LinearRegionItem(
+                values=(a, b), brush=pg.mkBrush(*color), movable=False
+            )
+            hypnogram_region.setZValue(-10)
+            self.hypnogram_plot.addItem(hypnogram_region)
+            self.hypnogram_label_regions.append(hypnogram_region)
+
+        self._label_visuals[key] = LabelVisualBundle(
+            plot_regions=plot_regions,
+            matrix_regions=matrix_regions,
+            hypnogram_region=hypnogram_region,
+        )
+
+    def _remove_label_visual(self, key: LabelKey) -> None:
+        bundle = self._label_visuals.pop(key, None)
+        if bundle is None:
+            return
+
+        for i, item in enumerate(bundle.plot_regions):
+            self._remove_graphics_item(item)
+            if i < len(self.plot_label_regions):
+                try:
+                    self.plot_label_regions[i].remove(item)
+                except ValueError:
+                    pass
+
+        for i, item in enumerate(bundle.matrix_regions):
+            self._remove_graphics_item(item)
+            if i < len(self.matrix_label_regions):
+                try:
+                    self.matrix_label_regions[i].remove(item)
+                except ValueError:
+                    pass
+
+        if bundle.hypnogram_region is not None:
+            self._remove_graphics_item(bundle.hypnogram_region)
+            try:
+                self.hypnogram_label_regions.remove(bundle.hypnogram_region)
+            except ValueError:
+                pass
+
+    def _clear_all_label_visuals(self) -> None:
+        for key in list(self._label_visuals):
+            self._remove_label_visual(key)
+
+        for plot_regions in self.plot_label_regions:
+            plot_regions.clear()
+        for plot_regions in self.matrix_label_regions:
+            plot_regions.clear()
+        self.hypnogram_label_regions.clear()
+
+    def _refresh_label_summary(self, force: bool = False) -> None:
+        panel = getattr(self, "label_summary_panel", None)
+        if panel is None:
+            return
+        if force or not panel.isHidden():
+            panel.refresh()
+
+    def _sync_label_visuals(
+        self, *, force_rebuild: bool = False, refresh_summary: bool = True
+    ) -> None:
+        if force_rebuild:
+            self._clear_all_label_visuals()
+        else:
+            new_key_set = {self._label_key(lab) for lab in self.labels}
+            for key in list(self._label_visuals):
+                if key not in new_key_set:
+                    self._remove_label_visual(key)
+
+        for label_data in self.labels:
+            if self._label_key(label_data) not in self._label_visuals:
+                self._add_label_visual(label_data)
+
+        if refresh_summary:
+            self._refresh_label_summary()
+
+    def _finalize_label_change(
+        self, *, force_rebuild: bool = False, refresh_summary: bool = True
+    ) -> None:
+        self.labels = sorted(self.labels, key=lambda x: float(x["start"]))
+        self._merge_adjacent_same_labels()
+        self._sync_label_visuals(
+            force_rebuild=force_rebuild, refresh_summary=refresh_summary
+        )
+
     def _add_new_label(self, start, end, label):
         """Adds new label, overwriting/modifying existing ones in the range."""
         updated_labels = []
@@ -3552,9 +3703,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 )
 
         updated_labels.append({"start": start, "end": end, "label": label})
-        self.labels = sorted(updated_labels, key=lambda x: x["start"])
-        self._merge_adjacent_same_labels()
-        self._redraw_all_labels()
+        self.labels = updated_labels
+        self._finalize_label_change()
 
         # Track this label as most recently created (for note assignment)
         self.label_history.append((float(start), float(end)))
@@ -3587,9 +3737,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 kept.append({"start": b, "end": ex_end, "label": lab})
 
         # Keep labels ordered; merging not required but harmless if adjacent remains
-        self.labels = sorted(kept, key=lambda x: x["start"])
-        self._merge_adjacent_same_labels()
-        self._redraw_all_labels()
+        self.labels = kept
+        self._finalize_label_change()
 
     def _merge_adjacent_same_labels(self, adjacency_eps: float = 1e-9):
         if not self.labels:
@@ -3622,68 +3771,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.labels = merged
 
     def _redraw_all_labels(self):
-        """Clears and redraws all visual label regions."""
-        for plot_regions in self.plot_label_regions:
-            for item in plot_regions:
-                if item.scene():
-                    item.scene().removeItem(item)
-            plot_regions.clear()
-
-        for plot_regions in self.matrix_label_regions:
-            for item in plot_regions:
-                if item.scene():
-                    item.scene().removeItem(item)
-            plot_regions.clear()
-
-        for label_data in self.labels:
-            a, b, name = label_data["start"], label_data["end"], label_data["label"]
-            color = self.label_colors.get(name, (150, 150, 150, 80))
-
-            for i, plt in enumerate(self.plots):
-                reg = pg.LinearRegionItem(
-                    values=(a, b), brush=pg.mkBrush(*color), movable=False
-                )
-                reg.setZValue(-20)
-                plt.addItem(reg)
-                self.plot_label_regions[i].append(reg)
-
-            # Also add labels to matrix plots
-            for i, plt in enumerate(self.matrix_plots):
-                reg = pg.LinearRegionItem(
-                    values=(a, b), brush=pg.mkBrush(*color), movable=False
-                )
-                reg.setZValue(-20)
-                plt.addItem(reg)
-                self.matrix_label_regions[i].append(reg)
-
-        self._redraw_hypnogram_labels()
-
-        # Keep the label summary panel in sync
-        if hasattr(self, "label_summary_panel"):
-            self.label_summary_panel.refresh()
-
-    def _redraw_hypnogram_labels(self):
-        if self.hypnogram_plot is None:
-            return
-        # Clear previous regions
-        for item in self.hypnogram_label_regions:
-            try:
-                if item.scene():
-                    item.scene().removeItem(item)
-            except Exception:
-                pass
-        self.hypnogram_label_regions.clear()
-
-        # Draw label spans across full height
-        for label_data in self.labels:
-            a, b, name = label_data["start"], label_data["end"], label_data["label"]
-            color = self.label_colors.get(name, (150, 150, 150, 80))
-            reg = pg.LinearRegionItem(
-                values=(a, b), brush=pg.mkBrush(*color), movable=False
-            )
-            reg.setZValue(-10)
-            self.hypnogram_plot.addItem(reg)
-            self.hypnogram_label_regions.append(reg)
+        """Force a full rebuild of all visual label regions."""
+        self._sync_label_visuals(force_rebuild=True)
 
     def _update_hypnogram_extents(self):
         if self.hypnogram_plot is None:
@@ -3715,7 +3804,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         if latest_label_index != -1:
             last = self.labels.pop(latest_label_index)
-            self._redraw_all_labels()
+            self._finalize_label_change()
             self._update_status(
                 f"Deleted label: {last['label']} [{last['start']:.3f}, {last['end']:.3f}]"
             )
@@ -3925,11 +4014,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                 if has_notes and len(row) >= 4 and row[3].strip():
                     loaded_notes[(start, end)] = row[3]
 
-        self.labels = sorted(loaded_labels, key=lambda x: x["start"])
+        self.labels = loaded_labels
         self.label_notes = loaded_notes
         self.label_history = [(lab["start"], lab["end"]) for lab in self.labels]
-        self._merge_adjacent_same_labels()
-        self._redraw_all_labels()
+        self._finalize_label_change()
         self._update_status(
             f"Loaded {len(self.labels)} labels from {os.path.basename(path)}"
         )
