@@ -20,7 +20,7 @@
         "NREM_light": [79, 247, 255, 60],
         "NREM_SWS": [41, 30, 255, 60],
         "NREM_spindle": [79, 247, 255, 60],
-        "Intermediate_state": [255, 101, 224, 60],
+        "intermediate_state": [105, 255, 240, 60],
         "REM": [255, 30, 145, 60],
         "REM_phasic": [255, 30, 145, 30],
         "Artifact": [255, 0, 0, 80],
