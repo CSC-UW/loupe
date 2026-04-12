@@ -135,6 +135,9 @@ class LabelVisualBundle:
     hypnogram_region: pg.LinearRegionItem | None
 
 
+MATRIX_ALPHA_LEVEL_COUNT = 11
+
+
 # ---------------- Utilities ----------------
 
 
@@ -211,14 +214,9 @@ def segment_for_window(t, y, t0, t1, max_pts=4000):
     # assign each timestamp to a bin index (0..bins-1)
     bi = np.clip(np.digitize(ts, edges) - 1, 0, bins - 1)
 
-    # sort by bin to compute mins/maxes with slice operations
-    order = np.argsort(bi, kind="mergesort")  # stable
-    bi_s = bi[order]
-    ts_s = ts[order]
-    ys_s = ys[order]
-    # boundaries of each bin in sorted array
-    starts = np.searchsorted(bi_s, np.arange(bins), "left")
-    ends = np.searchsorted(bi_s, np.arange(bins), "right")
+    # Timestamps are monotonic, so bin ids are already ordered.
+    starts = np.searchsorted(bi, np.arange(bins), "left")
+    ends = np.searchsorted(bi, np.arange(bins), "right")
 
     out_t = np.empty(2 * bins, dtype=float)
     out_y = np.empty(2 * bins, dtype=float)
@@ -234,8 +232,8 @@ def segment_for_window(t, y, t0, t1, max_pts=4000):
             out_y[k] = np.nan
             k += 1
         else:
-            yb = ys_s[s:e]
-            tb = ts_s[s:e]
+            yb = ys[s:e]
+            tb = ts[s:e]
             ymin = float(np.nanmin(yb))
             ymax = float(np.nanmax(yb))
             tmid = float(tb[len(tb) // 2])
@@ -348,6 +346,8 @@ class VideoWorker(QtCore.QObject):
         self.cap = None
         self.cache = OrderedDict()
         self.cache_frames = int(cache_frames)
+        self._requested_idx: int | None = None
+        self._request_queued = False
 
     @QtCore.Slot(str)
     def open(self, path):
@@ -358,6 +358,9 @@ class VideoWorker(QtCore.QObject):
             if self.cap is not None:
                 self.cap.release()
             self.cap = cv2.VideoCapture(path)
+            self.cache.clear()
+            self._requested_idx = None
+            self._request_queued = False
             ok = bool(self.cap.isOpened())
             self.opened.emit(ok, "" if ok else f"Failed to open: {path}")
         except Exception as e:
@@ -368,9 +371,26 @@ class VideoWorker(QtCore.QObject):
         if self.cap is None:
             return
 
-        idx = int(idx)
+        self._requested_idx = int(idx)
+        if self._request_queued:
+            return
+        self._request_queued = True
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_processRequestedFrame",
+            QtCore.Qt.QueuedConnection,
+        )
 
-        qimg = self.cache.get(idx, None)
+    @QtCore.Slot()
+    def _processRequestedFrame(self):
+        if self.cap is None or self._requested_idx is None:
+            self._request_queued = False
+            return
+
+        idx = int(self._requested_idx)
+        self._requested_idx = None
+
+        qimg = self.cache.get(idx)
         if qimg is None:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ok, frame = self.cap.read()
@@ -384,14 +404,27 @@ class VideoWorker(QtCore.QObject):
                 if len(self.cache) > self.cache_frames:
                     self.cache.popitem(last=False)
 
-        if qimg is not None:
+        # Skip emitting stale frames when a newer request is already pending.
+        if qimg is not None and self._requested_idx is None:
             self.frameReady.emit(idx, qimg)
+
+        if self._requested_idx is not None:
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_processRequestedFrame",
+                QtCore.Qt.QueuedConnection,
+            )
+        else:
+            self._request_queued = False
 
     @QtCore.Slot()
     def stop(self):
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        self.cache.clear()
+        self._requested_idx = None
+        self._request_queued = False
 
 
 # ---------------- Label Summary Panel ----------------
@@ -786,11 +819,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Matrix viewer data and plots
         self.matrix_series: list[MatrixSeries] = []
         self.matrix_plots: list[pg.PlotItem] = []
-        self.matrix_items: list[pg.ScatterPlotItem] = []
+        self.matrix_items: list[pg.ScatterPlotItem | None] = []
         self.matrix_cur_lines: list[pg.InfiniteLine] = []
         self.matrix_sel_regions: list[pg.LinearRegionItem] = []
         self.matrix_label_regions: list[list[pg.LinearRegionItem]] = []
-        self._matrix_line_items: list[list] = []  # line items for each matrix plot
+        self._matrix_line_items: list[list[pg.PlotDataItem]] = []
+        self._matrix_pens: list[list[QtGui.QPen]] = []
         # Matrix rendering settings
         self.matrix_event_height = (
             0.1  # distance from center in each direction (0.1-0.5)
@@ -844,6 +878,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._video_worker = VideoWorker(cache_frames=120)
         self._video_worker.moveToThread(self._video_thread)
         self.last_video_pixmap = None
+        self._video_requested_frame_idx: int | None = None
 
         # Optional second video
         self.video2_frame_times = None
@@ -852,6 +887,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._video2_worker = VideoWorker(cache_frames=120)
         self._video2_worker.moveToThread(self._video2_thread)
         self.last_video2_pixmap = None
+        self._video2_requested_frame_idx: int | None = None
 
         # Optional third video
         self.video3_frame_times = None
@@ -860,6 +896,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._video3_worker = VideoWorker(cache_frames=120)
         self._video3_worker.moveToThread(self._video3_thread)
         self.last_video3_pixmap = None
+        self._video3_requested_frame_idx: int | None = None
 
         # Playback
         self.is_playing = False
@@ -869,6 +906,12 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Smooth scroll settings (fraction of window per wheel step)
         self.smooth_scroll_fraction = 0.10
+        self._deferred_view_refresh_timer = QtCore.QTimer(self)
+        self._deferred_view_refresh_timer.setSingleShot(True)
+        self._deferred_view_refresh_timer.timeout.connect(
+            self._flush_deferred_view_refresh
+        )
+        self._deferred_view_refresh_needs_nav_slider = False
         # Playback speed (1.0 = real time)
         self.playback_speed = 1.0
         # Which video to use for frame-by-frame stepping (1, 2, or 3)
@@ -1346,6 +1389,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             val, ok = (self.matrix_event_thickness, False)
         if ok:
             self.matrix_event_thickness = int(max(1, min(10, val)))
+            self._refresh_matrix_pen_cache()
             self._refresh_matrix_plots()
 
     def _toggle_proportional_matrix(self, checked: bool):
@@ -2233,6 +2277,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
+        self._matrix_pens.clear()
 
         # Initialize height factors and visibility for time series plots
         self.plot_height_factors = [1.0] * len(series_list)
@@ -2352,6 +2397,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
+        self._matrix_pens.clear()
 
         # Height factors and visibility are per-plot (per overlay group)
         self.plot_height_factors = [1.0] * len(overlay_groups)
@@ -2658,6 +2704,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
+        self._matrix_pens.clear()
 
         master_plot = None
         total_plots = len(self.matrix_series)
@@ -2700,8 +2747,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
-            scatter = pg.ScatterPlotItem(size=1, pen=None)
-            plt.addItem(scatter)
+            line_items, pens = self._create_matrix_render_items(plt, ms)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -2717,11 +2763,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
 
             self.matrix_plots.append(plt)
-            self.matrix_items.append(scatter)
+            self.matrix_items.append(None)
             self.matrix_cur_lines.append(cur_line)
             self.matrix_sel_regions.append(sel_region)
             self.matrix_label_regions.append([])
-            self._matrix_line_items.append([])
+            self._matrix_line_items.append(line_items)
+            self._matrix_pens.append(pens)
 
             if master_plot is None:
                 master_plot = plt
@@ -2760,6 +2807,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
+        self._matrix_pens.clear()
 
         # Recalculate time range
         t_arrays = [s.t for s in self.series]
@@ -2929,9 +2977,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
-            # Create scatter item for events (will be populated in _refresh_matrix)
-            scatter = pg.ScatterPlotItem(size=1, pen=None)
-            plt.addItem(scatter)
+            line_items, pens = self._create_matrix_render_items(plt, ms)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -2947,13 +2993,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
 
             self.matrix_plots.append(plt)
-            self.matrix_items.append(scatter)
+            self.matrix_items.append(None)
             self.matrix_cur_lines.append(cur_line)
             self.matrix_sel_regions.append(sel_region)
             self.matrix_label_regions.append([])
-            self._matrix_line_items.append(
-                []
-            )  # initialize line items list for this plot
+            self._matrix_line_items.append(line_items)
+            self._matrix_pens.append(pens)
 
             if master_plot is None:
                 master_plot = plt
@@ -3098,8 +3143,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 y_max = float(unique_y[-1]) + 0.5
                 plt.setYRange(y_min, y_max, padding=0)
 
-            scatter = pg.ScatterPlotItem(size=5, pen=None)
-            plt.addItem(scatter)
+            line_items, pens = self._create_matrix_render_items(plt, ms)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -3115,11 +3159,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
 
             self.matrix_plots.append(plt)
-            self.matrix_items.append(scatter)
+            self.matrix_items.append(None)
             self.matrix_cur_lines.append(cur_line)
             self.matrix_sel_regions.append(sel_region)
             self.matrix_label_regions.append([])
-            self._matrix_line_items.append([])
+            self._matrix_line_items.append(line_items)
+            self._matrix_pens.append(pens)
 
             if master_plot is None:
                 master_plot = plt
@@ -3133,6 +3178,56 @@ class LoupeApp(QtWidgets.QMainWindow):
             row_idx += 1
 
         self._apply_custom_plot_heights()
+
+    def _build_matrix_alpha_pens(self, ms: MatrixSeries) -> list[QtGui.QPen]:
+        r, g, b = ms.color
+        return [
+            pg.mkPen(
+                color=(
+                    r,
+                    g,
+                    b,
+                    int((alevel / (MATRIX_ALPHA_LEVEL_COUNT - 1)) * 255),
+                ),
+                width=self.matrix_event_thickness,
+            )
+            for alevel in range(MATRIX_ALPHA_LEVEL_COUNT)
+        ]
+
+    def _create_matrix_render_items(
+        self, plt: pg.PlotItem, ms: MatrixSeries
+    ) -> tuple[list[pg.PlotDataItem], list[QtGui.QPen]]:
+        pens = self._build_matrix_alpha_pens(ms)
+        line_items: list[pg.PlotDataItem] = []
+        for pen in pens:
+            line_item = pg.PlotDataItem(
+                [], [], pen=pen, connect="pairs", antialias=False
+            )
+            plt.addItem(line_item)
+            line_items.append(line_item)
+        return line_items, pens
+
+    def _refresh_matrix_pen_cache(self) -> None:
+        for midx, ms in enumerate(self.matrix_series):
+            if midx >= len(self._matrix_line_items):
+                break
+            pens = self._build_matrix_alpha_pens(ms)
+            if midx < len(self._matrix_pens):
+                self._matrix_pens[midx] = pens
+            else:
+                self._matrix_pens.append(pens)
+            for line_item, pen in zip(self._matrix_line_items[midx], pens):
+                line_item.setPen(pen)
+
+    def _is_trace_plot_visible(self, plot_idx: int) -> bool:
+        return (
+            not hasattr(self, "trace_visible")
+            or plot_idx >= len(self.trace_visible)
+            or self.trace_visible[plot_idx]
+        )
+
+    def _is_matrix_plot_visible(self, plot_idx: int) -> bool:
+        return plot_idx >= len(self.matrix_visible) or self.matrix_visible[plot_idx]
 
     def _matrix_segment_for_window(
         self, ms: MatrixSeries, t0: float, t1: float, max_events: int = 10000
@@ -3166,35 +3261,32 @@ class LoupeApp(QtWidgets.QMainWindow):
         return ts, ys, als
 
     def _refresh_matrix_plots(self):
-        """Update matrix scatter plots for current window."""
+        """Update matrix raster plots for current window."""
         if not self.matrix_series:
             return
 
         t0 = self.window_start
         t1 = self.window_start + self.window_len
         height = self.matrix_event_height
-        thickness = self.matrix_event_thickness
 
         for midx, (ms, plt) in enumerate(zip(self.matrix_series, self.matrix_plots)):
-            ts, ys, als = self._matrix_segment_for_window(ms, t0, t1)
-
-            # Clear previous line items for this matrix plot
-            if midx < len(self._matrix_line_items):
-                for item in self._matrix_line_items[midx]:
-                    try:
-                        plt.removeItem(item)
-                    except Exception:
-                        pass
-                self._matrix_line_items[midx].clear()
-
-            if len(ts) == 0:
+            if not self._is_matrix_plot_visible(midx):
                 continue
 
-            # Create vertical line segments using pairs of points
-            n = len(ts)
+            if midx >= len(self._matrix_line_items):
+                continue
+
+            ts, ys, als = self._matrix_segment_for_window(ms, t0, t1)
+            line_items = self._matrix_line_items[midx]
+            if not line_items:
+                continue
+
+            if len(ts) == 0:
+                for line_item in line_items:
+                    line_item.setData([], [], _callSync="off")
+                continue
 
             # Calculate Y positions for each event
-            # Center of row y is y + 0.5, line extends from (y + 0.5 - height) to (y + 0.5 + height)
             y_centers = ys.astype(float) + 0.5
             y_bottoms = y_centers - height
             y_tops = y_centers + height
@@ -3204,43 +3296,29 @@ class LoupeApp(QtWidgets.QMainWindow):
             adjusted_als = np.clip(als * brightness, 0.0, 1.0)
 
             # Group by alpha levels (quantize to 11 levels 0-10) for efficiency
-            alpha_levels = np.round(adjusted_als * 10).astype(int)
-            unique_alphas = np.unique(alpha_levels)
+            alpha_levels = np.round(adjusted_als * (MATRIX_ALPHA_LEVEL_COUNT - 1)).astype(
+                int
+            )
 
-            # Draw lines grouped by alpha level
-            for alevel in unique_alphas:
+            for alevel, line_item in enumerate(line_items):
                 mask = alpha_levels == alevel
                 if not np.any(mask):
+                    line_item.setData([], [], _callSync="off")
                     continue
 
-                # Get indices of events with this alpha
                 indices = np.where(mask)[0]
-                n_seg = len(indices)
-
-                # Build coordinate arrays for these segments
                 seg_x = np.repeat(ts[indices], 2)
-                seg_y = np.empty(2 * n_seg)
+                seg_y = np.empty(2 * len(indices))
                 seg_y[0::2] = y_bottoms[indices]
                 seg_y[1::2] = y_tops[indices]
-
-                # Create pen with this alpha
-                r, g, b = ms.color
-                a = int((alevel / 10.0) * 255)
-                pen = pg.mkPen(color=(r, g, b, a), width=thickness)
-
-                # Create PlotDataItem with connect='pairs'
-                line_item = pg.PlotDataItem(
-                    seg_x, seg_y, pen=pen, connect="pairs", antialias=False
-                )
-                plt.addItem(line_item)
-                if midx < len(self._matrix_line_items):
-                    self._matrix_line_items[midx].append(line_item)
+                line_item.setData(seg_x, seg_y, _callSync="off")
 
     # ---------- Video & Static Image ----------
     def _load_video_data(self, vpath, ft_path):
         self._stop_playback_if_playing()
         self._video_is_open = False
         self.video_frame_times = None
+        self._video_requested_frame_idx = None
 
         if not os.path.exists(vpath) or not os.path.exists(ft_path):
             QtWidgets.QMessageBox.warning(
@@ -3292,6 +3370,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._stop_playback_if_playing()
         self._video2_is_open = False
         self.video2_frame_times = None
+        self._video2_requested_frame_idx = None
 
         if not os.path.exists(vpath) or not os.path.exists(ft_path):
             QtWidgets.QMessageBox.warning(
@@ -3324,6 +3403,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Video2", msg or "Failed to open.")
         else:
             self._video2_is_open = True
+            self._video2_requested_frame_idx = None
             self.label_summary_panel.hide()
             self.video2_label.show()
             self._request_initial_frame()
@@ -3333,6 +3413,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._stop_playback_if_playing()
         self._video3_is_open = False
         self.video3_frame_times = None
+        self._video3_requested_frame_idx = None
 
         if not os.path.exists(vpath) or not os.path.exists(ft_path):
             QtWidgets.QMessageBox.warning(
@@ -3365,6 +3446,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Video3", msg or "Failed to open.")
         else:
             self._video3_is_open = True
+            self._video3_requested_frame_idx = None
             self.video3_label.show()
             self._request_initial_frame()
 
@@ -3374,6 +3456,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Video", msg or "Failed to open.")
         else:
             self._video_is_open = True
+            self._video_requested_frame_idx = None
             self._request_initial_frame()
 
     def _request_initial_frame(self):
@@ -3384,7 +3467,46 @@ class LoupeApp(QtWidgets.QMainWindow):
         if self._video3_is_open and self.video3_frame_times is not None:
             self._set_cursor_time(self.cursor_time, update_slider=False)
 
+    def _request_video_frame(
+        self,
+        *,
+        frame_times: np.ndarray | None,
+        worker: VideoWorker,
+        requested_attr: str,
+        t: float,
+    ) -> None:
+        if frame_times is None or len(frame_times) == 0:
+            return
+
+        idx = find_nearest_frame(frame_times, t)
+        if getattr(self, requested_attr) == idx:
+            return
+
+        setattr(self, requested_attr, idx)
+        QtCore.QMetaObject.invokeMethod(
+            worker,
+            "requestFrame",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(int, int(idx)),
+        )
+
+    def _schedule_deferred_view_refresh(self, *, update_nav_slider: bool) -> None:
+        self._deferred_view_refresh_needs_nav_slider = (
+            self._deferred_view_refresh_needs_nav_slider or update_nav_slider
+        )
+        if not self._deferred_view_refresh_timer.isActive():
+            self._deferred_view_refresh_timer.start(0)
+
+    def _flush_deferred_view_refresh(self) -> None:
+        update_nav_slider = self._deferred_view_refresh_needs_nav_slider
+        self._deferred_view_refresh_needs_nav_slider = False
+        self._apply_x_range_core()
+        if update_nav_slider:
+            self._update_nav_slider_from_window()
+
     def _on_frame_ready(self, idx, qimg):
+        if idx != self._video_requested_frame_idx:
+            return
         if qimg is None or qimg.isNull():
             return
         pix = QtGui.QPixmap.fromImage(qimg)
@@ -3395,6 +3517,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._rescale_video_frame()
 
     def _on_frame2_ready(self, idx, qimg):
+        if idx != self._video2_requested_frame_idx:
+            return
         if qimg is None or qimg.isNull():
             return
         pix = QtGui.QPixmap.fromImage(qimg)
@@ -3404,6 +3528,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._rescale_video2_frame()
 
     def _on_frame3_ready(self, idx, qimg):
+        if idx != self._video3_requested_frame_idx:
+            return
         if qimg is None or qimg.isNull():
             return
         pix = QtGui.QPixmap.fromImage(qimg)
@@ -4147,8 +4273,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         self.window_start = new_start
         self.cursor_time = self.window_start + rel * self.window_len
-        self._apply_x_range()
-        self._update_nav_slider_from_window()
+        self._schedule_deferred_view_refresh(update_nav_slider=True)
 
     def _on_cursor_wheel(self, dy: int):
         # Adjust the in-window cursor position proportionally to wheel delta
@@ -4188,9 +4313,15 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.t_global_min,
             max(self.t_global_min, self.t_global_max - self.window_len),
         )
-        self._apply_x_range()
+        self._schedule_deferred_view_refresh(update_nav_slider=False)
 
     def _apply_x_range(self):
+        if self._deferred_view_refresh_timer.isActive():
+            self._deferred_view_refresh_timer.stop()
+        self._deferred_view_refresh_needs_nav_slider = False
+        self._apply_x_range_core()
+
+    def _apply_x_range_core(self):
         xr = (self.window_start, self.window_start + self.window_len)
         for plt in self.plots:
             plt.enableAutoRange("x", False)
@@ -4242,30 +4373,24 @@ class LoupeApp(QtWidgets.QMainWindow):
         if update_slider:
             self._update_window_cursor_from_cursor_time()
 
-        if self.video_frame_times is not None and len(self.video_frame_times):
-            idx = find_nearest_frame(self.video_frame_times, self.cursor_time)
-            QtCore.QMetaObject.invokeMethod(
-                self._video_worker,
-                "requestFrame",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(int, int(idx)),
-            )
-        if self.video2_frame_times is not None and len(self.video2_frame_times):
-            idx2 = find_nearest_frame(self.video2_frame_times, self.cursor_time)
-            QtCore.QMetaObject.invokeMethod(
-                self._video2_worker,
-                "requestFrame",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(int, int(idx2)),
-            )
-        if self.video3_frame_times is not None and len(self.video3_frame_times):
-            idx3 = find_nearest_frame(self.video3_frame_times, self.cursor_time)
-            QtCore.QMetaObject.invokeMethod(
-                self._video3_worker,
-                "requestFrame",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(int, int(idx3)),
-            )
+        self._request_video_frame(
+            frame_times=self.video_frame_times,
+            worker=self._video_worker,
+            requested_attr="_video_requested_frame_idx",
+            t=self.cursor_time,
+        )
+        self._request_video_frame(
+            frame_times=self.video2_frame_times,
+            worker=self._video2_worker,
+            requested_attr="_video2_requested_frame_idx",
+            t=self.cursor_time,
+        )
+        self._request_video_frame(
+            frame_times=self.video3_frame_times,
+            worker=self._video3_worker,
+            requested_attr="_video3_requested_frame_idx",
+            t=self.cursor_time,
+        )
 
         if not self.is_playing:
             self._update_status()
@@ -4291,7 +4416,14 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _target_pts(self):
         if not self.plots:
             return self.max_pts_per_plot
-        vb = self.plots[0].getViewBox()
+        target_plot = None
+        for idx, plt in enumerate(self.plots):
+            if self._is_trace_plot_visible(idx):
+                target_plot = plt
+                break
+        if target_plot is None:
+            target_plot = self.plots[0]
+        vb = target_plot.getViewBox()
         px = max(300, int(vb.width()))
         return int(min(2 * px, self.max_pts_per_plot))
 
@@ -4300,13 +4432,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         max_pts = self._target_pts()
         if self.overlay_mode and self._plot_to_series:
             for plot_idx, series_indices in enumerate(self._plot_to_series):
+                if not self._is_trace_plot_visible(plot_idx):
+                    continue
                 for local_idx, si in enumerate(series_indices):
                     s = self.series[si]
                     curve = self._plot_to_curves[plot_idx][local_idx]
                     tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
                     curve.setData(tx, yx, _callSync="off")
         else:
-            for s, curve in zip(self.series, self.curves):
+            for idx, (s, curve) in enumerate(zip(self.series, self.curves)):
+                if not self._is_trace_plot_visible(idx):
+                    continue
                 tx, yx = segment_for_window(s.t, s.y, t0, t1, max_pts=max_pts)
                 curve.setData(tx, yx, _callSync="off")
 
@@ -4636,12 +4772,18 @@ class LoupeApp(QtWidgets.QMainWindow):
             QtCore.QMetaObject.invokeMethod(
                 self._video2_worker, "stop", QtCore.Qt.QueuedConnection
             )
+            QtCore.QMetaObject.invokeMethod(
+                self._video3_worker, "stop", QtCore.Qt.QueuedConnection
+            )
             self._video_thread.quit()
             self._video2_thread.quit()
+            self._video3_thread.quit()
             if not self._video_thread.wait(1000):
                 self._video_thread.terminate()
             if not self._video2_thread.wait(1000):
                 self._video2_thread.terminate()
+            if not self._video3_thread.wait(1000):
+                self._video3_thread.terminate()
         except Exception as e:
             print(f"ERROR: Exception during closeEvent: {e}")
         super().closeEvent(ev)
