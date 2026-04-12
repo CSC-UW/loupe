@@ -53,6 +53,11 @@ def loupe_window(monkeypatch, qapp):
 
 
 def test_incremental_label_sync_preserves_unchanged_visuals(loupe_window, qapp):
+    loupe_window.window_len = 40.0
+    loupe_window.window_start = 0.0
+    loupe_window._apply_x_range()
+    qapp.processEvents()
+
     loupe_window.labels = [
         {"start": 0.0, "end": 10.0, "label": "NREM"},
         {"start": 10.0, "end": 20.0, "label": "REM"},
@@ -63,6 +68,7 @@ def test_incremental_label_sync_preserves_unchanged_visuals(loupe_window, qapp):
 
     unchanged_key = (30.0, 40.0, "Wake")
     previous_visuals = dict(loupe_window._label_visuals)
+    previous_hypnogram_visuals = dict(loupe_window._hypnogram_label_visuals)
 
     loupe_window._add_new_label(10.0, 20.0, "NREM")
     qapp.processEvents()
@@ -71,9 +77,18 @@ def test_incremental_label_sync_preserves_unchanged_visuals(loupe_window, qapp):
     assert (10.0, 20.0, "REM") not in loupe_window._label_visuals
     assert (0.0, 20.0, "NREM") in loupe_window._label_visuals
     assert loupe_window._label_visuals[unchanged_key] is previous_visuals[unchanged_key]
+    assert (
+        loupe_window._hypnogram_label_visuals[unchanged_key]
+        is previous_hypnogram_visuals[unchanged_key]
+    )
 
 
 def test_plot_rebuild_recreates_label_visuals(loupe_window, qapp):
+    loupe_window.window_len = 40.0
+    loupe_window.window_start = 0.0
+    loupe_window._apply_x_range()
+    qapp.processEvents()
+
     loupe_window.labels = [
         {"start": 5.0, "end": 15.0, "label": "Wake"},
         {"start": 20.0, "end": 30.0, "label": "NREM"},
@@ -82,6 +97,7 @@ def test_plot_rebuild_recreates_label_visuals(loupe_window, qapp):
     qapp.processEvents()
 
     previous_visuals = dict(loupe_window._label_visuals)
+    previous_hypnogram_visuals = dict(loupe_window._hypnogram_label_visuals)
 
     loupe_window._rebuild_all_plots()
     qapp.processEvents()
@@ -89,3 +105,7 @@ def test_plot_rebuild_recreates_label_visuals(loupe_window, qapp):
     assert set(loupe_window._label_visuals) == set(previous_visuals)
     for key, old_bundle in previous_visuals.items():
         assert loupe_window._label_visuals[key] is not old_bundle
+
+    assert set(loupe_window._hypnogram_label_visuals) == set(previous_hypnogram_visuals)
+    for key, old_region in previous_hypnogram_visuals.items():
+        assert loupe_window._hypnogram_label_visuals[key] is not old_region

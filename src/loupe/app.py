@@ -128,10 +128,10 @@ LabelKey = tuple[float, float, str]
 
 @dataclass
 class LabelVisualBundle:
-    """Graphics items used to display a single labelled interval."""
+    """Graphics items used to display a single labelled interval in plot scenes."""
 
-    plot_regions: list[pg.LinearRegionItem]
-    matrix_regions: list[pg.LinearRegionItem]
+    plot_regions: list[tuple[int, pg.LinearRegionItem]]
+    matrix_regions: list[tuple[int, pg.LinearRegionItem]]
     hypnogram_region: pg.LinearRegionItem | None
 
 
@@ -218,34 +218,31 @@ def segment_for_window(t, y, t0, t1, max_pts=4000):
     starts = np.searchsorted(bi, np.arange(bins), "left")
     ends = np.searchsorted(bi, np.arange(bins), "right")
 
-    out_t = np.empty(2 * bins, dtype=float)
-    out_y = np.empty(2 * bins, dtype=float)
-    k = 0
-    for b in range(bins):
-        s, e = starts[b], ends[b]
-        if s == e:  # empty bin -> fill from edge
-            tt = 0.5 * (edges[b] + edges[b + 1])
-            out_t[k] = tt
-            out_y[k] = np.nan
-            k += 1
-            out_t[k] = tt
-            out_y[k] = np.nan
-            k += 1
-        else:
-            yb = ys[s:e]
-            tb = ts[s:e]
-            ymin = float(np.nanmin(yb))
-            ymax = float(np.nanmax(yb))
-            tmid = float(tb[len(tb) // 2])
-            # interleave min/max at the same nominal time (gives vertical spikes)
-            out_t[k] = tmid
-            out_y[k] = ymin
-            k += 1
-            out_t[k] = tmid
-            out_y[k] = ymax
-            k += 1
+    nonempty = starts < ends
 
-    return out_t[:k], out_y[:k]
+    # Per-bin min/max via reduceat (vectorised, no Python loop).
+    # np.fmin/fmax ignore NaN, matching the original np.nanmin/nanmax behaviour.
+    ymins = np.fmin.reduceat(ys, starts)
+    ymaxs = np.fmax.reduceat(ys, starts)
+
+    # Midpoint times: middle sample index in each bin.
+    mid_indices = np.clip((starts + ends) // 2, 0, n - 1)
+    tmids = ts[mid_indices]
+
+    # Empty bins → NaN values at edge midpoints.
+    empty = ~nonempty
+    if np.any(empty):
+        ymins[empty] = np.nan
+        ymaxs[empty] = np.nan
+        tmids[empty] = 0.5 * (edges[:-1][empty] + edges[1:][empty])
+
+    # Interleave min/max pairs at each time.
+    out_t = np.repeat(tmids, 2)
+    out_y = np.empty(2 * bins, dtype=float)
+    out_y[0::2] = ymins
+    out_y[1::2] = ymaxs
+
+    return out_t, out_y
 
 
 # ---------------- Custom UI Components ----------------
@@ -806,7 +803,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves: list[pg.PlotDataItem] = []
         self.plot_cur_lines: list[pg.InfiniteLine] = []
         self.plot_sel_regions: list[pg.LinearRegionItem] = []
-        self.plot_label_regions: list[list[pg.LinearRegionItem]] = []
         self.hovered_plot = None  # *** FIX 2: Track which plot is hovered ***
 
         # Overlay mode
@@ -822,7 +818,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_items: list[pg.ScatterPlotItem | None] = []
         self.matrix_cur_lines: list[pg.InfiniteLine] = []
         self.matrix_sel_regions: list[pg.LinearRegionItem] = []
-        self.matrix_label_regions: list[list[pg.LinearRegionItem]] = []
         self._matrix_line_items: list[list[pg.PlotDataItem]] = []
         self._matrix_pens: list[list[QtGui.QPen]] = []
         # Matrix rendering settings
@@ -862,6 +857,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.label_notes = {}  # Maps (start, end) tuple to note string
         self.label_history = []  # Track order of epoch creation for "most recent"
         self._label_visuals: dict[LabelKey, LabelVisualBundle] = {}
+        self._hypnogram_label_visuals: dict[LabelKey, pg.LinearRegionItem] = {}
+        self._label_keys_in_order: list[LabelKey] = []
+        self._label_starts = np.empty(0, dtype=float)
+        self._label_ends = np.empty(0, dtype=float)
         self._select_start = None
         self._select_end = None
         self._is_zoom_drag = False
@@ -921,7 +920,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.hypnogram_widget = None
         self.hypnogram_plot = None
         self.hypnogram_view_region = None
-        self.hypnogram_label_regions = []
         self.hypnogram_zoomed = False
         self.hypnogram_zoom_padding = 30.0
 
@@ -2270,12 +2268,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
-        self.plot_label_regions.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
         self.matrix_sel_regions.clear()
-        self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
         self._matrix_pens.clear()
 
@@ -2390,12 +2386,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._plot_to_curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
-        self.plot_label_regions.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
         self.matrix_sel_regions.clear()
-        self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
         self._matrix_pens.clear()
 
@@ -2702,7 +2696,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
         self.matrix_sel_regions.clear()
-        self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
         self._matrix_pens.clear()
 
@@ -2766,7 +2759,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.matrix_items.append(None)
             self.matrix_cur_lines.append(cur_line)
             self.matrix_sel_regions.append(sel_region)
-            self.matrix_label_regions.append([])
             self._matrix_line_items.append(line_items)
             self._matrix_pens.append(pens)
 
@@ -2800,12 +2792,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
-        self.plot_label_regions.clear()
         self.matrix_plots.clear()
         self.matrix_items.clear()
         self.matrix_cur_lines.clear()
         self.matrix_sel_regions.clear()
-        self.matrix_label_regions.clear()
         self._matrix_line_items.clear()
         self._matrix_pens.clear()
 
@@ -2904,7 +2894,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.curves.append(curve)
             self.plot_cur_lines.append(cur_line)
             self.plot_sel_regions.append(sel_region)
-            self.plot_label_regions.append([])
 
             if master_plot is None:
                 master_plot = plt
@@ -2996,7 +2985,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.matrix_items.append(None)
             self.matrix_cur_lines.append(cur_line)
             self.matrix_sel_regions.append(sel_region)
-            self.matrix_label_regions.append([])
             self._matrix_line_items.append(line_items)
             self._matrix_pens.append(pens)
 
@@ -3086,7 +3074,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.plots.append(plt)
             self.plot_cur_lines.append(cur_line)
             self.plot_sel_regions.append(sel_region)
-            self.plot_label_regions.append([])
 
             if master_plot is None:
                 master_plot = plt
@@ -3162,7 +3149,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.matrix_items.append(None)
             self.matrix_cur_lines.append(cur_line)
             self.matrix_sel_regions.append(sel_region)
-            self.matrix_label_regions.append([])
             self._matrix_line_items.append(line_items)
             self._matrix_pens.append(pens)
 
@@ -3674,6 +3660,44 @@ class LoupeApp(QtWidgets.QMainWindow):
             str(label_data["label"]),
         )
 
+    def _rebuild_label_index(self) -> None:
+        n_labels = len(self.labels)
+        self._label_keys_in_order = []
+        self._label_starts = np.empty(n_labels, dtype=float)
+        self._label_ends = np.empty(n_labels, dtype=float)
+
+        for idx, lab in enumerate(self.labels):
+            start = float(lab["start"])
+            end = float(lab["end"])
+            key = (start, end, str(lab["label"]))
+            self._label_keys_in_order.append(key)
+            self._label_starts[idx] = start
+            self._label_ends[idx] = end
+
+    def _visible_label_index_range(self) -> tuple[int, int]:
+        if not self.labels or self.window_len <= 0:
+            return (0, 0)
+
+        t0 = float(self.window_start)
+        t1 = float(self.window_start + self.window_len)
+        start_idx = int(np.searchsorted(self._label_ends, t0, side="right"))
+        end_idx = int(np.searchsorted(self._label_starts, t1, side="left"))
+        if end_idx < start_idx:
+            end_idx = start_idx
+        return (start_idx, end_idx)
+
+    def _visible_label_entries(self) -> list[tuple[LabelKey, dict]]:
+        start_idx, end_idx = self._visible_label_index_range()
+        return [
+            (self._label_keys_in_order[idx], self.labels[idx])
+            for idx in range(start_idx, end_idx)
+        ]
+
+    def _has_visible_window_label_targets(self) -> bool:
+        return any(
+            self._is_trace_plot_visible(idx) for idx in range(len(self.plots))
+        ) or any(self._is_matrix_plot_visible(idx) for idx in range(len(self.matrix_plots)))
+
     def _remove_graphics_item(self, item) -> None:
         try:
             if item is not None and item.scene():
@@ -3681,88 +3705,87 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _add_label_visual(self, label_data: dict) -> None:
+    def _add_window_label_visual(self, label_data: dict) -> None:
         key = self._label_key(label_data)
         if key in self._label_visuals:
             return
 
         a, b, name = key
         color = self.label_colors.get(name, (150, 150, 150, 80))
-        plot_regions: list[pg.LinearRegionItem] = []
-        matrix_regions: list[pg.LinearRegionItem] = []
+        plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
+        matrix_regions: list[tuple[int, pg.LinearRegionItem]] = []
 
         for i, plt in enumerate(self.plots):
+            if not self._is_trace_plot_visible(i):
+                continue
             reg = pg.LinearRegionItem(
                 values=(a, b), brush=pg.mkBrush(*color), movable=False
             )
             reg.setZValue(-20)
             plt.addItem(reg)
-            plot_regions.append(reg)
-            if i < len(self.plot_label_regions):
-                self.plot_label_regions[i].append(reg)
+            plot_regions.append((i, reg))
 
         for i, plt in enumerate(self.matrix_plots):
+            if not self._is_matrix_plot_visible(i):
+                continue
             reg = pg.LinearRegionItem(
                 values=(a, b), brush=pg.mkBrush(*color), movable=False
             )
             reg.setZValue(-20)
             plt.addItem(reg)
-            matrix_regions.append(reg)
-            if i < len(self.matrix_label_regions):
-                self.matrix_label_regions[i].append(reg)
+            matrix_regions.append((i, reg))
 
-        hypnogram_region = None
-        if self.hypnogram_plot is not None:
-            hypnogram_region = pg.LinearRegionItem(
-                values=(a, b), brush=pg.mkBrush(*color), movable=False
-            )
-            hypnogram_region.setZValue(-10)
-            self.hypnogram_plot.addItem(hypnogram_region)
-            self.hypnogram_label_regions.append(hypnogram_region)
+        if not plot_regions and not matrix_regions:
+            return
 
         self._label_visuals[key] = LabelVisualBundle(
             plot_regions=plot_regions,
             matrix_regions=matrix_regions,
-            hypnogram_region=hypnogram_region,
+            hypnogram_region=None,
         )
 
-    def _remove_label_visual(self, key: LabelKey) -> None:
+    def _remove_window_label_visual(self, key: LabelKey) -> None:
         bundle = self._label_visuals.pop(key, None)
         if bundle is None:
             return
 
-        for i, item in enumerate(bundle.plot_regions):
+        for _i, item in bundle.plot_regions:
             self._remove_graphics_item(item)
-            if i < len(self.plot_label_regions):
-                try:
-                    self.plot_label_regions[i].remove(item)
-                except ValueError:
-                    pass
 
-        for i, item in enumerate(bundle.matrix_regions):
+        for _i, item in bundle.matrix_regions:
             self._remove_graphics_item(item)
-            if i < len(self.matrix_label_regions):
-                try:
-                    self.matrix_label_regions[i].remove(item)
-                except ValueError:
-                    pass
 
-        if bundle.hypnogram_region is not None:
-            self._remove_graphics_item(bundle.hypnogram_region)
-            try:
-                self.hypnogram_label_regions.remove(bundle.hypnogram_region)
-            except ValueError:
-                pass
+    def _add_hypnogram_label_visual(self, label_data: dict) -> None:
+        key = self._label_key(label_data)
+        if key in self._hypnogram_label_visuals or self.hypnogram_plot is None:
+            return
+
+        a, b, name = key
+        color = self.label_colors.get(name, (150, 150, 150, 80))
+        region = pg.LinearRegionItem(
+            values=(a, b), brush=pg.mkBrush(*color), movable=False
+        )
+        region.setZValue(-10)
+        self.hypnogram_plot.addItem(region)
+        self._hypnogram_label_visuals[key] = region
+
+    def _remove_hypnogram_label_visual(self, key: LabelKey) -> None:
+        region = self._hypnogram_label_visuals.pop(key, None)
+        if region is None:
+            return
+        self._remove_graphics_item(region)
+
+    def _clear_window_label_visuals(self) -> None:
+        for key in list(self._label_visuals):
+            self._remove_window_label_visual(key)
+
+    def _clear_hypnogram_label_visuals(self) -> None:
+        for key in list(self._hypnogram_label_visuals):
+            self._remove_hypnogram_label_visual(key)
 
     def _clear_all_label_visuals(self) -> None:
-        for key in list(self._label_visuals):
-            self._remove_label_visual(key)
-
-        for plot_regions in self.plot_label_regions:
-            plot_regions.clear()
-        for plot_regions in self.matrix_label_regions:
-            plot_regions.clear()
-        self.hypnogram_label_regions.clear()
+        self._clear_window_label_visuals()
+        self._clear_hypnogram_label_visuals()
 
     def _refresh_label_summary(self, force: bool = False) -> None:
         panel = getattr(self, "label_summary_panel", None)
@@ -3771,20 +3794,46 @@ class LoupeApp(QtWidgets.QMainWindow):
         if force or not panel.isHidden():
             panel.refresh()
 
-    def _sync_label_visuals(
-        self, *, force_rebuild: bool = False, refresh_summary: bool = True
-    ) -> None:
+    def _sync_hypnogram_label_visuals(self, *, force_rebuild: bool = False) -> None:
         if force_rebuild:
-            self._clear_all_label_visuals()
+            self._clear_hypnogram_label_visuals()
         else:
-            new_key_set = {self._label_key(lab) for lab in self.labels}
-            for key in list(self._label_visuals):
+            new_key_set = set(self._label_keys_in_order)
+            for key in list(self._hypnogram_label_visuals):
                 if key not in new_key_set:
-                    self._remove_label_visual(key)
+                    self._remove_hypnogram_label_visual(key)
 
         for label_data in self.labels:
-            if self._label_key(label_data) not in self._label_visuals:
-                self._add_label_visual(label_data)
+            if self._label_key(label_data) not in self._hypnogram_label_visuals:
+                self._add_hypnogram_label_visual(label_data)
+
+    def _sync_window_label_visuals(self, *, force_rebuild: bool = False) -> None:
+        if force_rebuild or not self._has_visible_window_label_targets():
+            self._clear_window_label_visuals()
+            if not self._has_visible_window_label_targets():
+                return
+
+        visible_entries = self._visible_label_entries()
+        new_key_set = {key for key, _ in visible_entries}
+        for key in list(self._label_visuals):
+            if key not in new_key_set:
+                self._remove_window_label_visual(key)
+
+        for key, label_data in visible_entries:
+            if key not in self._label_visuals:
+                self._add_window_label_visual(label_data)
+
+    def _sync_label_visuals(
+        self,
+        *,
+        force_rebuild: bool = False,
+        refresh_summary: bool = True,
+        force_rebuild_window: bool = False,
+    ) -> None:
+        self._sync_hypnogram_label_visuals(force_rebuild=force_rebuild)
+        self._sync_window_label_visuals(
+            force_rebuild=force_rebuild or force_rebuild_window
+        )
 
         if refresh_summary:
             self._refresh_label_summary()
@@ -3794,6 +3843,7 @@ class LoupeApp(QtWidgets.QMainWindow):
     ) -> None:
         self.labels = sorted(self.labels, key=lambda x: float(x["start"]))
         self._merge_adjacent_same_labels()
+        self._rebuild_label_index()
         self._sync_label_visuals(
             force_rebuild=force_rebuild, refresh_summary=refresh_summary
         )
@@ -4336,6 +4386,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._set_cursor_time(new_cursor_time, update_slider=True)
 
         self._refresh_curves()
+        self._sync_window_label_visuals()
 
         # Update hypnogram view region to show current window
         if self.hypnogram_view_region is not None:
@@ -4672,6 +4723,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._apply_custom_plot_heights()
             # Re-apply x-range to keep all linked
             self._apply_x_range()
+            if self.labels:
+                self._sync_label_visuals(
+                    refresh_summary=False,
+                    force_rebuild_window=True,
+                )
             QtCore.QTimer.singleShot(0, self._align_left_axes)
         except Exception:
             import traceback
