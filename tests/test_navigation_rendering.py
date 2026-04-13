@@ -169,18 +169,22 @@ def test_refresh_curves_skips_hidden_traces(loupe_factory, monkeypatch, qapp):
     window._apply_trace_visibility()
     qapp.processEvents()
 
-    calls = []
-    original = loupe_app.segment_for_window
+    updated_indices = []
+    for idx, curve in enumerate(window.curves):
+        orig_setData = curve.setData
 
-    def counting_segment(*args, **kwargs):
-        calls.append(args[0])
-        return original(*args, **kwargs)
+        def make_tracker(i, orig):
+            def tracking_setData(*args, **kwargs):
+                updated_indices.append(i)
+                return orig(*args, **kwargs)
+            return tracking_setData
 
-    monkeypatch.setattr(loupe_app, "segment_for_window", counting_segment)
+        monkeypatch.setattr(curve, "setData", make_tracker(idx, orig_setData))
+
     window._refresh_curves()
     qapp.processEvents()
 
-    assert len(calls) == 2
+    assert sorted(updated_indices) == [0, 2]
 
 
 def test_matrix_refresh_reuses_items_and_skips_hidden(loupe_factory, monkeypatch, qapp):
