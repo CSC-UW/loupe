@@ -216,6 +216,123 @@ def convert_xarray_inputs(
     return results
 
 
+def _coord_values_per_trace(
+    da: xr.DataArray,
+    coord_name: str,
+    non_time_dims: list[str],
+) -> np.ndarray | None:
+    """Extract one value of *coord_name* per trace, in ``itertools.product`` order.
+
+    Returns *None* if the coordinate cannot be aligned to traces.
+    """
+    if coord_name not in da.coords:
+        return None
+    coord_vals = da.coords[coord_name].values
+    if len(non_time_dims) == 1:
+        return coord_vals
+    if len(non_time_dims) > 1:
+        target_dim = None
+        for d in non_time_dims:
+            if da.coords[coord_name].dims == (d,):
+                target_dim = d
+                break
+        if target_dim is None:
+            return None
+        dim_coords = [da.coords[d].values for d in non_time_dims]
+        dim_sizes = [len(c) for c in dim_coords]
+        target_idx = non_time_dims.index(target_dim)
+        target_vals = dim_coords[target_idx]
+        reps_before = 1
+        for j in range(target_idx):
+            reps_before *= dim_sizes[j]
+        reps_after = 1
+        for j in range(target_idx + 1, len(dim_sizes)):
+            reps_after *= dim_sizes[j]
+        return np.tile(np.repeat(target_vals, reps_after), reps_before)
+    return None
+
+
+def convert_xarray_inputs_with_order(
+    da: xr.DataArray,
+    order_by: str | None = None,
+    descending: bool = False,
+    name_prefix: str = "",
+    color_by: str | None = None,
+) -> tuple[
+    list[tuple[str, np.ndarray, np.ndarray]],
+    np.ndarray | None,
+    list[str],
+    np.ndarray | None,
+]:
+    """Convert a DataArray to series tuples with optional ordering metadata.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Must have a ``'time'`` dimension.
+    order_by : str or None
+        Coordinate name to use for trace ordering.  If *None* and there is
+        exactly one non-time dimension, that dimension's coordinate values
+        are used automatically.
+    descending : bool
+        Reverse the ordering.
+    name_prefix : str
+        Prefix prepended to each trace name.
+    color_by : str or None
+        Coordinate name whose (categorical) values determine per-trace
+        color.  Extracted in the same order as the returned tuples.
+
+    Returns
+    -------
+    series_tuples : list[tuple[str, np.ndarray, np.ndarray]]
+    order_values : np.ndarray or None
+        One value per trace, for ordering / spacing.
+    trace_labels : list[str]
+        Display label for each trace.
+    color_values : np.ndarray or None
+        One categorical value per trace, for coloring.
+    """
+    tuples = dataarray_to_series(da, name_prefix=name_prefix)
+    labels = [t[0] for t in tuples]
+
+    non_time_dims = [d for d in da.dims if d != "time"]
+
+    order_values: np.ndarray | None = None
+
+    if order_by is not None and order_by in da.coords:
+        raw = _coord_values_per_trace(da, order_by, non_time_dims)
+        if raw is not None:
+            try:
+                order_values = raw.astype(float)
+            except (ValueError, TypeError):
+                order_values = None
+    elif order_by is None and len(non_time_dims) == 1:
+        # Auto: use the single non-time dimension's coordinate values
+        dim_name = non_time_dims[0]
+        coord_vals = da.coords[dim_name].values
+        try:
+            order_values = coord_vals.astype(float)
+        except (ValueError, TypeError):
+            order_values = np.arange(len(coord_vals), dtype=float)
+
+    color_values: np.ndarray | None = None
+    if color_by is not None:
+        color_values = _coord_values_per_trace(da, color_by, non_time_dims)
+
+    # Apply ordering
+    if order_values is not None and len(order_values) == len(tuples):
+        sort_idx = np.argsort(order_values)
+        if descending:
+            sort_idx = sort_idx[::-1]
+        tuples = [tuples[i] for i in sort_idx]
+        labels = [labels[i] for i in sort_idx]
+        order_values = order_values[sort_idx]
+        if color_values is not None and len(color_values) == len(sort_idx):
+            color_values = color_values[sort_idx]
+
+    return tuples, order_values, labels, color_values
+
+
 # ---------------------------------------------------------------------------
 # Overlay conversion
 # ---------------------------------------------------------------------------
