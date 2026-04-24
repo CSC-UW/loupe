@@ -10,7 +10,7 @@
         "p": "REM_phasic",
         "a": "Artifact",
         "i": "intermediate_state",
-        "u": "unclear"
+        "u": "uncertain"
     },
     
     "label_colors": {
@@ -24,7 +24,7 @@
         "REM": [255, 30, 145, 60],
         "REM_phasic": [255, 30, 145, 30],
         "Artifact": [255, 0, 0, 80],
-        "unclear": [242, 255, 41, 50],
+        "uncertain": [219, 204, 92, 40],
         "ITI": [79, 247, 255, 60],
         "Go": [0, 209, 40, 60],
         "NoGo": [255, 0, 0, 80],
