@@ -1015,6 +1015,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_brightness = (
             1.0  # brightness multiplier for alpha values (0.2 to 3.0)
         )
+        self.label_alpha_multiplier = (
+            1.0  # alpha multiplier for label overlay regions (0.0 to 1.0)
+        )
         # Custom height factors for individual plot height control (1.0 = default)
         self.plot_height_factors: list[float] = []  # one per time series plot
         self.matrix_height_factors: list[float] = []  # one per matrix plot
@@ -1506,6 +1509,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         matrix_brightness_action.triggered.connect(self._adjust_matrix_brightness)
         mview.addAction(matrix_brightness_action)
 
+        label_alpha_action = QtGui.QAction("Adjust Label Alpha...", self)
+        label_alpha_action.triggered.connect(self._adjust_label_alpha)
+        mview.addAction(label_alpha_action)
+
         mview.addSeparator()
         matrix_height_action = QtGui.QAction("Matrix Event Height...", self)
         matrix_height_action.triggered.connect(self._adjust_matrix_event_height)
@@ -1655,6 +1662,61 @@ class LoupeApp(QtWidgets.QMainWindow):
             val_label.setText(f"{brightness:.2f}")
             self.matrix_brightness = brightness
             self._refresh_matrix_plots()
+
+        slider.valueChanged.connect(on_change)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        btns.accepted.connect(dlg.accept)
+        lay.addWidget(btns)
+
+        dlg.exec()
+
+    def _label_brush_color(self, name: str) -> tuple[int, int, int, int]:
+        """Return the effective RGBA for a label, scaled by label_alpha_multiplier."""
+        r, g, b, a = self.label_colors.get(name, (150, 150, 150, 80))
+        a_scaled = int(round(a * float(self.label_alpha_multiplier)))
+        a_scaled = max(0, min(255, a_scaled))
+        return (r, g, b, a_scaled)
+
+    def _refresh_label_alpha(self) -> None:
+        """Re-apply current label_alpha_multiplier to all existing label regions."""
+        for (_a, _b, name), bundle in self._label_visuals.items():
+            color = self._label_brush_color(name)
+            brush = pg.mkBrush(*color)
+            for _i, reg in bundle.plot_regions:
+                reg.setBrush(brush)
+            for _i, reg in bundle.dense_regions:
+                reg.setBrush(brush)
+            for _i, reg in bundle.matrix_regions:
+                reg.setBrush(brush)
+        for (_a, _b, name), region in self._hypnogram_label_visuals.items():
+            region.setBrush(pg.mkBrush(*self._label_brush_color(name)))
+
+    def _adjust_label_alpha(self):
+        """Show a dialog to adjust label overlay alpha (transparency)."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Adjust Label Alpha")
+        lay = QtWidgets.QVBoxLayout(dlg)
+
+        label = QtWidgets.QLabel(
+            "Adjust alpha multiplier for label overlay regions.\n"
+            "1.00 = default opacity, 0.00 = fully transparent."
+        )
+        lay.addWidget(label)
+
+        slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)  # 0.00 to 1.00
+        slider.setValue(int(round(self.label_alpha_multiplier * 100)))
+        lay.addWidget(slider)
+
+        val_label = QtWidgets.QLabel(f"{self.label_alpha_multiplier:.2f}")
+        lay.addWidget(val_label)
+
+        def on_change(val):
+            mult = val / 100.0
+            val_label.setText(f"{mult:.2f}")
+            self.label_alpha_multiplier = mult
+            self._refresh_label_alpha()
 
         slider.valueChanged.connect(on_change)
 
@@ -4498,7 +4560,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         a, b, name = key
-        color = self.label_colors.get(name, (150, 150, 150, 80))
+        color = self._label_brush_color(name)
         plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
         matrix_regions: list[tuple[int, pg.LinearRegionItem]] = []
         dense_regions: list[tuple[int, pg.LinearRegionItem]] = []
@@ -4561,7 +4623,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         a, b, name = key
-        color = self.label_colors.get(name, (150, 150, 150, 80))
+        color = self._label_brush_color(name)
         region = pg.LinearRegionItem(
             values=(a, b), brush=pg.mkBrush(*color), movable=False
         )
