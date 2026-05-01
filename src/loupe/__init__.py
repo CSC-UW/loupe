@@ -291,7 +291,7 @@ def view(
                 else:
                     prefix = ""
                 if cfg.mode == "dense":
-                    tuples, order_vals, labels, color_vals = convert_xarray_inputs_with_order(
+                    tuples, order_vals, trace_labels, color_vals = convert_xarray_inputs_with_order(
                         cfg.data,
                         order_by=cfg.order_by,
                         descending=cfg.descending,
@@ -303,7 +303,7 @@ def view(
                     dense_list.append(DenseGroup(
                         name=str(group_name),
                         series=series_objs,
-                        trace_labels=labels,
+                        trace_labels=trace_labels,
                         order_values=order_vals,
                         color_values=color_vals,
                         descending=cfg.descending,
