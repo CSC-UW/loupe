@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loupe.labels import LabelSchema, LabelSet
+from loupe.state_config import StateConfig, load_state_config
+
 if TYPE_CHECKING:
+    import polars as pl
     import xarray as xr
 
     from loupe.app import LoupeApp
 
-__all__ = ["view", "TraceConfig"]
+__all__ = ["LabelSchema", "LabelSet", "StateConfig", "TraceConfig", "view"]
 
 
 @dataclass
@@ -79,6 +84,14 @@ def view(
     traces_per_page: int | None = None,
     color_by: str | None = None,
     window_len: float = 10.0,
+    # Label loading
+    labels: "pl.DataFrame | str | Path | None" = None,
+    label_schema: LabelSchema | None = None,
+    labels_writeback: bool = False,
+    # State definitions
+    state_definitions: str | Path | None = None,
+    keymap: dict | None = None,
+    label_colors: dict | None = None,
     **kwargs,
 ) -> LoupeApp:
     """Launch the Loupe viewer with xarray and/or DataFrame data.
@@ -143,6 +156,31 @@ def view(
     color_by : str or None
         Coordinate name whose categorical values determine per-trace color.
         Uses a colorblind-friendly palette visible against the black background.
+    labels : pl.DataFrame, str, or Path, optional
+        Optional initial labels. Either a polars DataFrame (in which case
+        ``label_schema`` is required) or a path to a ``.csv``, ``.htsv``,
+        ``.parquet``, or Visbrain ``.txt`` file. For ``.htsv`` and ``.parquet``,
+        ``label_schema`` is also required. CSV defaults to the legacy
+        ``start_s/end_s/label/note`` schema; ``.txt`` to Visbrain.
+    label_schema : LabelSchema, optional
+        Describes how the user's columns map to start/end/duration/label/note
+        and which extra columns to display in the GUI.
+    labels_writeback : bool
+        If True, the GUI's "Save Labels (overwrite source)" action will
+        overwrite the file passed in ``labels``. Default False; the source
+        file is never overwritten without this opt-in.
+    state_definitions : str or Path, optional
+        Path to a JSON file with ``"keymap"`` and ``"label_colors"`` keys.
+        See ``example_state_definitions.json`` for the schema.
+    keymap : dict, optional
+        Programmatic state hotkeys. Accepts either forward
+        (``{"w": "Wake", "1": "NREM"}``) or inverse
+        (``{"Wake": ["w", "W"]}``) form. Multiple hotkeys per state are
+        supported. Overrides any keys also defined in the file.
+    label_colors : dict, optional
+        Programmatic ``state -> color`` mapping. Color values may be RGBA
+        tuples, ``[R, G, B[, A]]`` lists, or hex strings (``"#RRGGBBAA"``).
+        Overrides any colors also defined in the file.
     **kwargs
         Forwarded to :class:`LoupeApp` (``video_path``,
         ``frame_times_path``, ``fixed_scale``, ``low_profile_x``, etc.).
@@ -178,7 +216,6 @@ def view(
 
     from loupe.app import DenseGroup, LoupeApp, Series
     from loupe.xr_loader import (
-        convert_xarray_inputs,
         convert_xarray_inputs_overlay,
         convert_xarray_inputs_with_order,
         load_xarray_from_path,
@@ -328,6 +365,38 @@ def view(
         app = QtWidgets.QApplication([])
         created_app = True
 
+    # Resolve the state config (keymap + label colors) up front so any
+    # config error surfaces before we build the GUI.
+    state_config = load_state_config(
+        path=state_definitions,
+        keymap=keymap,
+        label_colors=label_colors,
+    )
+
+    # Build the initial LabelSet, if any.
+    label_set: LabelSet | None = None
+    if labels is not None:
+        try:
+            import polars as pl_runtime
+        except ImportError:  # pragma: no cover - polars is a hard dep
+            pl_runtime = None
+        if pl_runtime is not None and isinstance(labels, pl_runtime.DataFrame):
+            if label_schema is None:
+                raise ValueError(
+                    "label_schema= is required when labels is a polars DataFrame."
+                )
+            label_set = LabelSet.from_dataframe(
+                labels,
+                label_schema,
+                writeback_allowed=labels_writeback,
+            )
+        else:
+            label_set = LabelSet.from_path(
+                labels,
+                schema=label_schema,
+                writeback_allowed=labels_writeback,
+            )
+
     w = LoupeApp(
         xr_series=xr_series,
         matrix_series_list=matrix_series_list,
@@ -335,6 +404,8 @@ def view(
         overlay_colors=overlay_colors,
         dense_groups=dense_groups,
         window_len=window_len,
+        state_config=state_config,
+        label_set=label_set,
         **kwargs,
     )
     w.show()

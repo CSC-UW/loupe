@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# User-local state definitions; example_state_definitions.json is the tracked template
+src/loupe/state_definitions.json

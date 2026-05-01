@@ -7,7 +7,12 @@ page hotkeys, and cross-page draggable labeling.
 pip install PySide6 pyqtgraph opencv-python numpy
 """
 
-import os, sys, glob, csv, math, argparse, json
+import argparse
+import glob
+import json
+import math
+import os
+import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -15,90 +20,18 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from loupe.labels import (
+    LabelIOError,
+    LabelSchema,
+    LabelSchemaError,
+    LabelSet,
+)
+from loupe.state_config import StateConfig, load_state_config
+
 try:
     import cv2
 except Exception:
     cv2 = None
-
-
-# ---------------- State Definitions Loader ----------------
-
-
-def load_state_definitions():
-    """Load keymap and label_colors from state_definitions.json.
-
-    Looks for the file in the same directory as this script.
-    Falls back to defaults if file not found or invalid.
-    """
-    # Default definitions (fallback)
-    default_keymap = {
-        "w": "Wake",
-        "q": "Quiet-Wake",
-        "b": "Brief-Arousal",
-        "2": "NREM-light",
-        "1": "NREM",
-        "r": "REM",
-        "a": "Artifact",
-        "t": "Transition-to-REM",
-        "u": "unclear",
-        "o": "ON",
-        "f": "OFF",
-        "s": "spindle",
-    }
-    default_label_colors = {
-        "Wake": (0, 209, 40, 60),
-        "Quiet-Wake": (79, 255, 168, 60),
-        "Brief-Arousal": (188, 255, 45, 60),
-        "NREM-light": (79, 247, 255, 60),
-        "NREM": (41, 30, 255, 60),
-        "Transition-to-REM": (255, 101, 224, 60),
-        "REM": (255, 30, 145, 60),
-        "Artifact": (255, 0, 0, 80),
-        "unclear": (242, 255, 41, 50),
-        "ITI": (79, 247, 255, 60),
-        "Go": (0, 209, 40, 60),
-        "NoGo": (255, 0, 0, 80),
-        "Timeout": (255, 30, 145, 60),
-        "ON": (0, 209, 40, 60),
-        "OFF": (255, 0, 0, 80),
-        "spindle": (79, 247, 255, 60),
-    }
-
-    # Try to load from JSON file
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(script_dir, "state_definitions.json")
-
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            keymap = data.get("keymap", default_keymap)
-            label_colors_raw = data.get("label_colors", {})
-
-            # Convert JSON arrays to tuples for colors
-            label_colors = {}
-            for name, color in label_colors_raw.items():
-                if isinstance(color, list) and len(color) >= 3:
-                    label_colors[name] = tuple(
-                        color[:4] if len(color) >= 4 else color + [255]
-                    )
-                else:
-                    label_colors[name] = default_label_colors.get(
-                        name, (150, 150, 150, 80)
-                    )
-
-            # Merge with defaults to ensure all keys exist
-            for k, v in default_label_colors.items():
-                if k not in label_colors:
-                    label_colors[k] = v
-
-            return keymap, label_colors
-        except Exception as e:
-            print(f"Warning: Could not load state_definitions.json: {e}")
-            print("Using default state definitions.")
-
-    return default_keymap, default_label_colors
 
 
 # ---------------- Data containers ----------------
@@ -123,7 +56,8 @@ class MatrixSeries:
     n_rows: int  # number of unique rows (max(yvals) + 1)
 
 
-LabelKey = tuple[float, float, str]
+# A row_id from LabelSet uniquely identifies a label across edits/merges.
+LabelKey = int
 
 
 @dataclass
@@ -556,15 +490,19 @@ class LabelSummaryWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.main_window = main_window
         self._refreshing = False
+        # Column-index bookkeeping for inline edits; refresh() updates these.
+        self._note_col_idx: int | None = None
+        self._extra_col_start: int = 4
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
-        # Table
+        # Table; columns are reset dynamically in refresh() based on the
+        # active LabelSchema (so any number of extra columns can be shown).
         self.table = QtWidgets.QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Start", "End", "Duration", "State", "Note"])
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Start", "End", "Duration", "State"])
         self.table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -602,33 +540,54 @@ class LabelSummaryWidget(QtWidgets.QWidget):
         layout.addWidget(self.bar_widget)
 
     def refresh(self):
-        """Repopulate table and summary from main_window.labels."""
+        """Repopulate table and summary from main_window.label_set."""
         if self._refreshing:
             return
         self._refreshing = True
         try:
             self.table.blockSignals(True)
+            ls = self.main_window.label_set
+            schema = ls.schema
+            note_col = schema.note_col
+            extra_cols = list(schema.extra_cols)
+
+            # Column layout: Start, End, Duration, State, [Note?], extras...
+            headers = ["Start", "End", "Duration", "State"]
+            if note_col:
+                headers.append("Note")
+            headers.extend(extra_cols)
+            self.table.setColumnCount(len(headers))
+            self.table.setHorizontalHeaderLabels(headers)
+            self._note_col_idx = 4 if note_col else None
+            self._extra_col_start = 5 if note_col else 4
+
             self.table.setRowCount(0)
-            for i, lab in enumerate(self.main_window.labels):
+            for i, row in enumerate(ls):
                 self.table.insertRow(i)
-                start, end = float(lab["start"]), float(lab["end"])
-                duration = end - start
-                key = (start, end)
-                note = self.main_window.label_notes.get(key, "")
+                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{row.start:.3f}"))
+                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{row.end:.3f}"))
+                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{row.duration:.3f}"))
+                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(row.label))
+                if note_col:
+                    self.table.setItem(
+                        i, self._note_col_idx, QtWidgets.QTableWidgetItem(row.note)
+                    )
+                for j, col in enumerate(extra_cols):
+                    v = row.extras.get(col)
+                    self.table.setItem(
+                        i,
+                        self._extra_col_start + j,
+                        QtWidgets.QTableWidgetItem("" if v is None else str(v)),
+                    )
 
-                self.table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{start:.3f}"))
-                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{end:.3f}"))
-                self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{duration:.3f}"))
-                self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(lab["label"]))
-                self.table.setItem(i, 4, QtWidgets.QTableWidgetItem(note))
-
-                # Store label index for mapping back
-                self.table.item(i, 0).setData(QtCore.Qt.ItemDataRole.UserRole, i)
+                # Store row_id for mapping back during edits
+                self.table.item(i, 0).setData(
+                    QtCore.Qt.ItemDataRole.UserRole, int(row.row_id)
+                )
 
             self.table.resizeColumnsToContents()
             self.table.blockSignals(False)
             self._update_summary()
-            # Update known states for dropdown delegate
             self._state_delegate.set_states(sorted(self.main_window.label_colors.keys()))
         finally:
             self._refreshing = False
@@ -641,20 +600,17 @@ class LabelSummaryWidget(QtWidgets.QWidget):
             self.bar_widget.set_data([])
             return
 
-        total_labelled = sum(
-            float(lab["end"]) - float(lab["start"])
-            for lab in self.main_window.labels
-        )
+        ls = self.main_window.label_set
+        total_labelled = float(np.sum(ls.ends - ls.starts)) if len(ls) else 0.0
         pct = (total_labelled / total_recording) * 100.0
         self.summary_label.setText(
             f"Fraction of total recording labelled: {pct:.1f}%"
         )
 
-        # Per-state breakdown
         state_durations: dict[str, float] = {}
-        for lab in self.main_window.labels:
-            dur = float(lab["end"]) - float(lab["start"])
-            state_durations[lab["label"]] = state_durations.get(lab["label"], 0.0) + dur
+        for row in ls:
+            dur = row.duration
+            state_durations[row.label] = state_durations.get(row.label, 0.0) + dur
 
         segments = []
         for state, dur in sorted(state_durations.items(), key=lambda x: -x[1]):
@@ -665,68 +621,76 @@ class LabelSummaryWidget(QtWidgets.QWidget):
             segments.append((frac, bar_color, text))
         self.bar_widget.set_data(segments)
 
-    def _migrate_note_key(self, old_key: tuple, new_key: tuple):
-        """Move a note entry from old (start, end) key to new key."""
-        if old_key in self.main_window.label_notes:
-            note = self.main_window.label_notes.pop(old_key)
-            self.main_window.label_notes[new_key] = note
-
     def _on_cell_changed(self, row: int, col: int):
-        """Handle inline cell edits — validate and propagate to labels."""
+        """Handle inline cell edits — validate and propagate to LabelSet."""
         if self._refreshing:
             return
-        labels = self.main_window.labels
-        if row < 0 or row >= len(labels):
+        ls = self.main_window.label_set
+        if row < 0 or row >= len(ls):
             return
 
-        lab = labels[row]
-        old_start, old_end = float(lab["start"]), float(lab["end"])
-        old_key = (old_start, old_end)
+        item_id = self.table.item(row, 0).data(QtCore.Qt.ItemDataRole.UserRole)
+        if item_id is None:
+            return
+        row_id = int(item_id)
+        target_row = ls.row_for_id(row_id)
+        if target_row is None:
+            return
+
         item = self.table.item(row, col)
         if item is None:
             return
         new_text = item.text().strip()
 
+        schema = ls.schema
         try:
             if col == 0:  # Start
                 new_start = float(new_text)
-                if new_start >= old_end:
+                if new_start >= target_row.end:
                     raise ValueError("Start must be less than End")
                 if new_start < 0:
                     raise ValueError("Start must be non-negative")
-                self._migrate_note_key(old_key, (new_start, old_end))
-                lab["start"] = new_start
+                ls.update_cell(row_id, schema.start_col, new_start)
 
             elif col == 1:  # End
                 new_end = float(new_text)
-                if new_end <= old_start:
+                if new_end <= target_row.start:
                     raise ValueError("End must be greater than Start")
-                self._migrate_note_key(old_key, (old_start, new_end))
-                lab["end"] = new_end
+                if schema.end_col is None:
+                    raise ValueError(
+                        "Cannot edit End directly: schema has duration_col only"
+                    )
+                ls.update_cell(row_id, schema.end_col, new_end)
 
             elif col == 2:  # Duration
                 new_dur = float(new_text)
                 if new_dur <= 0:
                     raise ValueError("Duration must be positive")
-                new_end = old_start + new_dur
-                self._migrate_note_key(old_key, (old_start, new_end))
-                lab["end"] = new_end
+                new_end = target_row.start + new_dur
+                if schema.end_col:
+                    ls.update_cell(row_id, schema.end_col, new_end)
+                elif schema.duration_col:
+                    ls.update_cell(row_id, schema.duration_col, new_dur)
 
             elif col == 3:  # State
                 if not new_text:
                     raise ValueError("State cannot be empty")
-                lab["label"] = new_text
+                ls.update_cell(row_id, schema.label_col, new_text)
 
-            elif col == 4:  # Note
-                new_key = (float(lab["start"]), float(lab["end"]))
-                if new_text:
-                    self.main_window.label_notes[new_key] = new_text
-                elif new_key in self.main_window.label_notes:
-                    del self.main_window.label_notes[new_key]
+            elif self._note_col_idx is not None and col == self._note_col_idx:
+                ls.set_note(row_id, new_text)
                 # Note edits don't need visual redraw of label regions
                 return
 
-        except ValueError as e:
+            else:
+                # Extras column.
+                extra_idx = col - self._extra_col_start
+                if 0 <= extra_idx < len(schema.extra_cols):
+                    col_name = schema.extra_cols[extra_idx]
+                    ls.update_cell(row_id, col_name, new_text or None)
+                return
+
+        except (ValueError, LabelSchemaError) as e:
             QtWidgets.QMessageBox.warning(self, "Invalid edit", str(e))
             self.refresh()
             return
@@ -927,6 +891,20 @@ class DenseViewControlsDialog(QtWidgets.QDialog):
 
 
 class LoupeApp(QtWidgets.QMainWindow):
+    # --- state_config convenience accessors ---
+    @property
+    def keymap(self) -> dict[str, str]:
+        """Forward ``{key: state}`` mapping derived from :attr:`state_config`."""
+        return self.state_config.key_to_state
+
+    @property
+    def label_colors(self) -> dict[str, tuple[int, int, int, int]]:
+        return self.state_config.label_colors
+
+    @property
+    def labels_writeback_allowed(self) -> bool:
+        return self.label_set.writeback_allowed
+
     def __init__(
         self,
         data_dir=None,
@@ -955,6 +933,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         overlay_colors=None,
         # Dense mode
         dense_groups=None,
+        # State definitions (keymap + label colors)
+        state_config: StateConfig | None = None,
+        # Label data
+        label_set: LabelSet | None = None,
     ):
         super().__init__()
         self.setWindowTitle("Loupe — Multi-Trace + Video + Labeling")
@@ -1037,18 +1019,29 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Vertical paging for stacked-subplots view
         self.trace_height_px = 120  # pixels per stacked subplot
 
-        # Load state definitions from external config file
-        self.keymap, self.label_colors = load_state_definitions()
+        # State definitions (hotkeys + label colors). If the caller didn't
+        # pre-build a StateConfig, resolve one now from the package-default
+        # state_definitions.json. With no defaults available, this raises
+        # LoupeConfigError.
+        if state_config is None:
+            state_config = load_state_config()
+        self.state_config: StateConfig = state_config
 
-        # Labels and notes
-        self.labels = []
-        self.label_notes = {}  # Maps (start, end) tuple to note string
-        self.label_history = []  # Track order of epoch creation for "most recent"
+        # Label data (DataFrame-backed). Defaults to an empty legacy schema.
+        if label_set is None:
+            label_set = LabelSet.empty()
+        self.label_set: LabelSet = label_set
+
+        # Visual bookkeeping keyed by row_id (stable across edits/merges).
         self._label_visuals: dict[LabelKey, LabelVisualBundle] = {}
         self._hypnogram_label_visuals: dict[LabelKey, pg.LinearRegionItem] = {}
-        self._label_keys_in_order: list[LabelKey] = []
-        self._label_starts = np.empty(0, dtype=float)
-        self._label_ends = np.empty(0, dtype=float)
+        # Mirror the LabelSet's row_ids/starts/ends so visual sync code can
+        # index into them before the GUI runs its first _finalize_label_change.
+        self._label_keys_in_order: list[LabelKey] = [
+            int(rid) for rid in self.label_set.row_ids
+        ]
+        self._label_starts = np.asarray(self.label_set.starts, dtype=float)
+        self._label_ends = np.asarray(self.label_set.ends, dtype=float)
         self._select_start = None
         self._select_end = None
         self._is_zoom_drag = False
@@ -1393,9 +1386,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         c.triggered.connect(self._on_load_labels)
         mfile.addAction(c)
 
-        d = QtGui.QAction("&Export Labels…", self)
+        d = QtGui.QAction("&Export Labels As…", self)
         d.triggered.connect(self._on_export_labels)
         mfile.addAction(d)
+
+        save_action = QtGui.QAction("&Save Labels (overwrite source)", self)
+        save_action.setShortcut(QtGui.QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self._on_save_to_source)
+        # Disabled unless the user opted in via labels_writeback=True.
+        save_action.setEnabled(self.label_set.writeback_allowed)
+        self._save_to_source_action = save_action
+        mfile.addAction(save_action)
         mfile.addSeparator()
 
         q = QtGui.QAction("&Quit", self)
@@ -1727,8 +1728,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         dlg.exec()
 
     def _edit_epoch_note(self):
-        """Add or edit a note for the current or most recently scored epoch."""
-        if not self.labels:
+        """Edit the note (and any extra columns) for the current epoch."""
+        if len(self.label_set) == 0:
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Epochs",
@@ -1737,51 +1738,58 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         # Find the epoch at cursor position
-        target_epoch = None
-        for lab in self.labels:
-            if lab["start"] <= self.cursor_time < lab["end"]:
-                target_epoch = lab
-                break
+        target_row = self.label_set.at_time(self.cursor_time)
 
-        # If cursor is not in an epoch, use most recently scored epoch
-        if target_epoch is None:
-            if self.label_history:
-                # Find the most recent epoch that still exists
-                for start, end in reversed(self.label_history):
-                    for lab in self.labels:
-                        if (
-                            abs(lab["start"] - start) < 1e-6
-                            and abs(lab["end"] - end) < 1e-6
-                        ):
-                            target_epoch = lab
-                            break
-                    if target_epoch:
-                        break
+        # Otherwise, the most recently created surviving epoch.
+        if target_row is None and self.label_set.history:
+            for rid in reversed(self.label_set.history):
+                row = self.label_set.row_for_id(rid)
+                if row is not None:
+                    target_row = row
+                    break
 
-        if target_epoch is None:
-            # Just use the last label in the list as fallback
-            target_epoch = self.labels[-1]
+        if target_row is None:
+            target_row = self.label_set.row_at_index(len(self.label_set) - 1)
 
-        # Get existing note if any
-        key = (float(target_epoch["start"]), float(target_epoch["end"]))
-        existing_note = self.label_notes.get(key, "")
+        editable_cols: list[str] = []
+        if self.label_set.schema.note_col:
+            editable_cols.append(self.label_set.schema.note_col)
+        editable_cols.extend(self.label_set.schema.extra_cols)
+        if not editable_cols:
+            QtWidgets.QMessageBox.information(
+                self,
+                "No editable metadata",
+                "This LabelSchema declares no note column or extra columns.",
+            )
+            return
 
-        # Show dialog to edit note
+        title = "Edit epoch metadata" if len(editable_cols) > 1 else "Epoch Note"
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Epoch Note")
-        dlg.setMinimumWidth(400)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumWidth(420)
         layout = QtWidgets.QVBoxLayout(dlg)
 
         info_label = QtWidgets.QLabel(
-            f"Epoch: {target_epoch['label']}\n"
-            f"Time: {target_epoch['start']:.3f}s - {target_epoch['end']:.3f}s"
+            f"Epoch: {target_row.label}\n"
+            f"Time: {target_row.start:.3f}s - {target_row.end:.3f}s"
         )
         layout.addWidget(info_label)
 
-        text_edit = QtWidgets.QTextEdit()
-        text_edit.setPlainText(existing_note)
-        text_edit.setMinimumHeight(100)
-        layout.addWidget(text_edit)
+        editors: dict[str, QtWidgets.QPlainTextEdit | QtWidgets.QLineEdit] = {}
+        for col in editable_cols:
+            row_label = QtWidgets.QLabel(col)
+            layout.addWidget(row_label)
+            if col == self.label_set.schema.note_col:
+                editor = QtWidgets.QPlainTextEdit()
+                value = target_row.note
+                editor.setPlainText(value)
+                editor.setMinimumHeight(100)
+            else:
+                editor = QtWidgets.QLineEdit()
+                value = target_row.extras.get(col)
+                editor.setText("" if value is None else str(value))
+            editors[col] = editor
+            layout.addWidget(editor)
 
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -1791,21 +1799,39 @@ class LoupeApp(QtWidgets.QMainWindow):
         layout.addWidget(btns)
 
         if dlg.exec() == QtWidgets.QDialog.Accepted:
-            new_note = text_edit.toPlainText().strip()
-            if new_note:
-                self.label_notes[key] = new_note
-            elif key in self.label_notes:
-                del self.label_notes[key]
+            for col, editor in editors.items():
+                if isinstance(editor, QtWidgets.QPlainTextEdit):
+                    text = editor.toPlainText().strip()
+                else:
+                    text = editor.text().strip()
+                if col == self.label_set.schema.note_col:
+                    self.label_set.set_note(target_row.row_id, text)
+                else:
+                    self.label_set.update_cell(
+                        target_row.row_id, col, text or None
+                    )
             self._update_status()
             self._refresh_label_summary()
 
     def _show_jump_to_epochs_dialog(self):
         """Show a table of all epochs for navigation and filtering."""
-        if not self.labels:
+        if len(self.label_set) == 0:
             QtWidgets.QMessageBox.information(
                 self, "Jump to Epochs", "No scored epochs to display."
             )
             return
+
+        schema = self.label_set.schema
+        # Columns: Start (s), End (s), State [hotkeys], (Note?), then extras
+        column_specs: list[tuple[str, str]] = [
+            ("Start (s)", "__start"),
+            ("End (s)", "__end"),
+            ("State", "__state"),
+        ]
+        if schema.note_col:
+            column_specs.append(("Notes", schema.note_col))
+        for c in schema.extra_cols:
+            column_specs.append((c, c))
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Jump to Epochs")
@@ -1813,28 +1839,25 @@ class LoupeApp(QtWidgets.QMainWindow):
         dlg.setMinimumHeight(500)
         layout = QtWidgets.QVBoxLayout(dlg)
 
-        # Filter controls
         filter_layout = QtWidgets.QHBoxLayout()
         filter_layout.addWidget(QtWidgets.QLabel("Filter by State:"))
         state_filter = QtWidgets.QComboBox()
         state_filter.addItem("(All)")
-        # Add unique states from labels
-        unique_states = sorted(set(lab["label"] for lab in self.labels))
+        unique_states = sorted({row.label for row in self.label_set})
         for state in unique_states:
             state_filter.addItem(state)
         filter_layout.addWidget(state_filter)
 
         filter_layout.addWidget(QtWidgets.QLabel("Filter Notes:"))
         notes_filter = QtWidgets.QLineEdit()
-        notes_filter.setPlaceholderText("Enter text to search in notes...")
+        notes_filter.setPlaceholderText("Enter text to search in notes/extras...")
         filter_layout.addWidget(notes_filter, 1)
 
         layout.addLayout(filter_layout)
 
-        # Table widget
         table = QtWidgets.QTableWidget()
-        table.setColumnCount(4)
-        table.setHorizontalHeaderLabels(["Start (s)", "End (s)", "State", "Notes"])
+        table.setColumnCount(len(column_specs))
+        table.setHorizontalHeaderLabels([h for h, _ in column_specs])
         table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -1845,68 +1868,68 @@ class LoupeApp(QtWidgets.QMainWindow):
         table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         layout.addWidget(table, 1)
 
+        def cell_text_for(row, key: str) -> str:
+            if key == "__start":
+                return f"{row.start:.3f}"
+            if key == "__end":
+                return f"{row.end:.3f}"
+            if key == "__state":
+                return self.state_config.state_with_hotkeys(row.label)
+            if schema.note_col and key == schema.note_col:
+                return row.note
+            v = row.extras.get(key)
+            return "" if v is None else str(v)
+
         def populate_table():
-            """Populate or filter the table based on current filters."""
             state_val = state_filter.currentText()
-            notes_val = notes_filter.text().strip().lower()
+            search_val = notes_filter.text().strip().lower()
 
             table.setRowCount(0)
-            row = 0
-            for lab in self.labels:
-                # State filter
-                if state_val != "(All)" and lab["label"] != state_val:
+            r = 0
+            for row in self.label_set:
+                if state_val != "(All)" and row.label != state_val:
                     continue
-
-                # Get note for this epoch
-                key = (float(lab["start"]), float(lab["end"]))
-                note = self.label_notes.get(key, "")
-
-                # Notes filter
-                if notes_val and notes_val not in note.lower():
+                # Build all cell texts so we can filter against any of them
+                cells = [cell_text_for(row, key) for _, key in column_specs]
+                if search_val and not any(search_val in c.lower() for c in cells):
                     continue
-
-                table.insertRow(row)
-                table.setItem(row, 0, QtWidgets.QTableWidgetItem(f"{lab['start']:.3f}"))
-                table.setItem(row, 1, QtWidgets.QTableWidgetItem(f"{lab['end']:.3f}"))
-                table.setItem(row, 2, QtWidgets.QTableWidgetItem(lab["label"]))
-                table.setItem(row, 3, QtWidgets.QTableWidgetItem(note))
-
-                # Store epoch data in the first cell for later retrieval
-                table.item(row, 0).setData(QtCore.Qt.ItemDataRole.UserRole, lab)
-                row += 1
+                table.insertRow(r)
+                for c_idx, text in enumerate(cells):
+                    table.setItem(r, c_idx, QtWidgets.QTableWidgetItem(text))
+                table.item(r, 0).setData(
+                    QtCore.Qt.ItemDataRole.UserRole, int(row.row_id)
+                )
+                r += 1
 
             table.resizeColumnsToContents()
 
         populate_table()
 
-        # Connect filters to update table
         state_filter.currentTextChanged.connect(lambda: populate_table())
         notes_filter.textChanged.connect(lambda: populate_table())
 
-        def on_double_click(row, col):
-            """Jump to the selected epoch (keeps dialog open)."""
-            item = table.item(row, 0)
-            if item:
-                lab = item.data(QtCore.Qt.ItemDataRole.UserRole)
-                if lab:
-                    # Calculate center of epoch
-                    center = (lab["start"] + lab["end"]) / 2.0
-                    # Position window so center is in the middle
-                    new_start = center - self.window_len / 2.0
-                    new_start = clamp(
-                        new_start,
-                        self.t_global_min,
-                        max(self.t_global_min, self.t_global_max - self.window_len),
-                    )
-                    self.window_start = new_start
-                    self.cursor_time = center
-                    self._apply_x_range()
-                    self._update_nav_slider_from_window()
-                    # Dialog stays open so user can continue navigating
+        def on_double_click(r, _col):
+            item = table.item(r, 0)
+            if not item:
+                return
+            row_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            row = self.label_set.row_for_id(int(row_id)) if row_id is not None else None
+            if row is None:
+                return
+            center = (row.start + row.end) / 2.0
+            new_start = center - self.window_len / 2.0
+            new_start = clamp(
+                new_start,
+                self.t_global_min,
+                max(self.t_global_min, self.t_global_max - self.window_len),
+            )
+            self.window_start = new_start
+            self.cursor_time = center
+            self._apply_x_range()
+            self._update_nav_slider_from_window()
 
         table.cellDoubleClicked.connect(on_double_click)
 
-        # Close button
         close_btn = QtWidgets.QPushButton("Close")
         close_btn.clicked.connect(dlg.reject)
         layout.addWidget(close_btn)
@@ -1919,15 +1942,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         Centers the view on the epoch without changing window size,
         using the same logic as the Jump to Epochs dialog.
         """
-        if not self.labels:
+        if len(self.label_set) == 0:
             return
 
         cursor = self.cursor_time
 
         if direction > 0:
             # Find first epoch whose center is strictly after cursor
-            for lab in self.labels:
-                center = (lab["start"] + lab["end"]) / 2.0
+            for row in self.label_set:
+                center = (row.start + row.end) / 2.0
                 if center > cursor:
                     break
             else:
@@ -1935,16 +1958,16 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             # Find last epoch whose center is strictly before cursor
             found = None
-            for lab in self.labels:
-                center = (lab["start"] + lab["end"]) / 2.0
+            for r in self.label_set:
+                center = (r.start + r.end) / 2.0
                 if center < cursor:
-                    found = lab
+                    found = r
                 else:
                     break
             if found is None:
                 return
-            lab = found
-            center = (lab["start"] + lab["end"]) / 2.0
+            row = found
+            center = (row.start + row.end) / 2.0
 
         # Center view on the epoch (same as Jump to Epochs dialog)
         new_start = center - self.window_len / 2.0
@@ -2303,7 +2326,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 layout.setRowStretchFactor(row, stretch)
                 row += 1
 
-        except Exception as e:
+        except Exception:
             import traceback
 
             traceback.print_exc()
@@ -2643,7 +2666,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         ):
             self.trace_visible = [True] * len(self.series)
         self._apply_trace_visibility()
-        if self.labels:
+        if len(self.label_set) > 0:
             self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
 
     # Default overlay color palette
@@ -2771,7 +2794,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._align_left_axes)
         QtCore.QTimer.singleShot(100, self._align_left_axes)
         self._apply_trace_visibility()
-        if self.labels:
+        if len(self.label_set) > 0:
             self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
 
     def set_xarray(self, data, filter_dict=None):
@@ -3126,7 +3149,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_x_range()
         self._update_nav_slider_from_window()
         self._update_hypnogram_extents()
-        if self.labels:
+        if len(self.label_set) > 0:
             self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
@@ -4502,43 +4525,27 @@ class LoupeApp(QtWidgets.QMainWindow):
         for r in self.matrix_sel_regions:
             r.hide()
 
-    def _label_key(self, label_data: dict) -> LabelKey:
-        return (
-            float(label_data["start"]),
-            float(label_data["end"]),
-            str(label_data["label"]),
-        )
+    def _label_key(self, row) -> LabelKey:
+        """Stable visual key for a label row (its row_id)."""
+        return int(row.row_id)
 
     def _rebuild_label_index(self) -> None:
-        n_labels = len(self.labels)
-        self._label_keys_in_order = []
-        self._label_starts = np.empty(n_labels, dtype=float)
-        self._label_ends = np.empty(n_labels, dtype=float)
-
-        for idx, lab in enumerate(self.labels):
-            start = float(lab["start"])
-            end = float(lab["end"])
-            key = (start, end, str(lab["label"]))
-            self._label_keys_in_order.append(key)
-            self._label_starts[idx] = start
-            self._label_ends[idx] = end
+        ls = self.label_set
+        self._label_keys_in_order = list(int(rid) for rid in ls.row_ids)
+        self._label_starts = np.asarray(ls.starts, dtype=float)
+        self._label_ends = np.asarray(ls.ends, dtype=float)
 
     def _visible_label_index_range(self) -> tuple[int, int]:
-        if not self.labels or self.window_len <= 0:
+        if len(self.label_set) == 0 or self.window_len <= 0:
             return (0, 0)
-
         t0 = float(self.window_start)
         t1 = float(self.window_start + self.window_len)
-        start_idx = int(np.searchsorted(self._label_ends, t0, side="right"))
-        end_idx = int(np.searchsorted(self._label_starts, t1, side="left"))
-        if end_idx < start_idx:
-            end_idx = start_idx
-        return (start_idx, end_idx)
+        return self.label_set.visible_index_range(t0, t1)
 
-    def _visible_label_entries(self) -> list[tuple[LabelKey, dict]]:
+    def _visible_label_entries(self) -> list[tuple[LabelKey, "object"]]:
         start_idx, end_idx = self._visible_label_index_range()
         return [
-            (self._label_keys_in_order[idx], self.labels[idx])
+            (self._label_keys_in_order[idx], self.label_set.row_at_index(idx))
             for idx in range(start_idx, end_idx)
         ]
 
@@ -4554,12 +4561,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _add_window_label_visual(self, label_data: dict) -> None:
-        key = self._label_key(label_data)
+    def _add_window_label_visual(self, row) -> None:
+        key = self._label_key(row)
         if key in self._label_visuals:
             return
 
-        a, b, name = key
+        a, b, name = float(row.start), float(row.end), str(row.label)
         color = self._label_brush_color(name)
         plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
         matrix_regions: list[tuple[int, pg.LinearRegionItem]] = []
@@ -4617,12 +4624,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         for _i, item in bundle.matrix_regions:
             self._remove_graphics_item(item)
 
-    def _add_hypnogram_label_visual(self, label_data: dict) -> None:
-        key = self._label_key(label_data)
+    def _add_hypnogram_label_visual(self, row) -> None:
+        key = self._label_key(row)
         if key in self._hypnogram_label_visuals or self.hypnogram_plot is None:
             return
 
-        a, b, name = key
+        a, b, name = float(row.start), float(row.end), str(row.label)
         color = self._label_brush_color(name)
         region = pg.LinearRegionItem(
             values=(a, b), brush=pg.mkBrush(*color), movable=False
@@ -4665,9 +4672,9 @@ class LoupeApp(QtWidgets.QMainWindow):
                 if key not in new_key_set:
                     self._remove_hypnogram_label_visual(key)
 
-        for label_data in self.labels:
-            if self._label_key(label_data) not in self._hypnogram_label_visuals:
-                self._add_hypnogram_label_visual(label_data)
+        for row in self.label_set:
+            if self._label_key(row) not in self._hypnogram_label_visuals:
+                self._add_hypnogram_label_visual(row)
 
     def _sync_window_label_visuals(self, *, force_rebuild: bool = False) -> None:
         if force_rebuild or not self._has_visible_window_label_targets():
@@ -4681,9 +4688,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             if key not in new_key_set:
                 self._remove_window_label_visual(key)
 
-        for key, label_data in visible_entries:
+        for key, row in visible_entries:
             if key not in self._label_visuals:
-                self._add_window_label_visual(label_data)
+                self._add_window_label_visual(row)
 
     def _sync_label_visuals(
         self,
@@ -4703,7 +4710,6 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _finalize_label_change(
         self, *, force_rebuild: bool = False, refresh_summary: bool = True
     ) -> None:
-        self.labels = sorted(self.labels, key=lambda x: float(x["start"]))
         self._merge_adjacent_same_labels()
         self._rebuild_label_index()
         self._sync_label_visuals(
@@ -4712,40 +4718,11 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _add_new_label(self, start, end, label):
         """Adds new label, overwriting/modifying existing ones in the range."""
-        updated_labels = []
-
-        for existing in self.labels:
-            ex_start, ex_end = existing["start"], existing["end"]
-
-            overlap_start = max(ex_start, start)
-            overlap_end = min(ex_end, end)
-
-            if overlap_start >= overlap_end:
-                updated_labels.append(existing)
-                continue
-
-            if ex_start < start and ex_end > end:
-                updated_labels.append(
-                    {"start": ex_start, "end": start, "label": existing["label"]}
-                )
-                updated_labels.append(
-                    {"start": end, "end": ex_end, "label": existing["label"]}
-                )
-            elif ex_start < start:
-                updated_labels.append(
-                    {"start": ex_start, "end": start, "label": existing["label"]}
-                )
-            elif ex_end > end:
-                updated_labels.append(
-                    {"start": end, "end": ex_end, "label": existing["label"]}
-                )
-
-        updated_labels.append({"start": start, "end": end, "label": label})
-        self.labels = updated_labels
+        try:
+            self.label_set.add(float(start), float(end), str(label))
+        except ValueError:
+            return
         self._finalize_label_change()
-
-        # Track this label as most recently created (for note assignment)
-        self.label_history.append((float(start), float(end)))
 
     def _clear_labels_in_range(self, start: float, end: float):
         """Remove any labels overlapping [start, end). Preserve non-overlapping parts.
@@ -4753,60 +4730,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         If an existing labeled epoch partially overlaps the range, it is split
         and only the overlapping part is removed.
         """
-        if end <= start or not self.labels:
-            return
-        kept: list[dict] = []
-        a = float(start)
-        b = float(end)
-        for existing in self.labels:
-            ex_start = float(existing["start"])
-            ex_end = float(existing["end"])
-            lab = existing["label"]
-
-            # No overlap
-            if ex_end <= a or ex_start >= b:
-                kept.append(existing)
-                continue
-
-            # Overlap exists; keep non-overlapping tails
-            if ex_start < a:
-                kept.append({"start": ex_start, "end": a, "label": lab})
-            if ex_end > b:
-                kept.append({"start": b, "end": ex_end, "label": lab})
-
-        # Keep labels ordered; merging not required but harmless if adjacent remains
-        self.labels = kept
+        self.label_set.clear_range(float(start), float(end))
         self._finalize_label_change()
 
     def _merge_adjacent_same_labels(self, adjacency_eps: float = 1e-9):
-        if not self.labels:
-            return
-        merged = []
-        for lab in sorted(self.labels, key=lambda x: x["start"]):
-            if not merged:
-                merged.append(
-                    {
-                        "start": float(lab["start"]),
-                        "end": float(lab["end"]),
-                        "label": lab["label"],
-                    }
-                )
-                continue
-            prev = merged[-1]
-            if (
-                lab["label"] == prev["label"]
-                and float(lab["start"]) <= float(prev["end"]) + adjacency_eps
-            ):
-                prev["end"] = max(float(prev["end"]), float(lab["end"]))
-            else:
-                merged.append(
-                    {
-                        "start": float(lab["start"]),
-                        "end": float(lab["end"]),
-                        "label": lab["label"],
-                    }
-                )
-        self.labels = merged
+        self.label_set.merge_adjacent(eps=adjacency_eps)
 
     def _redraw_all_labels(self):
         """Force a full rebuild of all visual label regions."""
@@ -4830,22 +4758,20 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.hypnogram_view_region.setRegion((a, b))
 
     def _delete_last_label(self):
-        if not self.labels:
+        if len(self.label_set) == 0:
             return
-
-        latest_end_time = -1
-        latest_label_index = -1
-        for i, lab in enumerate(self.labels):
-            if lab["end"] > latest_end_time:
-                latest_end_time = lab["end"]
-                latest_label_index = i
-
-        if latest_label_index != -1:
-            last = self.labels.pop(latest_label_index)
-            self._finalize_label_change()
-            self._update_status(
-                f"Deleted label: {last['label']} [{last['start']:.3f}, {last['end']:.3f}]"
-            )
+        # Match the legacy "latest by end time" semantic: pick the row whose
+        # end is greatest, regardless of creation order.
+        ends = self.label_set.ends
+        if len(ends) == 0:
+            return
+        idx = int(np.argmax(ends))
+        row = self.label_set.row_at_index(idx)
+        self.label_set.delete_row(row.row_id)
+        self._finalize_label_change()
+        self._update_status(
+            f"Deleted label: {row.label} [{row.start:.3f}, {row.end:.3f}]"
+        )
 
     def _zoom_active_plot_y(self, factor):
         """Zooms the Y-axis of the currently hovered plot."""
@@ -5023,81 +4949,106 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     # ---------- Export / Import ----------
 
-    def load_labels(self, path: str) -> None:
-        """Load labels from a CSV file.
+    _LABEL_LOAD_FILTER = (
+        "Label files (*.csv *.htsv *.parquet *.txt);;"
+        "CSV (*.csv);;HTSV (*.htsv);;Parquet (*.parquet);;Visbrain (*.txt)"
+    )
+    _LABEL_SAVE_FILTER = (
+        "CSV (*.csv);;HTSV (*.htsv);;Parquet (*.parquet)"
+    )
+
+    def load_labels(
+        self,
+        path: str,
+        *,
+        schema: LabelSchema | None = None,
+        writeback_allowed: bool | None = None,
+    ) -> None:
+        """Load labels from a CSV/HTSV/Parquet/Visbrain file.
 
         Parameters
         ----------
-        path : str
-            Path to a CSV file with columns ``start_s``, ``end_s``,
-            ``label``, and optionally ``note``.
+        path
+            Path to the file.
+        schema
+            Optional :class:`LabelSchema`. If omitted, inferred for ``.csv``
+            and ``.txt``; required for ``.htsv``/``.parquet``.
+        writeback_allowed
+            If given, override the new LabelSet's writeback flag. If omitted,
+            preserves whatever the previous LabelSet had.
         """
-        loaded_labels = []
-        loaded_notes = {}
-        with open(path, "r", newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader)
-
-            has_notes = len(header) >= 4 and header[3] == "note"
-            if header[:3] != ["start_s", "end_s", "label"]:
-                raise ValueError("CSV header does not match expected format.")
-
-            for row in reader:
-                if not row:
-                    continue
-                start = float(row[0])
-                end = float(row[1])
-                label = str(row[2])
-                loaded_labels.append({"start": start, "end": end, "label": label})
-
-                if has_notes and len(row) >= 4 and row[3].strip():
-                    loaded_notes[(start, end)] = row[3]
-
-        self.labels = loaded_labels
-        self.label_notes = loaded_notes
-        self.label_history = [(lab["start"], lab["end"]) for lab in self.labels]
-        self._finalize_label_change()
+        wb = (
+            self.label_set.writeback_allowed
+            if writeback_allowed is None
+            else bool(writeback_allowed)
+        )
+        new_set = LabelSet.from_path(path, schema=schema, writeback_allowed=wb)
+        self.label_set = new_set
+        self._finalize_label_change(force_rebuild=True)
         self._update_status(
-            f"Loaded {len(self.labels)} labels from {os.path.basename(path)}"
+            f"Loaded {len(self.label_set)} labels from {os.path.basename(path)}"
         )
 
     def _on_load_labels(self):
         self._stop_playback_if_playing()
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Load labels from CSV", filter="CSV (*.csv)"
+            self, "Load labels", filter=self._LABEL_LOAD_FILTER
         )
         if not path:
             return
         try:
             self.load_labels(path)
+        except (LabelIOError, LabelSchemaError) as e:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Load error",
+                f"Failed to load labels file:\n\n{e}\n\n"
+                f"For .htsv/.parquet, pass an explicit LabelSchema via the "
+                f"`labels=` and `label_schema=` kwargs of view().",
+            )
         except Exception as e:
             QtWidgets.QMessageBox.warning(
                 self, "Load error", f"Failed to load or parse labels file:\n\n{e}"
             )
 
     def _on_export_labels(self):
+        """Save labels to a new file via Save-As dialog (never overwrites source)."""
         self._stop_playback_if_playing()
-        if not self.labels:
+        if len(self.label_set) == 0:
             QtWidgets.QMessageBox.information(self, "Export", "No labels to export.")
             return
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export labels to CSV", filter="CSV (*.csv)"
+            self, "Export labels", filter=self._LABEL_SAVE_FILTER
         )
         if not path:
             return
         try:
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["start_s", "end_s", "label", "note"])
-                for lab in self.labels:
-                    key = (float(lab["start"]), float(lab["end"]))
-                    note = self.label_notes.get(key, "")
-                    writer.writerow(
-                        [f"{lab['start']:.6f}", f"{lab['end']:.6f}", lab["label"], note]
-                    )
+            self.label_set.save_as(path)
             self._update_status(f"Exported labels to {path}")
-        except Exception as e:
+        except (LabelIOError, LabelSchemaError) as e:
             QtWidgets.QMessageBox.warning(self, "Export error", str(e))
+
+    def _on_save_to_source(self):
+        """Overwrite the original labels file. Requires labels_writeback=True."""
+        self._stop_playback_if_playing()
+        if not self.label_set.writeback_allowed:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Save",
+                "Save-to-source is disabled. Pass `labels_writeback=True` to "
+                "view() to opt in to overwriting the original file.",
+            )
+            return
+        if self.label_set.source_path is None:
+            QtWidgets.QMessageBox.warning(
+                self, "Save", "No source file recorded; use Export Labels As… instead."
+            )
+            return
+        try:
+            self.label_set.save_to_source()
+            self._update_status(f"Saved labels to {self.label_set.source_path}")
+        except (LabelIOError, LabelSchemaError) as e:
+            QtWidgets.QMessageBox.warning(self, "Save error", str(e))
 
     # ---------- Navigation / rendering ----------
 
@@ -5637,7 +5588,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._update_plot_area_height()
             # Re-apply x-range to keep all linked
             self._apply_x_range()
-            if self.labels:
+            if len(self.label_set) > 0:
                 self._sync_label_visuals(
                     refresh_summary=False,
                     force_rebuild_window=True,
@@ -5669,6 +5620,21 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _show_help(self):
         self._stop_playback_if_playing()
+        # Build the labels line dynamically from the active state config so all
+        # hotkeys (including multi-key bindings) are shown for every state.
+        keys_for_state = self.state_config.keys_for_state
+        if keys_for_state:
+            label_bits = [
+                f"{state}=" + "/".join(keys)
+                for state, keys in sorted(keys_for_state.items())
+            ]
+            labels_line = ", ".join(label_bits) + ", Backspace=delete last"
+        else:
+            labels_line = (
+                "(no states configured — pass keymap=, label_colors=, or "
+                "state_definitions= to view())"
+            )
+
         QtWidgets.QMessageBox.information(
             self,
             "Help",
@@ -5677,7 +5643,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 "<b>Spacebar:</b> Toggle window playback<br>"
                 "<b>Ctrl+D:</b> Show/hide Y-Axis Controls<br>"
                 "<b>Ctrl+1 / Ctrl+2:</b> Zoom Y-Axis In / Out (on hovered plot)<br>"
-                "<b>Labels:</b> w=Wake, n=NREM, r=REM, a=Artifact, Backspace=delete last<br>"
+                f"<b>Labels:</b> {labels_line}<br>"
                 "<b>Paging:</b> [ ] or Scroll Wheel = previous/next page<br><br>"
                 "Click-drag in any plot to create selection. Selection stays active across pages; "
                 "drag its handles to extend, then press a label hotkey.<br>"
@@ -5702,36 +5668,25 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.status.showMessage("  ".join(info))
 
     def _format_cursor_with_state(self):
-        label_info = self._get_state_and_epoch_at_time(self.cursor_time)
-        if label_info is None:
+        row = self.label_set.at_time(self.cursor_time)
+        if row is None:
             return f"cursor={self.cursor_time:.3f}s, state='Unlabeled'"
 
-        state_txt = label_info["label"]
-        result = f"cursor={self.cursor_time:.3f}s, state='{state_txt}'"
-
-        # Check for note on this epoch
-        key = (float(label_info["start"]), float(label_info["end"]))
-        note = self.label_notes.get(key, "")
+        result = f"cursor={self.cursor_time:.3f}s, state='{row.label}'"
+        note = row.note or ""
         if note:
-            # Truncate note for status bar (max 40 chars)
             if len(note) > 40:
                 note = note[:37] + "..."
             result += f" | Note: {note}"
-
         return result
 
     def _get_state_and_epoch_at_time(self, t):
-        """Get the full label dict at time t, or None if unlabeled."""
-        if not self.labels:
-            return None
-        for lab in self.labels:
-            if lab["start"] <= t < lab["end"]:
-                return lab
-        return None
+        """Return the LabelRow at time ``t``, or ``None`` if unlabeled."""
+        return self.label_set.at_time(t)
 
     def _get_state_at_time(self, t):
-        lab = self._get_state_and_epoch_at_time(t)
-        return lab["label"] if lab else None
+        row = self._get_state_and_epoch_at_time(t)
+        return row.label if row else None
 
     def closeEvent(self, ev):
         try:
@@ -5868,6 +5823,25 @@ def main():
             'Values as [start, stop] are converted to slice objects.'
         ),
     )
+    parser.add_argument(
+        "--state-definitions",
+        type=str,
+        default=None,
+        help=(
+            "Path to a JSON file with 'keymap' and 'label_colors'. "
+            "If omitted, looks for state_definitions.json next to app.py. "
+            "See example_state_definitions.json for the schema."
+        ),
+    )
+    parser.add_argument(
+        "--labels",
+        type=str,
+        default=None,
+        help=(
+            "Path to an initial labels file (.csv, .htsv, .parquet, "
+            "or Visbrain .txt)."
+        ),
+    )
     args = parser.parse_args()
 
     # Convert xarray args to Series if provided
@@ -5902,6 +5876,11 @@ def main():
 
         xr_series = [Series(name, t, y) for name, t, y in all_tuples]
 
+    state_config = load_state_config(path=args.state_definitions)
+    label_set = (
+        LabelSet.from_path(args.labels) if args.labels else None
+    )
+
     app = QtWidgets.QApplication(sys.argv)
     w = LoupeApp(
         data_dir=args.data_dir,
@@ -5922,6 +5901,8 @@ def main():
         matrix_colors=args.matrix_colors,
         # xarray series
         xr_series=xr_series,
+        state_config=state_config,
+        label_set=label_set,
     )
     w.show()
     sys.exit(app.exec())
