@@ -10,10 +10,14 @@ pip install PySide6 pyqtgraph opencv-python numpy
 import os, sys, glob, csv, math, argparse, json
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
+
+if TYPE_CHECKING:
+    from matplotlib.colors import Colormap
 
 try:
     import cv2
@@ -123,6 +127,32 @@ class MatrixSeries:
     n_rows: int  # number of unique rows (max(yvals) + 1)
 
 
+@dataclass
+class ArraySeries:
+    """Holds data for an array (heatmap/imshow) subplot.
+
+    Represents a single 2-D buffer ``Y`` of shape ``(n_rows, n_time)`` with a
+    shared time axis ``t``.  Each row corresponds to one entry of the row dim
+    after ``sort_on`` ordering; each column corresponds to one time sample.
+    """
+
+    name: str
+    t: np.ndarray  # 1-D, shape (n_time,), seconds, monotonic
+    Y: np.ndarray  # 2-D, shape (n_rows, n_time), float32, NaN→-inf at load
+    row_labels: np.ndarray | None  # values of sort_on per row (post-sort), or None
+    row_dim_name: str  # name of the row dimension (for tooltips / control board)
+    colormap: "str | Colormap" = "magma"  # matplotlib colormap name or Colormap instance
+    vmin: float = 0.0
+    vmax: float = 1.0
+    decim_method: str = "peak"  # "peak" | "mean"
+    mipmap_levels: list[np.ndarray] | None = None  # built lazily for big arrays
+
+
+# Build a mip-map lazily for arrays exceeding this size (rows * cols).
+ARRAY_MIPMAP_THRESHOLD = 5_000_000
+ARRAY_MIPMAP_TARGET_MIN_COLS = 1500
+
+
 LabelKey = tuple[float, float, str]
 
 
@@ -134,6 +164,7 @@ class LabelVisualBundle:
     matrix_regions: list[tuple[int, pg.LinearRegionItem]]
     dense_regions: list[tuple[int, pg.LinearRegionItem]]
     hypnogram_region: pg.LinearRegionItem | None
+    array_regions: list[tuple[int, pg.LinearRegionItem]] = field(default_factory=list)
 
 
 MATRIX_ALPHA_LEVEL_COUNT = 11
@@ -922,6 +953,336 @@ class DenseViewControlsDialog(QtWidgets.QDialog):
         self.main_window._setup_dense_vscrollbar_for_group(gi)
 
 
+def _colormap_display_name(cmap: "str | Colormap") -> str:
+    """Return a human-readable string name for a colormap value.
+
+    Used for the GUI combo box (which only displays/sets text). Falls back to
+    ``"custom"`` if a Colormap instance has no ``.name`` attribute.
+    """
+    if isinstance(cmap, str):
+        return cmap
+    return str(getattr(cmap, "name", "custom"))
+
+
+def _colormap_cache_token(cmap: "str | Colormap"):
+    """Hashable, equality-stable token identifying a colormap value.
+
+    Used as part of the per-frame array-render cache key (which compares by
+    ``==``). Strings compare by value; Colormap instances by ``id()`` so a
+    new instance forces a re-render.
+    """
+    if isinstance(cmap, str):
+        return cmap
+    return ("__cmap_obj__", id(cmap))
+
+
+# Built-in colormap suggestions for the Array Plot Control Board.
+ARRAY_COLORMAP_PRESETS = (
+    "magma",
+    "viridis",
+    "plasma",
+    "inferno",
+    "cividis",
+    "gray",
+    "RdBu_r",
+    "coolwarm",
+    "seismic",
+    "hot",
+)
+
+
+class ArrayControlsDialog(QtWidgets.QDialog):
+    """Non-modal dialog for adjusting per-array vmin/vmax, colormap, and decim method."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Array Plot Controls")
+        self.setModal(False)
+        self.main_window = parent
+
+        outer = QtWidgets.QVBoxLayout(self)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        outer.addWidget(scroll, 1)
+
+        container = QtWidgets.QWidget()
+        scroll.setWidget(container)
+        main_layout = QtWidgets.QVBoxLayout(container)
+
+        self._group_widgets: list[dict] = []
+
+        for ai, asx in enumerate(self.main_window.array_series):
+            grp_box = QtWidgets.QGroupBox(asx.name)
+            grp_layout = QtWidgets.QFormLayout(grp_box)
+
+            # Determine slider range from the data values (finite only).
+            finite = asx.Y[np.isfinite(asx.Y)]
+            if finite.size > 0:
+                d_lo = float(np.min(finite))
+                d_hi = float(np.max(finite))
+                if d_hi <= d_lo:
+                    d_hi = d_lo + 1.0
+                pad = 0.1 * (d_hi - d_lo)
+                slider_lo = d_lo - pad
+                slider_hi = d_hi + pad
+            else:
+                slider_lo, slider_hi = 0.0, 1.0
+            slider_span = max(slider_hi - slider_lo, 1e-9)
+
+            # vmin slider + spinbox
+            vmin_layout = QtWidgets.QHBoxLayout()
+            vmin_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            vmin_slider.setRange(0, 10000)
+            vmin_slider.setValue(
+                int(((asx.vmin - slider_lo) / slider_span) * 10000)
+            )
+            vmin_spin = QtWidgets.QDoubleSpinBox()
+            vmin_spin.setRange(slider_lo - 10 * slider_span, slider_hi + 10 * slider_span)
+            vmin_spin.setDecimals(4)
+            vmin_spin.setValue(asx.vmin)
+            vmin_spin.setSingleStep(slider_span / 100.0)
+            vmin_layout.addWidget(vmin_slider, 3)
+            vmin_layout.addWidget(vmin_spin, 1)
+            grp_layout.addRow("vmin:", vmin_layout)
+
+            # vmax slider + spinbox
+            vmax_layout = QtWidgets.QHBoxLayout()
+            vmax_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            vmax_slider.setRange(0, 10000)
+            vmax_slider.setValue(
+                int(((asx.vmax - slider_lo) / slider_span) * 10000)
+            )
+            vmax_spin = QtWidgets.QDoubleSpinBox()
+            vmax_spin.setRange(slider_lo - 10 * slider_span, slider_hi + 10 * slider_span)
+            vmax_spin.setDecimals(4)
+            vmax_spin.setValue(asx.vmax)
+            vmax_spin.setSingleStep(slider_span / 100.0)
+            vmax_layout.addWidget(vmax_slider, 3)
+            vmax_layout.addWidget(vmax_spin, 1)
+            grp_layout.addRow("vmax:", vmax_layout)
+
+            # Reset to robust 1-99% percentile button
+            reset_btn = QtWidgets.QPushButton("Reset to 1–99% percentile")
+            grp_layout.addRow("", reset_btn)
+
+            # Colormap dropdown
+            cmap_combo = QtWidgets.QComboBox()
+            cmap_combo.setEditable(True)
+            for name in ARRAY_COLORMAP_PRESETS:
+                cmap_combo.addItem(name)
+            cmap_label = _colormap_display_name(asx.colormap)
+            if cmap_label not in ARRAY_COLORMAP_PRESETS:
+                cmap_combo.addItem(cmap_label)
+            cmap_combo.setCurrentText(cmap_label)
+            grp_layout.addRow("Colormap:", cmap_combo)
+
+            # Decimation method radios
+            decim_box = QtWidgets.QHBoxLayout()
+            decim_peak = QtWidgets.QRadioButton("Peak (max-abs)")
+            decim_mean = QtWidgets.QRadioButton("Mean")
+            if asx.decim_method == "mean":
+                decim_mean.setChecked(True)
+            else:
+                decim_peak.setChecked(True)
+            decim_grp = QtWidgets.QButtonGroup(grp_box)
+            decim_grp.addButton(decim_peak, 0)
+            decim_grp.addButton(decim_mean, 1)
+            decim_box.addWidget(decim_peak)
+            decim_box.addWidget(decim_mean)
+            decim_box.addStretch(1)
+            grp_layout.addRow("Decimation:", decim_box)
+
+            # Apply-to-all button
+            apply_all_btn = QtWidgets.QPushButton("Apply to all arrays")
+            grp_layout.addRow("", apply_all_btn)
+
+            main_layout.addWidget(grp_box)
+
+            widgets = {
+                "vmin_slider": vmin_slider,
+                "vmin_spin": vmin_spin,
+                "vmax_slider": vmax_slider,
+                "vmax_spin": vmax_spin,
+                "cmap_combo": cmap_combo,
+                "decim_peak": decim_peak,
+                "decim_mean": decim_mean,
+                "slider_lo": slider_lo,
+                "slider_span": slider_span,
+            }
+            self._group_widgets.append(widgets)
+
+            # Wire signals
+            vmin_slider.valueChanged.connect(
+                lambda val, ai=ai: self._on_vmin_slider(ai, val)
+            )
+            vmin_spin.valueChanged.connect(
+                lambda val, ai=ai: self._on_vmin_spin(ai, val)
+            )
+            vmax_slider.valueChanged.connect(
+                lambda val, ai=ai: self._on_vmax_slider(ai, val)
+            )
+            vmax_spin.valueChanged.connect(
+                lambda val, ai=ai: self._on_vmax_spin(ai, val)
+            )
+            cmap_combo.currentTextChanged.connect(
+                lambda name, ai=ai: self._on_cmap_changed(ai, name)
+            )
+            decim_peak.toggled.connect(
+                lambda checked, ai=ai: (
+                    self._on_decim_changed(ai, "peak") if checked else None
+                )
+            )
+            decim_mean.toggled.connect(
+                lambda checked, ai=ai: (
+                    self._on_decim_changed(ai, "mean") if checked else None
+                )
+            )
+            reset_btn.clicked.connect(lambda _=False, ai=ai: self._reset_levels(ai))
+            apply_all_btn.clicked.connect(lambda _=False, ai=ai: self._apply_to_all(ai))
+
+        outer.addStretch(0)
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        btns.rejected.connect(self.reject)
+        outer.addWidget(btns)
+
+    # ---- helpers --------------------------------------------------------
+
+    def _slider_to_value(self, ai: int, slider_val: int) -> float:
+        w = self._group_widgets[ai]
+        return w["slider_lo"] + (slider_val / 10000.0) * w["slider_span"]
+
+    def _value_to_slider(self, ai: int, value: float) -> int:
+        w = self._group_widgets[ai]
+        return int(((value - w["slider_lo"]) / w["slider_span"]) * 10000)
+
+    def _invalidate_array_cache(self, ai: int) -> None:
+        if ai < len(self.main_window._array_cache_keys):
+            self.main_window._array_cache_keys[ai] = None
+
+    def _refresh_one(self, ai: int) -> None:
+        self._invalidate_array_cache(ai)
+        self.main_window._refresh_array_plots()
+
+    def _sync_widgets_to_state(self, ai: int) -> None:
+        """Update slider/spinbox/combo/radio without firing handlers."""
+        if ai >= len(self._group_widgets):
+            return
+        w = self._group_widgets[ai]
+        asx = self.main_window.array_series[ai]
+        for sl in (w["vmin_slider"], w["vmax_slider"]):
+            sl.blockSignals(True)
+        for sp in (w["vmin_spin"], w["vmax_spin"]):
+            sp.blockSignals(True)
+        w["cmap_combo"].blockSignals(True)
+        w["decim_peak"].blockSignals(True)
+        w["decim_mean"].blockSignals(True)
+        try:
+            w["vmin_slider"].setValue(self._value_to_slider(ai, asx.vmin))
+            w["vmin_spin"].setValue(asx.vmin)
+            w["vmax_slider"].setValue(self._value_to_slider(ai, asx.vmax))
+            w["vmax_spin"].setValue(asx.vmax)
+            cmap_label = _colormap_display_name(asx.colormap)
+            if w["cmap_combo"].findText(cmap_label) < 0:
+                w["cmap_combo"].addItem(cmap_label)
+            w["cmap_combo"].setCurrentText(cmap_label)
+            if asx.decim_method == "mean":
+                w["decim_mean"].setChecked(True)
+            else:
+                w["decim_peak"].setChecked(True)
+        finally:
+            for sl in (w["vmin_slider"], w["vmax_slider"]):
+                sl.blockSignals(False)
+            for sp in (w["vmin_spin"], w["vmax_spin"]):
+                sp.blockSignals(False)
+            w["cmap_combo"].blockSignals(False)
+            w["decim_peak"].blockSignals(False)
+            w["decim_mean"].blockSignals(False)
+
+    # ---- handlers -------------------------------------------------------
+
+    def _on_vmin_slider(self, ai: int, slider_val: int) -> None:
+        v = self._slider_to_value(ai, slider_val)
+        asx = self.main_window.array_series[ai]
+        asx.vmin = float(v)
+        spin = self._group_widgets[ai]["vmin_spin"]
+        spin.blockSignals(True)
+        spin.setValue(v)
+        spin.blockSignals(False)
+        self._refresh_one(ai)
+
+    def _on_vmin_spin(self, ai: int, value: float) -> None:
+        asx = self.main_window.array_series[ai]
+        asx.vmin = float(value)
+        slider = self._group_widgets[ai]["vmin_slider"]
+        slider.blockSignals(True)
+        slider.setValue(self._value_to_slider(ai, value))
+        slider.blockSignals(False)
+        self._refresh_one(ai)
+
+    def _on_vmax_slider(self, ai: int, slider_val: int) -> None:
+        v = self._slider_to_value(ai, slider_val)
+        asx = self.main_window.array_series[ai]
+        asx.vmax = float(v)
+        spin = self._group_widgets[ai]["vmax_spin"]
+        spin.blockSignals(True)
+        spin.setValue(v)
+        spin.blockSignals(False)
+        self._refresh_one(ai)
+
+    def _on_vmax_spin(self, ai: int, value: float) -> None:
+        asx = self.main_window.array_series[ai]
+        asx.vmax = float(value)
+        slider = self._group_widgets[ai]["vmax_slider"]
+        slider.blockSignals(True)
+        slider.setValue(self._value_to_slider(ai, value))
+        slider.blockSignals(False)
+        self._refresh_one(ai)
+
+    def _on_cmap_changed(self, ai: int, name: str) -> None:
+        if not name:
+            return
+        self.main_window.array_series[ai].colormap = str(name)
+        self._refresh_one(ai)
+
+    def _on_decim_changed(self, ai: int, method: str) -> None:
+        asx = self.main_window.array_series[ai]
+        if asx.decim_method == method:
+            return
+        asx.decim_method = method
+        # Rebuild the mip-map with the new reduction method, if one exists.
+        if asx.mipmap_levels is not None:
+            from loupe.xr_loader import _build_mipmap
+
+            asx.mipmap_levels = _build_mipmap(
+                asx.Y, method, ARRAY_MIPMAP_TARGET_MIN_COLS
+            )
+        self._refresh_one(ai)
+
+    def _reset_levels(self, ai: int) -> None:
+        asx = self.main_window.array_series[ai]
+        finite = asx.Y[np.isfinite(asx.Y)]
+        if finite.size == 0:
+            return
+        asx.vmin = float(np.percentile(finite, 1.0))
+        asx.vmax = float(np.percentile(finite, 99.0))
+        if asx.vmax <= asx.vmin:
+            asx.vmax = asx.vmin + 1.0
+        self._sync_widgets_to_state(ai)
+        self._refresh_one(ai)
+
+    def _apply_to_all(self, ai: int) -> None:
+        src = self.main_window.array_series[ai]
+        for j, asx in enumerate(self.main_window.array_series):
+            if j == ai:
+                continue
+            asx.vmin = src.vmin
+            asx.vmax = src.vmax
+            asx.colormap = src.colormap
+            asx.decim_method = src.decim_method
+            self._sync_widgets_to_state(j)
+            self._invalidate_array_cache(j)
+        self.main_window._refresh_array_plots()
+
 
 # ---------------- Main window ----------------
 
@@ -955,6 +1316,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         overlay_colors=None,
         # Dense mode
         dense_groups=None,
+        # Array (heatmap) mode
+        array_series=None,
+        # Initial layout order — list of ("ts"|"dense"|"matrix"|"array", idx)
+        # tuples that specifies the visual subplot order top-to-bottom.
+        # When None, falls back to the type-segregated default
+        # (ts → dense → matrix → array). User can still rearrange interactively
+        # via the Plot Order dialog after launch.
+        subplot_order=None,
     ):
         super().__init__()
         self.setWindowTitle("Loupe — Multi-Trace + Video + Labeling")
@@ -1023,6 +1392,28 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_height_factors: list[float] = []  # one per matrix plot
         # Visibility flags for matrix plots (similar to trace_visible for time series)
         self.matrix_visible: list[bool] = []
+
+        # Array (heatmap) plots
+        self.array_series: list[ArraySeries] = []
+        self.array_plots: list[pg.PlotItem] = []
+        self.array_image_items: list[pg.ImageItem] = []
+        self.array_cur_lines: list[pg.InfiniteLine] = []
+        self.array_sel_regions: list[pg.LinearRegionItem] = []
+        self.array_height_factors: list[float] = []
+        self.array_visible: list[bool] = []
+        # Proportional sizing (mirror matrix-plot behaviour). On by default
+        # because most users prefer per-row weighting for heatmaps.
+        self.scale_array_proportionally = True
+        self.array_share_boost = 0  # each unit = 5%, no bounds
+        # When True, scale all array plots down uniformly so the total height
+        # of every visible subplot fits in the plot-area viewport without
+        # vertical scrolling. Toggled via View menu. Re-evaluated on every
+        # resize. Has no effect when there are no array plots.
+        self.compact_arrays_to_fit = True
+        # Cache last-rendered key per array plot so identical refreshes return early
+        self._array_cache_keys: list[tuple | None] = []
+        # Cache uint8 RGBA LUTs by colormap name (built once per name)
+        self._lut_cache: dict[str, np.ndarray] = {}
         # Plot order: list of (type, index) tuples, e.g., [("ts", 0), ("ts", 1), ("matrix", 0)]
         # None means use default order (all ts first, then all matrix)
         self.subplot_order: list[tuple] | None = None
@@ -1144,11 +1535,25 @@ class LoupeApp(QtWidgets.QMainWindow):
                 for g in dense_groups
             ]
 
+        # Store array series early (before set_series triggers plot creation)
+        if array_series:
+            self.array_series = list(array_series)
+            self.array_height_factors = [1.0] * len(self.array_series)
+            self.array_visible = [True] * len(self.array_series)
+            self._array_cache_keys = [None] * len(self.array_series)
+
         # Prefer overlay groups, then xarray series, then explicit file list, then dir
         if overlay_groups:
             self.set_overlay_series(overlay_groups, colors=overlay_colors)
-        elif xr_series or dense_groups:
+        elif xr_series or dense_groups or array_series:
             self.set_series(xr_series or [], colors=colors)
+
+        # User-supplied initial layout order overrides the default segregated
+        # order produced by set_series. Apply AFTER set_series, then rebuild
+        # the layout so the first display reflects the requested order.
+        if subplot_order is not None:
+            self.subplot_order = list(subplot_order)
+            self._rebuild_all_plots()
         elif data_files:
             # Allow flexible formats: list[str], comma-separated strings, or "[a,b]".
             def _normalize_file_list(df):
@@ -1225,7 +1630,12 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _refresh_low_profile_x(self) -> None:
         """Update low-profile X mode from explicit preference or subplot count."""
-        total_subplots = len(self.series) + len(self.matrix_series) + len(self.dense_groups)
+        total_subplots = (
+            len(self.series)
+            + len(self.matrix_series)
+            + len(self.dense_groups)
+            + len(self.array_series)
+        )
         self.low_profile_x = resolve_low_profile_x(
             self._low_profile_x_preference, total_subplots
         )
@@ -1505,6 +1915,38 @@ class LoupeApp(QtWidgets.QMainWindow):
         decrease_matrix_share_action.triggered.connect(self._decrease_matrix_share)
         mview.addAction(decrease_matrix_share_action)
 
+        # Array (heatmap) sizing — mirror the matrix triplet
+        self.action_proportional_array = QtGui.QAction(
+            "Proportional Array Plots", self
+        )
+        self.action_proportional_array.setCheckable(True)
+        self.action_proportional_array.setChecked(self.scale_array_proportionally)
+        self.action_proportional_array.toggled.connect(
+            self._toggle_proportional_array
+        )
+        mview.addAction(self.action_proportional_array)
+
+        increase_array_share_action = QtGui.QAction("Increase Array Share", self)
+        increase_array_share_action.triggered.connect(self._increase_array_share)
+        mview.addAction(increase_array_share_action)
+
+        decrease_array_share_action = QtGui.QAction("Decrease Array Share", self)
+        decrease_array_share_action.triggered.connect(self._decrease_array_share)
+        mview.addAction(decrease_array_share_action)
+
+        # Uniformly compress array plots so the entire stack fits on screen
+        # (no vertical scrollbar). On by default; users with few arrays can
+        # turn it off to get the full per-row 12px sizing.
+        self.action_compact_arrays_to_fit = QtGui.QAction(
+            "Compact Array Plots to Fit Screen", self
+        )
+        self.action_compact_arrays_to_fit.setCheckable(True)
+        self.action_compact_arrays_to_fit.setChecked(self.compact_arrays_to_fit)
+        self.action_compact_arrays_to_fit.toggled.connect(
+            self._toggle_compact_arrays_to_fit
+        )
+        mview.addAction(self.action_compact_arrays_to_fit)
+
         matrix_brightness_action = QtGui.QAction("Adjust Matrix Brightness...", self)
         matrix_brightness_action.triggered.connect(self._adjust_matrix_brightness)
         mview.addAction(matrix_brightness_action)
@@ -1521,6 +1963,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         matrix_thickness_action = QtGui.QAction("Matrix Event Thickness...", self)
         matrix_thickness_action.triggered.connect(self._adjust_matrix_event_thickness)
         mview.addAction(matrix_thickness_action)
+
+        mview.addSeparator()
+        array_ctrl_action = QtGui.QAction("Array Plot Controls...", self)
+        array_ctrl_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+A"))
+        array_ctrl_action.triggered.connect(self._show_array_controls_dialog)
+        mview.addAction(array_ctrl_action)
 
         mview.addSeparator()
         subplot_control_action = QtGui.QAction("Subplot Control Board...", self)
@@ -1631,6 +2079,27 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_trace_visibility()
         self._update_status(f"Matrix share boost: {self.matrix_share_boost * 5:+d}%")
 
+    def _toggle_proportional_array(self, checked: bool):
+        """Toggle proportional array plot sizing on/off."""
+        self.scale_array_proportionally = checked
+        self._apply_trace_visibility()  # Rebuilds layout with new sizing
+
+    def _increase_array_share(self):
+        """Increase the vertical space share for array plots by ~5%."""
+        if not self.array_series:
+            return
+        self.array_share_boost += 1
+        self._apply_trace_visibility()
+        self._update_status(f"Array share boost: {self.array_share_boost * 5:+d}%")
+
+    def _decrease_array_share(self):
+        """Decrease the vertical space share for array plots by ~5%."""
+        if not self.array_series:
+            return
+        self.array_share_boost -= 1
+        self._apply_trace_visibility()
+        self._update_status(f"Array share boost: {self.array_share_boost * 5:+d}%")
+
     def _adjust_matrix_brightness(self):
         """Show a dialog to adjust matrix event brightness."""
         if not self.matrix_series:
@@ -1688,6 +2157,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             for _i, reg in bundle.dense_regions:
                 reg.setBrush(brush)
             for _i, reg in bundle.matrix_regions:
+                reg.setBrush(brush)
+            for _i, reg in bundle.array_regions:
                 reg.setBrush(brush)
         for (_a, _b, name), region in self._hypnogram_label_visuals.items():
             region.setBrush(pg.mkBrush(*self._label_brush_color(name)))
@@ -1965,7 +2436,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             if self.overlay_mode
             else len(self.series)
         )
-        total_subplots = n_ts_plots + len(self.dense_groups) + len(self.matrix_series)
+        total_subplots = (
+            n_ts_plots
+            + len(self.dense_groups)
+            + len(self.matrix_series)
+            + len(self.array_series)
+        )
         if total_subplots == 0:
             QtWidgets.QMessageBox.information(
                 self, "Subplot Control", "No subplots loaded."
@@ -1979,12 +2455,16 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.matrix_height_factors.append(1.0)
         while len(self.dense_height_factors) < len(self.dense_groups):
             self.dense_height_factors.append(1.0)
+        while len(self.array_height_factors) < len(self.array_series):
+            self.array_height_factors.append(1.0)
         if not hasattr(self, "trace_visible") or len(self.trace_visible) != n_ts_plots:
             self.trace_visible = [True] * n_ts_plots
         while len(self.matrix_visible) < len(self.matrix_series):
             self.matrix_visible.append(True)
         while len(self.dense_visible) < len(self.dense_groups):
             self.dense_visible.append(True)
+        while len(self.array_visible) < len(self.array_series):
+            self.array_visible.append(True)
 
         # Initialize subplot order if not set
         if self.subplot_order is None:
@@ -1995,6 +2475,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self.subplot_order.append(("dense", i))
             for i in range(len(self.matrix_series)):
                 self.subplot_order.append(("matrix", i))
+            for i in range(len(self.array_series)):
+                self.subplot_order.append(("array", i))
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Subplot Control Board")
@@ -2040,6 +2522,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                 visible = self.dense_visible[idx]
                 n = len(group.series)
                 display_name = f"[Dense/{n}] {name}"
+            elif plot_type == "array":
+                asx = self.array_series[idx]
+                name = asx.name
+                factor = self.array_height_factors[idx]
+                visible = self.array_visible[idx]
+                n = asx.Y.shape[0]
+                display_name = f"[Array/{n}] {name}"
             else:
                 name = self.matrix_series[idx].name
                 factor = self.matrix_height_factors[idx]
@@ -2086,6 +2575,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.plot_height_factors[idx] = new_factor
                 elif plot_type == "dense":
                     self.dense_height_factors[idx] = new_factor
+                elif plot_type == "array":
+                    self.array_height_factors[idx] = new_factor
                 else:
                     self.matrix_height_factors[idx] = new_factor
                 val_label.setText(f"{new_factor:.2f}x")
@@ -2100,6 +2591,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.trace_visible[idx] = is_visible
                 elif plot_type == "dense":
                     self.dense_visible[idx] = is_visible
+                elif plot_type == "array":
+                    self.array_visible[idx] = is_visible
                 else:
                     self.matrix_visible[idx] = is_visible
                 self._apply_trace_visibility()
@@ -2124,6 +2617,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             elif plot_type == "dense" and idx < len(self.dense_groups):
                 valid = True
             elif plot_type == "matrix" and idx < len(self.matrix_series):
+                valid = True
+            elif plot_type == "array" and idx < len(self.array_series):
                 valid = True
             if valid:
                 row_data = create_row_widget(plot_type, idx)
@@ -2162,6 +2657,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.plot_height_factors[rw["idx"]] = 1.0
                 elif rw["type"] == "dense":
                     self.dense_height_factors[rw["idx"]] = 1.0
+                elif rw["type"] == "array":
+                    self.array_height_factors[rw["idx"]] = 1.0
                 else:
                     self.matrix_height_factors[rw["idx"]] = 1.0
                 rw["slider"].blockSignals(False)
@@ -2180,6 +2677,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.trace_visible[rw["idx"]] = True
                 elif rw["type"] == "dense":
                     self.dense_visible[rw["idx"]] = True
+                elif rw["type"] == "array":
+                    self.array_visible[rw["idx"]] = True
                 else:
                     self.matrix_visible[rw["idx"]] = True
                 rw["hide_check"].blockSignals(False)
@@ -2204,6 +2703,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self.subplot_order.append(("dense", i))
             for i in range(len(self.matrix_series)):
                 self.subplot_order.append(("matrix", i))
+            for i in range(len(self.array_series)):
+                self.subplot_order.append(("array", i))
             # Close and reopen dialog to refresh
             dlg.accept()
             QtCore.QTimer.singleShot(50, self._show_subplot_control_dialog)
@@ -2221,7 +2722,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         dlg.exec()
 
     def _apply_custom_plot_heights(self):
-        """Apply custom height factors to all visible plots based on subplot_order."""
+        """Apply custom height factors to all visible plots based on subplot_order.
+
+        Two-pass: compute each visible row's natural ``(preferred, stretch)``
+        first, then — when ``compact_arrays_to_fit`` is on and the natural
+        total exceeds the plot-area viewport — scale every array row's
+        preferred height down by a single uniform ratio so the visible total
+        matches the viewport (no scrollbar).  Lines and matrix rows keep
+        their natural heights so the shrink is borne entirely by the heatmaps.
+        """
         try:
             layout = self.plot_area.ci.layout
 
@@ -2232,7 +2741,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             # Get the ordered list of visible plots
             visible_plots = self._get_visible_subplot_order()
 
-            row = 0
+            # ---- Pass 1: compute natural (preferred, stretch) per row ------
+            # Each entry: (plot_type, idx, plt, factor, preferred, stretch)
+            specs: list[tuple] = []
             for plot_type, idx in visible_plots:
                 if plot_type == "ts":
                     factor = (
@@ -2247,10 +2758,6 @@ class LoupeApp(QtWidgets.QMainWindow):
                         1, int(factor * 100)
                     )  # Scale stretch more aggressively
 
-                    # Hide axis labels for very small plots (below 0.2x)
-                    if plt:
-                        self._configure_plot_for_height(plt, factor, is_matrix=False)
-
                 elif plot_type == "dense":
                     factor = (
                         self.dense_height_factors[idx]
@@ -2264,8 +2771,37 @@ class LoupeApp(QtWidgets.QMainWindow):
                     preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor * 3))
                     stretch = max(1, int(factor * 300))
 
-                    if plt:
-                        self._configure_plot_for_height(plt, factor, is_matrix=False)
+                elif plot_type == "array":
+                    factor = (
+                        self.array_height_factors[idx]
+                        if idx < len(self.array_height_factors)
+                        else 1.0
+                    )
+                    plt = (
+                        self.array_plots[idx]
+                        if idx < len(self.array_plots)
+                        else None
+                    )
+                    asx = (
+                        self.array_series[idx]
+                        if idx < len(self.array_series)
+                        else None
+                    )
+
+                    if self.scale_array_proportionally and asx is not None:
+                        # Mirror matrix proportional sizing: weight by row count.
+                        boost_factor = 1.0 + (self.array_share_boost * 0.05)
+                        BASE_HEIGHT_PER_ROW = 12 * boost_factor
+                        n_rows = max(1, asx.Y.shape[0])
+                        preferred = max(
+                            MIN_HEIGHT, int(n_rows * BASE_HEIGHT_PER_ROW * factor)
+                        )
+                        stretch = max(1, int(n_rows * boost_factor * factor * 10))
+                    else:
+                        # Heatmaps benefit from a bit more vertical room than line
+                        # plots; mirror dense's larger default.
+                        preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor * 2))
+                        stretch = max(1, int(factor * 200))
 
                 else:  # matrix
                     factor = (
@@ -2294,19 +2830,56 @@ class LoupeApp(QtWidgets.QMainWindow):
                         preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
                         stretch = max(1, int(factor * 100))
 
-                    # Hide axis labels for very small plots
-                    if plt:
-                        self._configure_plot_for_height(plt, factor, is_matrix=True)
+                specs.append((plot_type, idx, plt, factor, preferred, stretch))
 
+            # ---- Pass 1.5: optional uniform array compression --------------
+            if self.compact_arrays_to_fit and any(s[0] == "array" for s in specs):
+                viewport_h = self._available_plot_area_height()
+                if viewport_h > 0:
+                    natural_total = sum(s[4] for s in specs)
+                    array_total = sum(s[4] for s in specs if s[0] == "array")
+                    non_array_total = natural_total - array_total
+                    target_array_total = max(MIN_HEIGHT, viewport_h - non_array_total)
+                    if array_total > target_array_total and array_total > 0:
+                        compress = target_array_total / array_total
+                        specs = [
+                            (
+                                pt, idx, plt, factor,
+                                max(MIN_HEIGHT, int(round(pref * compress))) if pt == "array" else pref,
+                                stretch,
+                            )
+                            for (pt, idx, plt, factor, pref, stretch) in specs
+                        ]
+
+            # ---- Pass 2: apply to layout + per-plot axis tweaks -------------
+            for row, (plot_type, idx, plt, factor, preferred, stretch) in enumerate(specs):
+                if plt:
+                    is_matrix_label = (plot_type == "matrix")
+                    self._configure_plot_for_height(
+                        plt, factor, is_matrix=is_matrix_label
+                    )
                 layout.setRowPreferredHeight(row, preferred)
                 layout.setRowMinimumHeight(row, MIN_HEIGHT)
                 layout.setRowStretchFactor(row, stretch)
-                row += 1
 
         except Exception as e:
             import traceback
 
             traceback.print_exc()
+
+    def _available_plot_area_height(self) -> int:
+        """Return the height (px) the plot-area viewport can display without scrolling."""
+        try:
+            vp = self.plot_area.viewport()
+            h = int(vp.height()) if vp is not None else 0
+            return max(0, h)
+        except Exception:
+            return 0
+
+    def _toggle_compact_arrays_to_fit(self, checked: bool) -> None:
+        """View-menu handler for the 'Compact Array Plots to Fit Screen' toggle."""
+        self.compact_arrays_to_fit = bool(checked)
+        self._apply_custom_plot_heights()
 
     def _configure_plot_for_height(self, plt, factor, is_matrix=False):
         """Configure plot axis visibility based on height factor."""
@@ -2335,9 +2908,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.trace_visible = [True] * n_ts
         while len(self.matrix_visible) < len(self.matrix_series):
             self.matrix_visible.append(True)
-
         while len(self.dense_visible) < len(self.dense_groups):
             self.dense_visible.append(True)
+        while len(self.array_visible) < len(self.array_series):
+            self.array_visible.append(True)
 
         # Use subplot_order if set, otherwise default order
         if self.subplot_order:
@@ -2346,6 +2920,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             order = [("ts", i) for i in range(n_ts)]
             order += [("dense", i) for i in range(len(self.dense_groups))]
             order += [("matrix", i) for i in range(len(self.matrix_series))]
+            order += [("array", i) for i in range(len(self.array_series))]
 
         # Filter to only visible plots
         visible = []
@@ -2355,6 +2930,9 @@ class LoupeApp(QtWidgets.QMainWindow):
                     visible.append((plot_type, idx))
             elif plot_type == "dense":
                 if idx < len(self.dense_visible) and self.dense_visible[idx]:
+                    visible.append((plot_type, idx))
+            elif plot_type == "array":
+                if idx < len(self.array_visible) and self.array_visible[idx]:
                     visible.append((plot_type, idx))
             else:  # matrix
                 if idx < len(self.matrix_visible) and self.matrix_visible[idx]:
@@ -2602,6 +3180,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self._matrix_line_items.clear()
         self._matrix_pens.clear()
+        self.array_plots.clear()
+        self.array_image_items.clear()
+        self.array_cur_lines.clear()
+        self.array_sel_regions.clear()
 
         # Initialize height factors and visibility for time series plots
         self.plot_height_factors = [1.0] * len(series_list)
@@ -2609,7 +3191,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Reset subplot order when loading new data
         self.subplot_order = None
 
-        # Calculate time range from time series, dense groups, and matrix data
+        # Calculate time range from time series, dense groups, matrix, and array data
         t_arrays = [s.t for s in self.series]
         for g in self.dense_groups:
             for s in g.series:
@@ -2617,11 +3199,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         for ms in self.matrix_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
+        for asx in self.array_series:
+            if len(asx.t) > 0:
+                t_arrays.append(asx.t)
         self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
         self.window_start = self.t_global_min
         self.cursor_time = self.window_start
 
-        # Create all plots (time series and matrix)
+        # Create all plots (time series, dense, matrix, and array)
         self._create_all_plots()
 
         self._apply_x_range()
@@ -3157,6 +3742,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_sel_regions.clear()
         self._matrix_line_items.clear()
         self._matrix_pens.clear()
+        self.array_plots.clear()
+        self.array_image_items.clear()
+        self.array_cur_lines.clear()
+        self.array_sel_regions.clear()
 
         # Recalculate time range
         t_arrays = [s.t for s in self.series]
@@ -3166,6 +3755,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         for ms in self.matrix_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
+        for asx in self.array_series:
+            if len(asx.t) > 0:
+                t_arrays.append(asx.t)
         self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
         self._refresh_low_profile_x()
 
@@ -3186,16 +3778,42 @@ class LoupeApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _create_all_plots(self):
-        """Create time series and matrix plots in the layout."""
+        """Create time series, dense, matrix, and array plots in the layout."""
         if self.overlay_mode:
             self._create_overlay_plots()
             return
         master_plot = None
-        row_idx = 0
-        total_plots = len(self.series) + len(self.dense_groups) + len(self.matrix_series)
+        total_plots = (
+            len(self.series)
+            + len(self.dense_groups)
+            + len(self.matrix_series)
+            + len(self.array_series)
+        )
+
+        # Build a (kind, idx) → display-row lookup. Each entry of
+        # subplot_order maps to a sequential row, top-to-bottom. When
+        # subplot_order is unset, fall back to the legacy segregated order
+        # (ts → dense → matrix → array). Each plot builds in type-segregated
+        # order regardless, then looks up its row from this map — so the
+        # visual layout is decoupled from build order.
+        if self.subplot_order:
+            order = list(self.subplot_order)
+        else:
+            order = (
+                [("ts", i) for i in range(len(self.series))]
+                + [("dense", i) for i in range(len(self.dense_groups))]
+                + [("matrix", i) for i in range(len(self.matrix_series))]
+                + [("array", i) for i in range(len(self.array_series))]
+            )
+        row_for = {entry: row for row, entry in enumerate(order)}
+        last_row = total_plots - 1
+
+        def _row(kind: str, idx: int) -> int:
+            return row_for.get((kind, idx), 0)
 
         # Create time series plots first
         for idx, s in enumerate(self.series):
+            row_idx = _row("ts", idx)
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
@@ -3206,7 +3824,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.plot_area.addItem(plt, row=row_idx, col=0)
 
             plt.setLabel("left", s.name)
-            is_last = row_idx == total_plots - 1
+            is_last = row_idx == last_row
             plt.setLabel("bottom", "Time", units="s" if is_last else None)
             plt.showGrid(x=True, y=True, alpha=0.15)
             plt.addLegend(offset=(10, 10))
@@ -3284,14 +3902,13 @@ class LoupeApp(QtWidgets.QMainWindow):
             else:
                 plt.enableAutoRange("y", True)
 
-            row_idx += 1
-
         # Create dense plots
         for gi in range(len(self.dense_groups)):
+            row_idx = _row("dense", gi)
             plt = self._create_dense_plot(gi, master_plot=master_plot)
             self.plot_area.addItem(plt, row=row_idx, col=0)
             self.plot_area.addItem(self.dense_vscroll_proxies[gi], row=row_idx, col=1)
-            is_last = row_idx == total_plots - 1
+            is_last = row_idx == last_row
             plt.setLabel("bottom", "Time", units="s" if is_last else None)
             if self.low_profile_x and not is_last:
                 try:
@@ -3304,10 +3921,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                     pass
             if master_plot is None:
                 master_plot = plt
-            row_idx += 1
 
         # Create matrix plots
         for idx, ms in enumerate(self.matrix_series):
+            row_idx = _row("matrix", idx)
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
@@ -3318,7 +3935,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.plot_area.addItem(plt, row=row_idx, col=0)
 
             plt.setLabel("left", ms.name)
-            is_last = row_idx == total_plots - 1
+            is_last = row_idx == last_row
             plt.setLabel("bottom", "Time", units="s" if is_last else None)
 
             # Matrix plots: no horizontal grid, minimal y-axis
@@ -3380,12 +3997,109 @@ class LoupeApp(QtWidgets.QMainWindow):
             vb.sigDragUpdate.connect(self._on_drag_update)
             vb.sigDragFinish.connect(self._on_drag_finish)
 
-            row_idx += 1
+        # Create array (heatmap) plots
+        for idx, asx in enumerate(self.array_series):
+            row_idx = _row("array", idx)
+            plt = self._create_array_plot(idx, asx, master_plot, row_idx, last_row + 1)
+            self.plot_area.addItem(plt, row=row_idx, col=0)
+            if master_plot is None:
+                master_plot = plt
 
         # Apply custom plot heights (includes matrix row heights logic)
         self._apply_custom_plot_heights()
         self._setup_dense_vscrollbars()
         self._constrain_scrollbar_column()
+
+    def _create_array_plot(
+        self,
+        array_idx: int,
+        asx: ArraySeries,
+        master_plot,
+        row_idx: int,
+        total_plots: int,
+    ):
+        """Build a single heatmap-style plot backed by a pg.ImageItem."""
+        vb = SelectableViewBox()
+        vb.sigWheelScrolled.connect(self._page)
+        vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
+        vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+
+        plt = HoverablePlotItem(viewBox=vb)
+        plt.sigHovered.connect(self._on_plot_hovered)
+
+        plt.setLabel("left", asx.name)
+        is_last = row_idx == total_plots - 1
+        plt.setLabel("bottom", "Time", units="s" if is_last else None)
+
+        # Heatmap aesthetic: keep vertical grid lines, no horizontal grid.
+        plt.showGrid(x=True, y=False, alpha=0.15)
+        plt.enableAutoRange("x", False)
+        plt.enableAutoRange("y", False)
+
+        n_rows = asx.Y.shape[0]
+        plt.setYRange(0.0, float(n_rows), padding=0)
+
+        # Y-axis ticks: show only the first and last row_label values.
+        left_axis = plt.getAxis("left")
+        if asx.row_labels is not None and len(asx.row_labels) >= 1:
+            first_label = str(asx.row_labels[0])
+            last_label = str(asx.row_labels[-1])
+        else:
+            first_label = "0"
+            last_label = str(n_rows - 1) if n_rows > 0 else "0"
+        left_axis.setTicks([[(0.5, first_label), (max(0.0, n_rows - 0.5), last_label)]])
+        try:
+            lf = QtGui.QFont()
+            lf.setPointSize(9)
+            left_axis.setStyle(tickFont=lf)
+        except Exception:
+            pass
+
+        if self.low_profile_x and not is_last:
+            try:
+                plt.setLabel("bottom", "")
+                bax = plt.getAxis("bottom")
+                bax.setStyle(showValues=True, tickLength=0)
+                bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                bax.setHeight(12)
+            except Exception:
+                pass
+
+        # ImageItem in row-major order: image[row, col] with row=y, col=time.
+        image_item = pg.ImageItem(axisOrder="row-major")
+        image_item.setZValue(0)
+        plt.addItem(image_item)
+
+        # Cursor + selection (parallel to other plot types).
+        cur_line = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
+        )
+        plt.addItem(cur_line)
+
+        sel_region = pg.LinearRegionItem(
+            values=(0, 0), brush=pg.mkBrush(100, 200, 255, 40), movable=True
+        )
+        sel_region.setZValue(-10)
+        sel_region.hide()
+        plt.addItem(sel_region)
+        sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
+
+        if master_plot is not None:
+            plt.setXLink(master_plot)
+
+        vb.sigDragStart.connect(self._on_drag_start)
+        vb.sigDragUpdate.connect(self._on_drag_update)
+        vb.sigDragFinish.connect(self._on_drag_finish)
+
+        # Register with parallel registries.
+        self.array_plots.append(plt)
+        self.array_image_items.append(image_item)
+        self.array_cur_lines.append(cur_line)
+        self.array_sel_regions.append(sel_region)
+        if len(self._array_cache_keys) <= array_idx:
+            self._array_cache_keys.append(None)
+
+        return plt
 
     def _create_overlay_plots(self):
         """Create plots for overlay mode: multiple curves per subplot."""
@@ -4128,6 +4842,161 @@ class LoupeApp(QtWidgets.QMainWindow):
                 seg_y[1::2] = y_tops[indices]
                 line_item.setData(seg_x, seg_y, _callSync="off")
 
+    # ---------- Array (heatmap) plots ----------
+
+    def _is_array_plot_visible(self, plot_idx: int) -> bool:
+        return plot_idx >= len(self.array_visible) or self.array_visible[plot_idx]
+
+    def _get_array_lut(self, cmap: "str | Colormap") -> np.ndarray:
+        """Return a cached uint8 RGBA LUT for *cmap*.
+
+        Accepts either a matplotlib colormap name (string) or a
+        ``matplotlib.colors.Colormap`` instance (e.g. ``cmcrameri.cm.batlow``).
+        Strings are resolved via ``matplotlib.colormaps``; Colormap instances
+        are used directly. Cached by string name (or by ``id()`` for Colormap
+        instances, which are not hashable).
+        """
+        if isinstance(cmap, str):
+            cache_key: object = cmap
+        else:
+            cache_key = id(cmap)
+        cached = self._lut_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        cmap_obj = None
+        if isinstance(cmap, str):
+            try:
+                import matplotlib as mpl  # lazy
+
+                cmap_obj = mpl.colormaps[cmap]
+            except Exception:
+                try:
+                    import matplotlib as mpl  # lazy
+
+                    cmap_obj = mpl.colormaps["magma"]
+                except Exception:
+                    # Last-ditch fallback: greyscale
+                    lut = np.zeros((256, 4), dtype=np.uint8)
+                    lut[:, 3] = 255
+                    lut[:, 0] = np.arange(256, dtype=np.uint8)
+                    lut[:, 1] = np.arange(256, dtype=np.uint8)
+                    lut[:, 2] = np.arange(256, dtype=np.uint8)
+                    self._lut_cache[cache_key] = lut
+                    return lut
+        else:
+            cmap_obj = cmap
+
+        lut = (cmap_obj(np.linspace(0.0, 1.0, 256)) * 255).astype(np.uint8)
+        self._lut_cache[cache_key] = lut
+        return lut
+
+    def _decimate_along_time(
+        self, Y: np.ndarray, max_cols: int, method: str
+    ) -> np.ndarray:
+        """Reduce columns of *Y* to at most *max_cols* via peak/mean per bin."""
+        if max_cols <= 0 or Y.shape[1] <= max_cols:
+            return Y
+        factor = Y.shape[1] // max_cols
+        if factor <= 1:
+            return Y
+        n = (Y.shape[1] // factor) * factor
+        reshaped = Y[:, :n].reshape(Y.shape[0], -1, factor)
+        if method == "mean":
+            return reshaped.mean(axis=2)
+        return reshaped.max(axis=2)  # peak (sentinel -inf survives)
+
+    def _slice_array_at_window(
+        self, asx: ArraySeries, i0: int, i1: int, target_w: int
+    ) -> tuple[np.ndarray, int, int]:
+        """Slice an ArraySeries (or its mip-map) to the visible window.
+
+        Returns ``(Y_slice, sliced_i0, sliced_i1)``: the second/third are the
+        level-0 column indices the slice covers (used to position the image
+        in time-coords).
+        """
+        if asx.mipmap_levels is None or len(asx.mipmap_levels) <= 1:
+            return asx.Y[:, i0:i1], i0, i1
+        # Pick the highest level whose factor 2^L is still <= the desired
+        # decimation factor (visible_cols / target_w).
+        cols = max(1, i1 - i0)
+        target = max(1, target_w)
+        desired = cols // (target * 2) if target > 0 else 1
+        level = 0
+        max_level = len(asx.mipmap_levels) - 1
+        while level < max_level and (1 << (level + 1)) <= max(1, desired):
+            level += 1
+        factor = 1 << level
+        # Convert level-0 indices to this level's index space.
+        l_i0 = i0 // factor
+        l_i1 = max(l_i0 + 1, i1 // factor + (1 if (i1 % factor) else 0))
+        l_i1 = min(l_i1, asx.mipmap_levels[level].shape[1])
+        return asx.mipmap_levels[level][:, l_i0:l_i1], l_i0 * factor, l_i1 * factor
+
+    def _refresh_array_plots(self) -> None:
+        """Update array (heatmap) plots for the current window."""
+        if not self.array_series:
+            return
+        t0 = self.window_start
+        t1 = self.window_start + self.window_len
+        # Make sure cache list keeps pace with the registry length.
+        while len(self._array_cache_keys) < len(self.array_series):
+            self._array_cache_keys.append(None)
+
+        for i, asx in enumerate(self.array_series):
+            if not self._is_array_plot_visible(i):
+                continue
+            if i >= len(self.array_image_items):
+                continue
+            image_item = self.array_image_items[i]
+
+            i0 = int(np.searchsorted(asx.t, t0, side="left"))
+            i1 = int(np.searchsorted(asx.t, t1, side="right"))
+            if i1 - i0 < 2:
+                image_item.clear()
+                self._array_cache_keys[i] = None
+                continue
+
+            target_w = max(
+                1, int(self.array_plots[i].getViewBox().width())
+            )
+
+            cache_key = (
+                i0, i1, target_w,
+                float(asx.vmin), float(asx.vmax),
+                _colormap_cache_token(asx.colormap), asx.decim_method,
+            )
+            if self._array_cache_keys[i] == cache_key:
+                continue
+
+            Y_slice, sliced_i0, sliced_i1 = self._slice_array_at_window(
+                asx, i0, i1, target_w
+            )
+            Y_disp = self._decimate_along_time(
+                Y_slice, target_w * 2, asx.decim_method
+            )
+            # Manual LUT mapping → uint8 RGBA (Performance Layer 4).
+            denom = max(asx.vmax - asx.vmin, 1e-12)
+            norm = np.clip((Y_disp - asx.vmin) / denom, 0.0, 1.0)
+            # Replace any residual NaNs (from mean decim with all-NaN bins) → 0
+            if np.any(np.isnan(norm)):
+                norm = np.where(np.isnan(norm), 0.0, norm)
+            idx = (norm * 255.0).astype(np.uint8)
+            lut = self._get_array_lut(asx.colormap)
+            rgba = lut[idx]
+
+            image_item.setImage(rgba, autoLevels=False)
+
+            # Place the image in time coordinates so it co-pans with line plots.
+            n_rows = asx.Y.shape[0]
+            t_start = float(asx.t[sliced_i0]) if sliced_i0 < len(asx.t) else float(asx.t[0])
+            end_idx = min(sliced_i1 - 1, len(asx.t) - 1)
+            t_end = float(asx.t[max(end_idx, sliced_i0)])
+            width = max(t_end - t_start, 1e-12)
+            image_item.setRect(QtCore.QRectF(t_start, 0.0, width, float(n_rows)))
+
+            self._array_cache_keys[i] = cache_key
+
     # ---------- Video & Static Image ----------
     def _load_video_data(self, vpath, ft_path):
         self._stop_playback_if_playing()
@@ -4413,6 +5282,19 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._dense_ctrl_dialog.raise_()
         self._dense_ctrl_dialog.activateWindow()
 
+    def _show_array_controls_dialog(self):
+        if not self.array_series:
+            QtWidgets.QMessageBox.information(
+                self, "Array Plot Controls", "No array plots loaded."
+            )
+            return
+        if hasattr(self, "_array_ctrl_dialog") and self._array_ctrl_dialog is not None:
+            self._array_ctrl_dialog.deleteLater()
+        self._array_ctrl_dialog = ArrayControlsDialog(self)
+        self._array_ctrl_dialog.show()
+        self._array_ctrl_dialog.raise_()
+        self._array_ctrl_dialog.activateWindow()
+
     def _on_plot_hovered(self, plot, is_hovered):
         if is_hovered:
             self.hovered_plot = plot
@@ -4470,6 +5352,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         elif self.matrix_sel_regions:
             a, b = self.matrix_sel_regions[0].getRegion()
             self._select_start, self._select_end = float(a), float(b)
+        elif self.array_sel_regions:
+            a, b = self.array_sel_regions[0].getRegion()
+            self._select_start, self._select_end = float(a), float(b)
 
     def _show_active_selection(self, final=False):
         if self._select_start is None or self._select_end is None:
@@ -4478,6 +5363,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             for r in self.dense_sel_regions:
                 r.hide()
             for r in self.matrix_sel_regions:
+                r.hide()
+            for r in self.array_sel_regions:
                 r.hide()
             return
         a = min(self._select_start, self._select_end)
@@ -4491,6 +5378,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         for r in self.matrix_sel_regions:
             r.setRegion((a, b))
             r.show()
+        for r in self.array_sel_regions:
+            r.setRegion((a, b))
+            r.show()
 
     def _clear_selection(self):
         self._select_start = None
@@ -4500,6 +5390,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         for r in self.dense_sel_regions:
             r.hide()
         for r in self.matrix_sel_regions:
+            r.hide()
+        for r in self.array_sel_regions:
             r.hide()
 
     def _label_key(self, label_data: dict) -> LabelKey:
@@ -4543,9 +5435,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         ]
 
     def _has_visible_window_label_targets(self) -> bool:
-        return any(
-            self._is_trace_plot_visible(idx) for idx in range(len(self.plots))
-        ) or any(self._is_matrix_plot_visible(idx) for idx in range(len(self.matrix_plots)))
+        return (
+            any(self._is_trace_plot_visible(idx) for idx in range(len(self.plots)))
+            or any(self._is_matrix_plot_visible(idx) for idx in range(len(self.matrix_plots)))
+            or any(self._is_array_plot_visible(idx) for idx in range(len(self.array_plots)))
+            or len(self.dense_plots) > 0
+        )
 
     def _remove_graphics_item(self, item) -> None:
         try:
@@ -4564,6 +5459,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
         matrix_regions: list[tuple[int, pg.LinearRegionItem]] = []
         dense_regions: list[tuple[int, pg.LinearRegionItem]] = []
+        array_regions: list[tuple[int, pg.LinearRegionItem]] = []
 
         for i, plt in enumerate(self.plots):
             if not self._is_trace_plot_visible(i):
@@ -4593,7 +5489,19 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(reg)
             matrix_regions.append((i, reg))
 
-        if not plot_regions and not matrix_regions and not dense_regions:
+        for i, plt in enumerate(self.array_plots):
+            if not self._is_array_plot_visible(i):
+                continue
+            reg = pg.LinearRegionItem(
+                values=(a, b), brush=pg.mkBrush(*color), movable=False
+            )
+            # Array plots draw their image at z=0; keep label regions on top
+            # of the heatmap so they stay visible (-20 would hide them).
+            reg.setZValue(20)
+            plt.addItem(reg)
+            array_regions.append((i, reg))
+
+        if not (plot_regions or matrix_regions or dense_regions or array_regions):
             return
 
         self._label_visuals[key] = LabelVisualBundle(
@@ -4601,6 +5509,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             matrix_regions=matrix_regions,
             dense_regions=dense_regions,
             hypnogram_region=None,
+            array_regions=array_regions,
         )
 
     def _remove_window_label_visual(self, key: LabelKey) -> None:
@@ -4615,6 +5524,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._remove_graphics_item(item)
 
         for _i, item in bundle.matrix_regions:
+            self._remove_graphics_item(item)
+
+        for _i, item in bundle.array_regions:
             self._remove_graphics_item(item)
 
     def _add_hypnogram_label_visual(self, label_data: dict) -> None:
@@ -5250,6 +6162,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.enableAutoRange("x", False)
             plt.setXRange(*xr, padding=0.0)
 
+        # Also apply to array (heatmap) plots
+        for plt in self.array_plots:
+            plt.enableAutoRange("x", False)
+            plt.setXRange(*xr, padding=0.0)
+
         new_cursor_time = clamp(self.cursor_time, xr[0], xr[1])
         self._set_cursor_time(new_cursor_time, update_slider=True)
 
@@ -5284,6 +6201,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         for ln in self.dense_cur_lines:
             ln.setPos(self.cursor_time)
         for ln in self.matrix_cur_lines:
+            ln.setPos(self.cursor_time)
+        for ln in self.array_cur_lines:
             ln.setPos(self.cursor_time)
 
     def _set_cursor_time(self, t, update_slider=True):
@@ -5369,15 +6288,21 @@ class LoupeApp(QtWidgets.QMainWindow):
                 i1 = min(len(s.t), np.searchsorted(s.t, t1) + 1)
                 curve.setData(s.t[i0:i1], s.y[i0:i1], _callSync="off")
 
-        # Also refresh dense and matrix plots
+        # Also refresh dense, matrix, and array plots
         self._refresh_dense_curves()
         self._refresh_matrix_plots()
+        self._refresh_array_plots()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._rescale_video_frame()
         QtCore.QTimer.singleShot(50, self._refresh_curves)
         QtCore.QTimer.singleShot(60, self._align_left_axes)
+        # Re-fit array plots when compact mode is on, since the available
+        # viewport height changed. Deferred so the layout has settled by the
+        # time we measure viewport().height().
+        if getattr(self, "compact_arrays_to_fit", False) and self.array_series:
+            QtCore.QTimer.singleShot(70, self._apply_custom_plot_heights)
 
     def _align_left_axes(self):
         try:
@@ -5573,6 +6498,34 @@ class LoupeApp(QtWidgets.QMainWindow):
                         except Exception:
                             pass
 
+                elif plot_type == "array":
+                    if idx >= len(self.array_plots):
+                        continue
+                    plt = self.array_plots[idx]
+                    plt.setVisible(True)
+                    self.plot_area.addItem(plt, row=row, col=0)
+
+                    if self.low_profile_x and not is_last:
+                        try:
+                            plt.setLabel("bottom", "")
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=0)
+                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
+                            bax.setHeight(12)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            plt.setLabel(
+                                "bottom", "Time", units="s" if is_last else None
+                            )
+                            bax = plt.getAxis("bottom")
+                            bax.setStyle(showValues=True, tickLength=-5)
+                            bax.setTextPen(pg.mkPen("w"))
+                            bax.setHeight(None)
+                        except Exception:
+                            pass
+
                 else:  # matrix
                     if idx >= len(self.matrix_plots):
                         continue
@@ -5627,6 +6580,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                 if (
                     not self.matrix_visible[idx]
                     if idx < len(self.matrix_visible)
+                    else False
+                ):
+                    plt.setVisible(False)
+            for idx, plt in enumerate(self.array_plots):
+                if (
+                    not self.array_visible[idx]
+                    if idx < len(self.array_visible)
                     else False
                 ):
                     plt.setVisible(False)

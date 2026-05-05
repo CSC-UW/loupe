@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     import xarray as xr
+    from matplotlib.colors import Colormap
 
     from loupe.app import LoupeApp
 
@@ -22,14 +23,16 @@ class TraceConfig:
     data : xr.DataArray
         The DataArray to display.
     mode : str
-        ``"stacked-subplots"`` (default) for one subplot per trace, or
-        ``"dense"`` for EEG-style offset traces on a single axis.
+        ``"stacked-subplots"`` (default) for one subplot per trace,
+        ``"dense"`` for EEG-style offset traces on a single axis, or
+        ``"array"`` for a 2-D heatmap (imshow-style) over time.
     order_by : str or None
-        Coordinate name to control trace ordering and spacing.
+        Coordinate name to control trace ordering and spacing
+        (stacked / dense modes).
     descending : bool
         Reverse the ordering given by *order_by*.
     gain : float
-        Initial amplitude gain multiplier.
+        Initial amplitude gain multiplier (dense mode only).
     step : int
         Show every *step*-th trace (dense mode only).
     traces_per_page : int or None
@@ -37,8 +40,41 @@ class TraceConfig:
         Use Alt+scroll to page through the rest.
     color_by : str or None
         Coordinate name whose categorical values determine per-trace color.
-    label : str or None
-        Optional display name for this group.
+    color : str, RGB(A) tuple, or None
+        (line modes) Single color applied to every trace produced by this
+        DataArray, e.g. ``"#a020f0"`` or ``(160, 32, 240)``.  Overrides
+        ``color_by`` when both are set.  Ignored in array mode.
+    label : str, callable, or None
+        Display name override.
+
+        * In stacked-subplots / dense mode: a string used as the trace name
+          (or, for multi-trace DataArrays, as the name prefix replacing
+          ``data.name``).
+        * In array mode: either a string (used verbatim per subplot, no
+          ``"split_on=val"`` suffix) or a callable
+          ``(split_val, sub_da) -> str`` invoked once per split group.
+          1-arg callables ``(split_val) -> str`` are also accepted.
+    split_on : str or None
+        (array mode) Coordinate or dim name to split into one subplot per
+        unique value (e.g. one heatmap per dendrite).
+    sort_on : str or None
+        (array mode) Coordinate name on the row dim controlling y-axis row
+        order within each subplot.
+    colormap : str, Colormap, list, dict, or callable
+        (array mode) Matplotlib colormap name (e.g. ``"magma"``) or a
+        Colormap instance (e.g. ``cmcrameri.cm.batlow``).  Also accepts:
+
+        * a list — one entry per split group in iteration order, cycling;
+        * a dict ``{split_val: cmap}`` — keyed by split value;
+        * a callable ``(split_val, sub_da) -> str | Colormap`` — invoked
+          per split group.  1-arg callables ``(split_val) -> ...`` are also
+          accepted.
+    vmin, vmax : float or None
+        (array mode) Color scale limits.  Default is robust 1–99 percentile
+        per array.
+    decim_method : str
+        (array mode) Time-axis decimation when zoomed out. ``"peak"`` (max-
+        absolute per bin, preserves transients) or ``"mean"``.
     """
 
     data: xr.DataArray
@@ -49,7 +85,15 @@ class TraceConfig:
     step: int = 1
     traces_per_page: int | None = None
     color_by: str | None = None
-    label: str | None = None
+    color: "str | tuple | None" = None
+    label: "str | Callable[..., str] | None" = None
+    # Array-mode parameters
+    split_on: str | None = None
+    sort_on: str | None = None
+    colormap: "str | Colormap | list | dict | Callable[..., Any]" = "magma"
+    vmin: float | None = None
+    vmax: float | None = None
+    decim_method: str = "peak"
 
 
 def view(
@@ -78,6 +122,14 @@ def view(
     step: int = 1,
     traces_per_page: int | None = None,
     color_by: str | None = None,
+    # Array (heatmap) mode convenience parameters
+    array: bool = False,
+    split_on: str | None = None,
+    sort_on: str | None = None,
+    colormap: "str | Colormap | list[str | Colormap]" = "magma",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    decim_method: str = "peak",
     window_len: float = 10.0,
     **kwargs,
 ) -> LoupeApp:
@@ -176,13 +228,17 @@ def view(
     """
     from PySide6 import QtWidgets
 
-    from loupe.app import DenseGroup, LoupeApp, Series
+    from loupe.app import ArraySeries, DenseGroup, LoupeApp, Series
     from loupe.xr_loader import (
         convert_xarray_inputs,
         convert_xarray_inputs_overlay,
         convert_xarray_inputs_with_order,
+        dataarray_to_arrays,
         load_xarray_from_path,
     )
+
+    if dense and array:
+        raise ValueError("Cannot pass dense=True and array=True together.")
 
     if data is not None and path is not None:
         raise ValueError("Provide either 'data' or 'path', not both.")
@@ -217,25 +273,44 @@ def view(
         if not isinstance(data, list):
             data = [data]
         configs = []
+        if array:
+            default_mode = "array"
+        elif dense:
+            default_mode = "dense"
+        else:
+            default_mode = "stacked-subplots"
         for item in data:
             if isinstance(item, TraceConfig):
                 configs.append(item)
             else:
                 configs.append(TraceConfig(
                     data=item,
-                    mode="dense" if dense else "stacked-subplots",
+                    mode=default_mode,
                     order_by=order_by,
                     descending=descending,
                     gain=gain,
                     step=step,
                     traces_per_page=traces_per_page,
                     color_by=color_by,
+                    split_on=split_on,
+                    sort_on=sort_on,
+                    colormap=colormap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    decim_method=decim_method,
                 ))
 
-    # ---- convert DataArray(s) → Series / DenseGroups ----------------------
+    # ---- convert DataArray(s) → Series / DenseGroups / ArraySeries -------
     xr_series: list[Series] | None = None
+    stacked_colors: list | None = None  # one entry per Series in xr_series; None = default
     overlay_groups = None
     dense_groups: list[DenseGroup] | None = None
+    array_series: list[ArraySeries] | None = None
+    # subplot_order: list of ("ts"|"dense"|"array", idx) entries describing
+    # the visual layout top-to-bottom. Built in the same order configs are
+    # processed so that interleaving lines and arrays in the input list
+    # produces an interleaved on-screen layout.
+    config_subplot_order: list[tuple[str, int]] | None = None
     if data is not None:
         if overlay is not None:
             if not isinstance(data, list):
@@ -243,17 +318,42 @@ def view(
             overlay_groups = convert_xarray_inputs_overlay(data, overlay)
         elif configs is not None:
             stacked_series: list[Series] = []
+            stacked_colors_acc: list = []
+            any_color = False
             dense_list: list[DenseGroup] = []
+            array_list: list[ArraySeries] = []
+            order_acc: list[tuple[str, int]] = []
             use_prefix = len(configs) > 1
             all_named = all(
                 getattr(c.data, "name", None) for c in configs
             )
             for i, cfg in enumerate(configs):
-                if use_prefix:
+                # In stacked/dense mode, an explicit cfg.label overrides the
+                # auto-derived prefix (which is what becomes the trace name
+                # for 1-D DataArrays).
+                if cfg.mode != "array" and isinstance(cfg.label, str):
+                    prefix = cfg.label
+                elif use_prefix:
                     prefix = str(cfg.data.name) if all_named else f"arr{i}"
                 else:
                     prefix = ""
-                if cfg.mode == "dense":
+                if cfg.mode == "array":
+                    new_arrays = dataarray_to_arrays(
+                        cfg.data,
+                        split_on=cfg.split_on,
+                        sort_on=cfg.sort_on,
+                        colormap=cfg.colormap,
+                        vmin=cfg.vmin,
+                        vmax=cfg.vmax,
+                        decim_method=cfg.decim_method,
+                        name_prefix=prefix,
+                        label=cfg.label,
+                    )
+                    base = len(array_list)
+                    array_list.extend(new_arrays)
+                    for j in range(len(new_arrays)):
+                        order_acc.append(("array", base + j))
+                elif cfg.mode == "dense":
                     tuples, order_vals, labels, color_vals = convert_xarray_inputs_with_order(
                         cfg.data,
                         order_by=cfg.order_by,
@@ -262,7 +362,10 @@ def view(
                         color_by=cfg.color_by,
                     )
                     series_objs = [Series(n, t, y) for n, t, y in tuples]
-                    group_name = cfg.label or prefix or cfg.data.name or f"dense_{i}"
+                    group_name = (
+                        cfg.label if isinstance(cfg.label, str) else None
+                    ) or prefix or cfg.data.name or f"dense_{i}"
+                    dense_idx = len(dense_list)
                     dense_list.append(DenseGroup(
                         name=str(group_name),
                         series=series_objs,
@@ -274,6 +377,7 @@ def view(
                         step=cfg.step,
                         traces_per_page=cfg.traces_per_page,
                     ))
+                    order_acc.append(("dense", dense_idx))
                 else:
                     tuples, _, _, _ = convert_xarray_inputs_with_order(
                         cfg.data,
@@ -282,13 +386,32 @@ def view(
                         name_prefix=prefix,
                         color_by=cfg.color_by,
                     )
-                    stacked_series.extend(
-                        Series(n, t, y) for n, t, y in tuples
-                    )
+                    new_series = [Series(n, t, y) for n, t, y in tuples]
+                    base = len(stacked_series)
+                    stacked_series.extend(new_series)
+                    # One color slot per produced Series (broadcast cfg.color)
+                    for j, _s in enumerate(new_series):
+                        stacked_colors_acc.append(cfg.color)
+                        if cfg.color is not None:
+                            any_color = True
+                        order_acc.append(("ts", base + j))
             if stacked_series:
                 xr_series = stacked_series
+                if any_color:
+                    stacked_colors = stacked_colors_acc
             if dense_list:
                 dense_groups = dense_list
+            if array_list:
+                array_series = array_list
+            # Only forward an order if it actually deviates from the default
+            # (ts → dense → array). Avoids carrying around a no-op list.
+            default_order = (
+                [("ts", k) for k in range(len(stacked_series))]
+                + [("dense", k) for k in range(len(dense_list))]
+                + [("array", k) for k in range(len(array_list))]
+            )
+            if order_acc != default_order:
+                config_subplot_order = order_acc
 
     # ---- resolve DataFrame(s) to MatrixSeries -----------------------------
     matrix_series_list = None
@@ -328,12 +451,22 @@ def view(
         app = QtWidgets.QApplication([])
         created_app = True
 
+    # Per-line colors derived from TraceConfig.color, unless the caller
+    # passed an explicit colors= kwarg (which wins).
+    if stacked_colors is not None and "colors" not in kwargs:
+        kwargs["colors"] = stacked_colors
+    # Initial layout order derived from TraceConfig list order; caller-supplied
+    # subplot_order (via kwargs) wins.
+    if config_subplot_order is not None and "subplot_order" not in kwargs:
+        kwargs["subplot_order"] = config_subplot_order
+
     w = LoupeApp(
         xr_series=xr_series,
         matrix_series_list=matrix_series_list,
         overlay_groups=overlay_groups,
         overlay_colors=overlay_colors,
         dense_groups=dense_groups,
+        array_series=array_series,
         window_len=window_len,
         **kwargs,
     )
