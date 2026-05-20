@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# User files
+usr/
+
+# Agent files
+CLAUDE.md
