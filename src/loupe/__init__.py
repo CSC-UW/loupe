@@ -131,6 +131,10 @@ def view(
     vmax: float | None = None,
     decim_method: str = "peak",
     window_len: float = 10.0,
+    # Bool-event marker overlays (stacked-subplots mode only)
+    bool_event_arrays: list | None = None,
+    event_markers: list[str] | None = None,
+    event_marker_colors: list | None = None,
     **kwargs,
 ) -> LoupeApp:
     """Launch the Loupe viewer with xarray and/or DataFrame data.
@@ -195,6 +199,19 @@ def view(
     color_by : str or None
         Coordinate name whose categorical values determine per-trace color.
         Uses a colorblind-friendly palette visible against the black background.
+    bool_event_arrays : list[xr.DataArray] or None
+        Optional list of boolean DataArrays whose dims/shape match *data*.
+        ``True`` at sample i indicates a point event on that trace at that
+        timepoint; markers are drawn at ``y = trace_value`` so they sit on
+        the line.  Stacked-subplots mode only.
+    event_markers : list[str] or None
+        One marker symbol per entry in *bool_event_arrays*.  ``'o'`` renders
+        a semi-transparent filled circle; ``'x'`` renders a solid X. Other
+        pyqtgraph symbols (``'+'``, ``'s'``, ``'t'``, …) fall through with
+        a default outlined style.
+    event_marker_colors : list or None
+        One color per entry in *bool_event_arrays* — named string, hex, or
+        ``(r, g, b[, a])`` tuple.
     **kwargs
         Forwarded to :class:`LoupeApp` (``video_path``,
         ``frame_times_path``, ``fixed_scale``, ``low_profile_x``, etc.).
@@ -244,6 +261,53 @@ def view(
         raise ValueError("Provide either 'data' or 'path', not both.")
     if matrix_df is not None and matrix_parquet is not None:
         raise ValueError("Provide either 'matrix_df' or 'matrix_parquet', not both.")
+
+    # ---- validate bool_event_arrays / event_markers / event_marker_colors -
+    # All three must be provided together; only stacked-subplots inputs
+    # accept event-marker overlays in v1.
+    _ev_inputs = (bool_event_arrays, event_markers, event_marker_colors)
+    use_event_markers = any(x is not None for x in _ev_inputs)
+    if use_event_markers:
+        if not all(x is not None for x in _ev_inputs):
+            raise ValueError(
+                "bool_event_arrays, event_markers, and event_marker_colors "
+                "must all be provided together."
+            )
+        if not (
+            len(bool_event_arrays)
+            == len(event_markers)
+            == len(event_marker_colors)
+        ):
+            raise ValueError(
+                "bool_event_arrays, event_markers, and event_marker_colors "
+                "must all be the same length."
+            )
+        if len(bool_event_arrays) == 0:
+            raise ValueError("bool_event_arrays cannot be empty.")
+        if dense or array or overlay is not None:
+            raise ValueError(
+                "Event markers are only supported in the default "
+                "stacked-subplots mode (not dense, array, or overlay)."
+            )
+        if matrix_df is not None or matrix_parquet is not None:
+            raise ValueError(
+                "Event markers are not supported alongside matrix/raster "
+                "DataFrame inputs."
+            )
+        if path is not None:
+            raise ValueError(
+                "Event markers require an in-memory `data=` DataArray "
+                "(not `path=`)."
+            )
+        if data is None:
+            raise ValueError(
+                "Event markers require an in-memory `data=` DataArray."
+            )
+        if isinstance(data, list):
+            raise ValueError(
+                "Event markers only support a single DataArray input "
+                "(not a list of DataArrays)."
+            )
 
     # ---- resolve path(s) to in-memory DataArrays --------------------------
     if path is not None:
@@ -299,6 +363,44 @@ def view(
                     vmax=vmax,
                     decim_method=decim_method,
                 ))
+
+    # ---- build event_layers (validated above) ----------------------------
+    event_layers = None
+    if use_event_markers:
+        if configs is None or len(configs) != 1:
+            raise ValueError(
+                "Event markers only support a single DataArray input."
+            )
+        cfg = configs[0]
+        if cfg.mode != "stacked-subplots":
+            raise ValueError(
+                "Event markers are only supported in stacked-subplots mode."
+            )
+        from loupe.app import EventLayer
+        from loupe.xr_loader import convert_event_arrays_aligned_with
+
+        bool_per_layer = convert_event_arrays_aligned_with(
+            cfg.data,
+            list(bool_event_arrays),
+            order_by=cfg.order_by,
+            descending=cfg.descending,
+        )
+        # Per-marker defaults preserve the v1 spec: 'o' = semi-transparent
+        # circle (alpha 110, size 8), 'x' / others = solid stroke (alpha 255,
+        # size 9). User can override live via View → Adjust Event Marker
+        # Properties.
+        event_layers = []
+        for m, c, bps in zip(event_markers, event_marker_colors, bool_per_layer):
+            if m == "o":
+                size, alpha = 8.0, 110
+            else:
+                size, alpha = 9.0, 255
+            event_layers.append(
+                EventLayer(
+                    marker=m, color=c, bool_per_series=bps,
+                    size=size, alpha=alpha,
+                )
+            )
 
     # ---- convert DataArray(s) → Series / DenseGroups / ArraySeries -------
     xr_series: list[Series] | None = None
@@ -468,6 +570,7 @@ def view(
         dense_groups=dense_groups,
         array_series=array_series,
         window_len=window_len,
+        event_layers=event_layers,
         **kwargs,
     )
     w.show()

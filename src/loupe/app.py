@@ -116,6 +116,22 @@ class Series:
 
 
 @dataclass
+class EventLayer:
+    """Bool-array layer drawn as point markers on top of stacked-subplot traces.
+
+    ``bool_per_series`` has one 1-D bool array per :class:`Series`, in the
+    same order as :attr:`LoupeApp.series`. ``True`` at sample i means a
+    marker is drawn at ``(s.t[i], s.y[i])`` on series s.
+    """
+
+    marker: str
+    color: str | tuple
+    bool_per_series: list[np.ndarray]
+    size: float = 8.0
+    alpha: int = 255  # 0..255; controls fill alpha for 'o', stroke alpha otherwise
+
+
+@dataclass
 class MatrixSeries:
     """Holds data for a matrix/raster subplot."""
 
@@ -229,6 +245,32 @@ def find_nearest_frame(frame_times, t):
 def next_pow_two(n: int) -> int:
     n = int(max(1, n))
     return 1 << (n - 1).bit_length()
+
+
+def _scatter_kwargs_for_layer(layer: "EventLayer") -> dict:
+    """Map an :class:`EventLayer`'s style fields to ``pg.ScatterPlotItem`` kwargs.
+
+    'o' renders a filled circle (no pen) with alpha applied to the fill.
+    'x' and other pyqtgraph symbols render as outlined strokes with alpha
+    applied to the pen.
+    """
+    base = pg.mkColor(layer.color)
+    tinted = pg.mkColor(base)
+    tinted.setAlpha(int(max(0, min(255, layer.alpha))))
+    size = float(layer.size)
+    if layer.marker == "o":
+        return {
+            "symbol": "o",
+            "pen": None,
+            "brush": pg.mkBrush(tinted),
+            "size": size,
+        }
+    return {
+        "symbol": layer.marker,
+        "pen": pg.mkPen(tinted, width=1.5),
+        "brush": None,
+        "size": size,
+    }
 
 
 # ---------------- Peak-preserving window decimator ----------------
@@ -1324,6 +1366,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         # (ts → dense → matrix → array). User can still rearrange interactively
         # via the Plot Order dialog after launch.
         subplot_order=None,
+        # Bool-event marker overlays for stacked-subplots traces.
+        event_layers: list[EventLayer] | None = None,
     ):
         super().__init__()
         self.setWindowTitle("Loupe — Multi-Trace + Video + Labeling")
@@ -1342,6 +1386,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_cur_lines: list[pg.InfiniteLine] = []
         self.plot_sel_regions: list[pg.LinearRegionItem] = []
         self.hovered_plot = None  # *** FIX 2: Track which plot is hovered ***
+
+        # Bool-event marker overlays — outer index = series index,
+        # inner index = layer index (matches self.event_layers order).
+        self.event_layers: list[EventLayer] = list(event_layers) if event_layers else []
+        self.event_scatters: list[list[pg.ScatterPlotItem]] = []
 
         # Overlay mode
         self.overlay_mode: bool = False
@@ -1971,6 +2020,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         mview.addAction(array_ctrl_action)
 
         mview.addSeparator()
+        adjust_event_markers_action = QtGui.QAction(
+            "Adjust Event Marker Properties...", self
+        )
+        adjust_event_markers_action.triggered.connect(
+            self._adjust_event_marker_properties
+        )
+        mview.addAction(adjust_event_markers_action)
+
+        mview.addSeparator()
         subplot_control_action = QtGui.QAction("Subplot Control Board...", self)
         subplot_control_action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
         subplot_control_action.triggered.connect(self._show_subplot_control_dialog)
@@ -2137,6 +2195,112 @@ class LoupeApp(QtWidgets.QMainWindow):
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
         btns.accepted.connect(dlg.accept)
         lay.addWidget(btns)
+
+        dlg.exec()
+
+    def _adjust_event_marker_properties(self):
+        """View-menu handler: live-edit color, size, and opacity per event layer."""
+        if not self.event_layers:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Event Marker Properties",
+                "No event marker layers loaded.\n\n"
+                "Pass bool_event_arrays= to view() to add markers.",
+            )
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Adjust Event Marker Properties")
+        outer = QtWidgets.QVBoxLayout(dlg)
+
+        intro = QtWidgets.QLabel(
+            "Changes apply live. Close the dialog when done."
+        )
+        outer.addWidget(intro)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(12)
+        for col, header in enumerate(["#", "Symbol", "Color", "Size", "Opacity"]):
+            lbl = QtWidgets.QLabel(header)
+            lbl.setStyleSheet("font-weight: bold;")
+            grid.addWidget(lbl, 0, col)
+
+        def _make_color_button(layer_idx: int) -> QtWidgets.QPushButton:
+            layer = self.event_layers[layer_idx]
+            btn = QtWidgets.QPushButton()
+            btn.setFixedWidth(60)
+
+            def _refresh_swatch():
+                qc = pg.mkColor(self.event_layers[layer_idx].color)
+                btn.setStyleSheet(
+                    f"background-color: {qc.name()}; border: 1px solid #888;"
+                )
+
+            def _on_click():
+                cur = pg.mkColor(self.event_layers[layer_idx].color)
+                qc0 = QtGui.QColor(cur.red(), cur.green(), cur.blue())
+                picked = QtWidgets.QColorDialog.getColor(
+                    qc0, dlg, f"Layer {layer_idx} Color"
+                )
+                if picked.isValid():
+                    self.event_layers[layer_idx].color = (
+                        picked.red(), picked.green(), picked.blue()
+                    )
+                    _refresh_swatch()
+                    self._apply_event_layer_style(layer_idx)
+
+            btn.clicked.connect(_on_click)
+            _refresh_swatch()
+            return btn
+
+        for li, layer in enumerate(self.event_layers):
+            row = li + 1
+            grid.addWidget(QtWidgets.QLabel(str(li)), row, 0)
+
+            symbol_lbl = QtWidgets.QLabel(layer.marker)
+            symbol_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(symbol_lbl, row, 1)
+
+            grid.addWidget(_make_color_button(li), row, 2)
+
+            size_spin = QtWidgets.QDoubleSpinBox()
+            size_spin.setRange(2.0, 40.0)
+            size_spin.setSingleStep(0.5)
+            size_spin.setDecimals(1)
+            size_spin.setValue(float(layer.size))
+            size_spin.valueChanged.connect(
+                lambda v, idx=li: (
+                    setattr(self.event_layers[idx], "size", float(v)),
+                    self._apply_event_layer_style(idx),
+                )
+            )
+            grid.addWidget(size_spin, row, 3)
+
+            alpha_row = QtWidgets.QHBoxLayout()
+            alpha_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            alpha_slider.setRange(0, 255)
+            alpha_slider.setValue(int(layer.alpha))
+            alpha_lbl = QtWidgets.QLabel(f"{int(layer.alpha)}")
+            alpha_lbl.setFixedWidth(32)
+            alpha_slider.valueChanged.connect(
+                lambda v, idx=li, lbl=alpha_lbl: (
+                    setattr(self.event_layers[idx], "alpha", int(v)),
+                    lbl.setText(str(int(v))),
+                    self._apply_event_layer_style(idx),
+                )
+            )
+            alpha_row.addWidget(alpha_slider)
+            alpha_row.addWidget(alpha_lbl)
+            wrap = QtWidgets.QWidget()
+            wrap.setLayout(alpha_row)
+            grid.addWidget(wrap, row, 4)
+
+        outer.addLayout(grid)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        btns.rejected.connect(dlg.reject)
+        btns.accepted.connect(dlg.accept)
+        outer.addWidget(btns)
 
         dlg.exec()
 
@@ -3164,6 +3328,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
+        self.event_scatters.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
@@ -3319,6 +3484,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
+        self.event_scatters.clear()
         self._plot_to_curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
@@ -3726,6 +3892,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
+        self.event_scatters.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
@@ -3857,6 +4024,15 @@ class LoupeApp(QtWidgets.QMainWindow):
             # NB: must follow addItem(), which resets these to the PlotItem defaults.
             curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
+
+            scatters_for_series: list[pg.ScatterPlotItem] = []
+            for layer in self.event_layers:
+                sk = _scatter_kwargs_for_layer(layer)
+                scatter = pg.ScatterPlotItem(**sk, pxMode=True, antialias=False)
+                scatter.setZValue(10)
+                plt.addItem(scatter)
+                scatters_for_series.append(scatter)
+            self.event_scatters.append(scatters_for_series)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -6286,12 +6462,39 @@ class LoupeApp(QtWidgets.QMainWindow):
                     continue
                 i0 = max(0, np.searchsorted(s.t, t0) - 1)
                 i1 = min(len(s.t), np.searchsorted(s.t, t1) + 1)
-                curve.setData(s.t[i0:i1], s.y[i0:i1], _callSync="off")
+                t_slice = s.t[i0:i1]
+                y_slice = s.y[i0:i1]
+                curve.setData(t_slice, y_slice, _callSync="off")
+                if self.event_layers and idx < len(self.event_scatters):
+                    for layer_idx, layer in enumerate(self.event_layers):
+                        mask = layer.bool_per_series[idx][i0:i1]
+                        self.event_scatters[idx][layer_idx].setData(
+                            x=t_slice[mask], y=y_slice[mask], _callSync="off"
+                        )
 
         # Also refresh dense, matrix, and array plots
         self._refresh_dense_curves()
         self._refresh_matrix_plots()
         self._refresh_array_plots()
+
+    def _apply_event_layer_style(self, layer_idx: int) -> None:
+        """Push the current style of ``self.event_layers[layer_idx]`` to every
+        scatter item already on screen for that layer. Used by the
+        Adjust Event Marker Properties dialog to update markers live."""
+        if not (0 <= layer_idx < len(self.event_layers)):
+            return
+        layer = self.event_layers[layer_idx]
+        sk = _scatter_kwargs_for_layer(layer)
+        no_pen = pg.mkPen(0, 0, 0, 0)
+        no_brush = pg.mkBrush(0, 0, 0, 0)
+        for scatters in self.event_scatters:
+            if layer_idx >= len(scatters):
+                continue
+            scat = scatters[layer_idx]
+            scat.setSymbol(sk["symbol"])
+            scat.setSize(sk["size"])
+            scat.setPen(sk["pen"] if sk["pen"] is not None else no_pen)
+            scat.setBrush(sk["brush"] if sk["brush"] is not None else no_brush)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)

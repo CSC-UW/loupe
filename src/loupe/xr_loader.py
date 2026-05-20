@@ -282,6 +282,56 @@ def _coord_values_per_trace(
     return None
 
 
+def _trace_order_values(
+    da: xr.DataArray,
+    order_by: str | None,
+) -> np.ndarray | None:
+    """Compute one ordering value per trace, in itertools.product order.
+
+    Returns *None* when no ordering can be derived (e.g. the order_by
+    coordinate isn't aligned to a single non-time dim).
+    """
+    non_time_dims = [d for d in da.dims if d != "time"]
+
+    if order_by is not None and order_by in da.coords:
+        raw = _coord_values_per_trace(da, order_by, non_time_dims)
+        if raw is None:
+            return None
+        try:
+            return raw.astype(float)
+        except (ValueError, TypeError):
+            return None
+    if order_by is None and len(non_time_dims) == 1:
+        dim_name = non_time_dims[0]
+        coord_vals = da.coords[dim_name].values
+        try:
+            return coord_vals.astype(float)
+        except (ValueError, TypeError):
+            return np.arange(len(coord_vals), dtype=float)
+    return None
+
+
+def _compute_trace_sort_index(
+    da: xr.DataArray,
+    *,
+    order_by: str | None,
+    descending: bool,
+    n_traces: int,
+) -> np.ndarray | None:
+    """Permutation that turns itertools.product order into the user's order_by order.
+
+    Returns *None* when no reordering applies. Uses ``kind='stable'`` so two
+    DataArrays with identical ordering values produce byte-identical permutations.
+    """
+    order_values = _trace_order_values(da, order_by)
+    if order_values is None or len(order_values) != n_traces:
+        return None
+    sort_idx = np.argsort(order_values, kind="stable")
+    if descending:
+        sort_idx = sort_idx[::-1]
+    return sort_idx
+
+
 def convert_xarray_inputs_with_order(
     da: xr.DataArray,
     order_by: str | None = None,
@@ -327,40 +377,101 @@ def convert_xarray_inputs_with_order(
 
     non_time_dims = [d for d in da.dims if d != "time"]
 
-    order_values: np.ndarray | None = None
-
-    if order_by is not None and order_by in da.coords:
-        raw = _coord_values_per_trace(da, order_by, non_time_dims)
-        if raw is not None:
-            try:
-                order_values = raw.astype(float)
-            except (ValueError, TypeError):
-                order_values = None
-    elif order_by is None and len(non_time_dims) == 1:
-        # Auto: use the single non-time dimension's coordinate values
-        dim_name = non_time_dims[0]
-        coord_vals = da.coords[dim_name].values
-        try:
-            order_values = coord_vals.astype(float)
-        except (ValueError, TypeError):
-            order_values = np.arange(len(coord_vals), dtype=float)
+    order_values = _trace_order_values(da, order_by)
 
     color_values: np.ndarray | None = None
     if color_by is not None:
         color_values = _coord_values_per_trace(da, color_by, non_time_dims)
 
-    # Apply ordering
-    if order_values is not None and len(order_values) == len(tuples):
-        sort_idx = np.argsort(order_values)
-        if descending:
-            sort_idx = sort_idx[::-1]
+    sort_idx = _compute_trace_sort_index(
+        da, order_by=order_by, descending=descending, n_traces=len(tuples)
+    )
+    if sort_idx is not None:
         tuples = [tuples[i] for i in sort_idx]
         labels = [labels[i] for i in sort_idx]
-        order_values = order_values[sort_idx]
+        if order_values is not None:
+            order_values = order_values[sort_idx]
         if color_values is not None and len(color_values) == len(sort_idx):
             color_values = color_values[sort_idx]
 
     return tuples, order_values, labels, color_values
+
+
+def convert_event_arrays_aligned_with(
+    da: xr.DataArray,
+    bool_arrays: list[xr.DataArray],
+    *,
+    order_by: str | None,
+    descending: bool,
+) -> list[list[np.ndarray]]:
+    """Flatten each bool DataArray into a list of per-series 1-D bool arrays
+    aligned 1:1 with the series produced by
+    ``convert_xarray_inputs_with_order(da, order_by=..., descending=...)``.
+
+    Each input bool array is reindexed onto *da*'s coords (``fill_value=False``)
+    so that dim/coord mismatches surface as silent False rather than crashes.
+    The same flattening (``itertools.product`` over non-time dims) and stable
+    sort permutation are applied as for the data array, guaranteeing the
+    returned per-series bool arrays line up with the rendered traces.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Reference DataArray. Must have a ``'time'`` dimension.
+    bool_arrays : list[xr.DataArray]
+        Boolean DataArrays. Each must share dims with *da*.
+    order_by, descending
+        Same values used for *da* in ``convert_xarray_inputs_with_order``.
+
+    Returns
+    -------
+    list[list[np.ndarray]]
+        Shape ``[n_layers][n_series]``. Each inner array is 1-D ``bool`` of
+        length ``len(da.coords['time'])``.
+    """
+    import xarray as xr  # lazy
+
+    if "time" not in da.dims:
+        raise ValueError(
+            f"DataArray must have a 'time' dimension. Found dims: {da.dims}"
+        )
+
+    n_time = int(da.sizes["time"])
+    sort_idx = _compute_trace_sort_index(
+        da,
+        order_by=order_by,
+        descending=descending,
+        n_traces=int(np.prod([
+            da.sizes[d] for d in da.dims if d != "time"
+        ]) or 1),
+    )
+
+    out: list[list[np.ndarray]] = []
+    for layer_i, arr in enumerate(bool_arrays):
+        if not isinstance(arr, xr.DataArray):
+            raise TypeError(
+                f"bool_event_arrays[{layer_i}] must be an xr.DataArray, "
+                f"got {type(arr).__name__}"
+            )
+        missing = [d for d in da.dims if d not in arr.dims]
+        if missing:
+            raise ValueError(
+                f"bool_event_arrays[{layer_i}] is missing dims {missing}; "
+                f"expected dims compatible with {da.dims}, got {arr.dims}"
+            )
+        aligned = arr.reindex_like(da, fill_value=False).astype(bool)
+        tuples = dataarray_to_series(aligned)
+        per_series = [np.asarray(y, dtype=bool) for _, _, y in tuples]
+        for si, b in enumerate(per_series):
+            if b.shape != (n_time,):
+                raise ValueError(
+                    f"bool_event_arrays[{layer_i}] series {si} has shape "
+                    f"{b.shape}, expected ({n_time},)"
+                )
+        if sort_idx is not None and len(sort_idx) == len(per_series):
+            per_series = [per_series[i] for i in sort_idx]
+        out.append(per_series)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +571,18 @@ def dataarray_to_arrays(
     # matplotlib.colors.Colormap instance — both are accepted downstream.
     # Callables and dicts are resolved per-group inside the loop below; for
     # those, ``cmaps`` stays as a placeholder default fallback list.
-    cmap_callable = callable(colormap) and not isinstance(colormap, type)
+    # Note: matplotlib Colormap instances are themselves callable (they map
+    # values to RGBA), so we must exclude them from the resolver branch —
+    # otherwise we would call ``cmap(split_val)`` and get a numeric error.
+    try:
+        from matplotlib.colors import Colormap as _MplColormap
+    except ImportError:
+        _MplColormap = ()  # isinstance check becomes a no-op
+    cmap_callable = (
+        callable(colormap)
+        and not isinstance(colormap, type)
+        and not isinstance(colormap, _MplColormap)
+    )
     cmap_dict = isinstance(colormap, dict)
     if cmap_callable or cmap_dict:
         cmaps = ["magma"]  # fallback; the resolver below takes precedence
