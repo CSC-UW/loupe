@@ -108,15 +108,105 @@ python -m loupe.app \
 - A static image (`--image`) can be shown when only one video is present or for custom use.
 
 #### Labels
-- CSV import/export uses the header `start_s,end_s,label,note` with rows specifying half‑open intervals `[start_s, end_s)`.
-- The `note` column is optional; old CSV files without notes are still supported.
-- Notes can be added to any labeled epoch via Ctrl+Shift+N.
+Loupe loads and saves labels via a small registry of formats and a `LabelSchema`
+that tells it which user‑named columns mean start, end, duration, label, note,
+and which extras to display. Rows are half‑open intervals `[start, end)`.
+
+Supported formats (all read; CSV / HTSV / Parquet also write):
+
+| Extension | Read | Write | Notes |
+|---|---|---|---|
+| `.csv`     | ✓ | ✓ | Defaults to legacy schema `start_s,end_s,label,note` |
+| `.htsv`    | ✓ | ✓ | Header‑bearing TSV; pass an explicit `LabelSchema` |
+| `.parquet` | ✓ | ✓ | Pass an explicit `LabelSchema` |
+| `.txt`     | ✓ | ✗ | Visbrain hypnograms; read‑only (lossy if written) |
+
+Pass labels into `view()`:
+
+```python
+import polars as pl
+from loupe import view, LabelSchema
+
+# Legacy CSV (no schema needed)
+view(da, labels="labels.csv")
+
+# HTSV with custom column names + extras shown in the GUI
+schema = LabelSchema(
+    start_col="start_time",
+    end_col="end_time",
+    duration_col="duration",   # optional; if both end_col and duration_col
+                                # are given they must agree on every row
+    label_col="state",
+    extra_cols=("scorer", "confidence"),
+)
+view(da, labels="hypnogram.htsv", label_schema=schema)
+
+# Visbrain .txt (start of each bout = previous bout's end)
+view(da, labels="hypnogram.txt")
+
+# Existing in-memory polars DataFrame
+df = pl.read_parquet("labels.parquet")
+view(da, labels=df, label_schema=schema)
+```
+
+`extra_cols` columns appear as additional cells in the labels summary table,
+the Jump‑to‑Epochs dialog, and the Ctrl+Shift+N edit dialog. They round‑trip
+on save preserving the user’s original column names.
+
+**Save safety.** File → Export Labels As… always opens a save dialog and
+writes a copy. The original file is **never** overwritten unless the caller
+explicitly opted in:
+
+```python
+view(da, labels="labels.htsv", label_schema=schema, labels_writeback=True)
+```
+
+When `labels_writeback=True`, an extra File → Save Labels (overwrite source)
+action becomes available (Ctrl+S). Without it, the menu item is disabled.
 
 #### State definitions
-- State hotkeys and label colors are loaded from `state_definitions.json` in the same directory as the main script.
-- The file contains a `keymap` object (key → state name) and a `label_colors` object (state name → [R, G, B, A]).
-- If the file is missing or invalid, built-in defaults are used.
-- To customize states, edit `state_definitions.json` and restart the app.
+State hotkeys and per‑state label colors come from any combination of:
+
+1. an explicit `state_definitions=<path>` kwarg on `view()` (or
+   `--state-definitions` on the CLI),
+2. otherwise, a `state_definitions.json` file next to `loupe/app.py`
+   (gitignored, user‑local — copy `example_state_definitions.json` to bootstrap),
+3. plus any `keymap=` / `label_colors=` kwargs on `view()`, which override
+   per‑state on top of the file.
+
+If none of these supplies any definitions, `view()` raises `LoupeConfigError`
+— there are no built‑in defaults. The bundled `example_state_definitions.json`
+is the authoritative schema reference.
+
+JSON shape:
+
+```json
+{
+    "keymap":       { "w": "Wake",  "1": "NREM" },
+    "label_colors": { "Wake": [0, 209, 40, 60], "NREM": "#291effA0" }
+}
+```
+
+Multiple hotkeys per state are supported. The keymap can be written either
+forward (`{key: state}`) or inverse (`{state: [keys]}`):
+
+```json
+{ "keymap": { "Wake": ["w", "W"], "NREM": ["1", "n"] } }
+```
+
+…or programmatically:
+
+```python
+view(
+    da,
+    keymap={"Wake": ["w", "W"], "NREM": ["1", "n"]},
+    label_colors={"Wake": "#00d128", "NREM": "#291effA0"},
+)
+```
+
+Color values may be `[R, G, B]`, `[R, G, B, A]`, or a hex string
+(`"#RRGGBB"` / `"#RRGGBBAA"`). Binding the same key to two different states
+raises `LoupeConfigError` at load time.
 
 #### Matrix/Raster data
 - Matrix plots display discrete events as vertical lines in a raster format (e.g., neural spike rasters).
@@ -218,6 +308,10 @@ xarray:
 - `--xr_variable NAME` — variable name in the dataset (default: `data`).
 - `--xr_filter JSON` — JSON filter dict for dimension slicing (e.g. `'{"syn_id": [3, 6]}'`).
 
+Labels & state:
+- `--state-definitions PATH` — JSON file with `keymap` and `label_colors`. Falls back to `state_definitions.json` next to `app.py` if omitted; raises `LoupeConfigError` if neither exists.
+- `--labels PATH` — initial labels file (`.csv`, `.htsv`, `.parquet`, or Visbrain `.txt`). For `.htsv`/`.parquet`, the schema is inferred only from the legacy CSV header; non‑standard column names require driving Loupe via `view()` with an explicit `LabelSchema`.
+
 ---
 
 ### UI tour
@@ -263,19 +357,12 @@ Playback and frame stepping
 
 Selection & labeling
 - Click‑drag in any plot: create/update selection. Drag handles to extend or refine.
-- While a selection is active, press a label key:
-  - `w` Wake
-  - `q` Quiet‑Wake
-  - `b` Brief‑Arousal
-  - `2` NREM‑light
-  - `1` NREM
-  - `r` REM
-  - `t` Transition‑to‑REM
-  - `a` Artifact
-  - `u` unclear
-  - `o` ON
-  - `f` OFF
-  - `s` spindle
+- While a selection is active, press a label hotkey. The exact bindings come
+  from the active state config (see "State definitions" above). The bundled
+  `example_state_definitions.json` defines `w`/`q`/`b` for various Wake states,
+  `1`/`2`/`3` for NREM substates, `r`/`p` for REM, plus `a`, `i`, `u`. The Help
+  menu (under "Help" in the menubar) prints the active bindings, including all
+  hotkeys for any state with multiple bindings.
 - `0`: Clear any labels in the selected range (splits existing intervals as needed).
 - Backspace (Edit → Delete last label): removes the most recently ending label.
 - Labels that overlap or are directly adjacent and have the same state are merged automatically into a single epoch.
@@ -320,8 +407,13 @@ Subplot Control Board
   - **Reset Order**: Restore the default order (all time series first, then all matrix plots).
 
 Import/Export labels
-- File → Load Labels… reads CSV with header `start_s,end_s,label`.
-- File → Export Labels… writes the same format (values formatted to 6 decimals).
+- File → Load Labels… reads `.csv`, `.htsv`, `.parquet`, or Visbrain `.txt`.
+  For `.htsv`/`.parquet`, pass an explicit `LabelSchema` via the `view()`
+  kwargs (the load dialog cannot guess column names).
+- File → Export Labels As… writes `.csv`, `.htsv`, or `.parquet`, preserving
+  the user's original column names.
+- File → Save Labels (overwrite source) — Ctrl+S — overwrites the original
+  file. Available only when `view()` was called with `labels_writeback=True`.
 
 ---
 
@@ -335,7 +427,7 @@ Import/Export labels
 7. If reviewing behavior videos, step the selected video frame‑by‑frame with Left/Right. Use the frame step target menu to choose which video to step.
 8. Add notes to epochs (Ctrl+Shift+N) to flag unclear or interesting cases for later review.
 9. Use Jump to Epochs (Ctrl+J) to quickly navigate to epochs with specific states or notes.
-10. Customize state hotkeys and colors by editing `state_definitions.json` in the loupe package directory.
+10. Customize state hotkeys and colors either by copying `example_state_definitions.json` to `state_definitions.json` and editing it, or by passing `keymap=` / `label_colors=` / `state_definitions=` to `view()` from a script. Multiple hotkeys per state are supported.
 
 ---
 
@@ -356,15 +448,26 @@ Rendering and decimation
 - `HoverablePlotItem` augments plots with hover enter/leave to target Y‑zoom on the active plot.
 
 Labeling model
-- Labels are stored as a sorted list of dicts `{start, end, label}` (seconds).
+- Labels live in a `LabelSet` wrapping a polars `DataFrame`. The DataFrame uses
+  the user's column names (per `LabelSchema`) plus an internal `__loupe_row_id`
+  column for stable cross‑edit identity. The row_id column is stripped on save.
 - Adding a label:
   - Overlapping existing intervals are split so the new label overwrites the selected span only.
+  - The two halves of a split inherit the original row's note and extras.
   - After insertion, adjacent/overlapping intervals with the same label are merged.
 - Clearing (`0`) removes any overlapping parts by splitting and discarding overlaps.
 - All label regions are drawn across every trace as translucent `LinearRegionItem`s.
 - The hypnogram overview shows the same label spans collapsed to a single row with a translucent "current window" region.
-- Notes are stored in a separate dict keyed by (start, end) tuple and exported/imported with labels.
-- State definitions (hotkeys and colors) are loaded from `state_definitions.json` at startup.
+- Notes (and any additional `extra_cols`) are stored as columns on the
+  DataFrame, keyed by the row's internal row_id rather than its `(start, end)`
+  pair. Endpoint edits don't lose metadata.
+- File I/O dispatches by extension through a small reader/writer registry
+  (`loupe/labels.py`). Visbrain `.txt` is read‑only because the format would
+  silently drop notes and extras on write.
+- Save‑to‑source is gated by `labels_writeback=True`; without the opt‑in,
+  exports always go through a Save‑As dialog.
+- State definitions (hotkeys and colors) come from one or more sources at
+  startup (see "State definitions"); there are no built‑in defaults.
 
 Videos and threading
 - Each video is handled by a `VideoWorker` in its own `QThread`, with a small LRU frame cache. Frames are requested by nearest frame index to the current cursor time.
@@ -409,11 +512,27 @@ Performance notes
 ---
 
 ### Extensibility
-- Add new label keys or colors by editing `state_definitions.json`.
-- The labeling and rendering code paths are modular:
-  - Label management: `_add_new_label`, `_clear_labels_in_range`, `_merge_adjacent_same_labels`, `_redraw_all_labels`, `_redraw_hypnogram_labels`.
-  - Rendering pipeline: `_apply_x_range`, `_refresh_curves`, `_refresh_dense_curves`.
-  - Video plumbing: `VideoWorker`, `_on_frame_ready`/`_on_frame2_ready`/`_on_frame3_ready`.
+- Add new label hotkeys or colors by:
+  - editing your local `state_definitions.json` (gitignored; copy
+    `example_state_definitions.json` to bootstrap), or
+  - passing `state_definitions=`, `keymap=`, or `label_colors=` to `view()`
+    at runtime.
+- Load labels in any supported format by passing `labels=` plus a custom
+  `LabelSchema` (see `loupe/labels.py`). Extra columns appear in the labels
+  table and round‑trip on save.
+- The primary extension surfaces are:
+  - `loupe.LabelSchema` — describes user column names.
+  - `loupe.LabelSet` — DataFrame‑backed label store with `add`, `clear_range`,
+    `merge_adjacent`, `update_cell`, `save_as`, `save_to_source`, etc.
+  - `loupe.StateConfig` — keymap + label colors.
+- Internal modular hot paths:
+  - Label management: `LabelSet.add`/`clear_range`/`merge_adjacent` plus the
+    GUI wrappers `_add_new_label`, `_clear_labels_in_range`,
+    `_merge_adjacent_same_labels`, `_finalize_label_change`.
+  - Rendering pipeline: `_apply_x_range`, `_refresh_curves`,
+    `_refresh_dense_curves`, `_sync_label_visuals`.
+  - Video plumbing: `VideoWorker`,
+    `_on_frame_ready`/`_on_frame2_ready`/`_on_frame3_ready`.
 
 ---
 
