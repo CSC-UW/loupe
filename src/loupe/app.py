@@ -858,7 +858,16 @@ class DenseViewControlsDialog(QtWidgets.QDialog):
         self.setModal(False)
         self.main_window = parent
 
-        main_layout = QtWidgets.QVBoxLayout(self)
+        outer = QtWidgets.QVBoxLayout(self)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        outer.addWidget(scroll, 1)
+
+        container = QtWidgets.QWidget()
+        scroll.setWidget(container)
+        main_layout = QtWidgets.QVBoxLayout(container)
+
+        self.resize(420, 500)
         self._group_widgets: list[dict] = []
 
         for gi, group in enumerate(self.main_window.dense_groups):
