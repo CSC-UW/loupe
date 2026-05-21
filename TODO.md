@@ -55,3 +55,5 @@
 - [ ] Stacked subplot axes do not need to be drawn.
 - [ ] When displaying very long pieces of data, scientific notation should not be used for the time axis labels. 36000 seconds should display as 36000, not 3.6e4, or 36 kiloseconds.
 - [ ] If no video is provided, the space used for the video viewer should be used for something else, e.g. the label / hypnogram views.
+- [ ] Include small sample data, for testing. Consider DataLad / GIN / GitLFS, or similar.
+- [ ] Add a synthetic data generation utility for testing.
