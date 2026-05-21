@@ -4717,7 +4717,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Per-group vertical scrollbar as a proxy widget for the graphics layout.
         # An explicit stylesheet is required: QScrollBar inside a QGraphicsProxyWidget
         # doesn't reliably paint the native handle, so we draw it via CSS.
-        sb = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical)
+        sb = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical, self)
         sb.setFixedWidth(14)
         sb.setStyleSheet(
             """
