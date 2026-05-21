@@ -2,7 +2,6 @@
 
 ## Known issues
 
-- [ ] The "Dense plot controls" menu stacks the controls for each subplot vertically. When there are many subplots (e.g. many regions, and 1 subplot per region), the many of the controls are not accessible because they beyond the bottom border of the screen.
 - [ ] When labels are provided that cover a superset of the data (e.g. a full 48h hypnogram is provided, but only 1h of trace data are provided), no label overlays appear -- even ones the user creates from within the loupe session.
 
 ## Features
