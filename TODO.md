@@ -20,8 +20,6 @@
   - It should be possible to plot labels as their own narrow subplot, under e.g. a traces subplot.
   - It would be nice if different subplots could use different label overlays, but this may become extremely cumbersome for many subplots and labels, and could degrade performance.
 - [ ] It should be possible to control label alpha at load time.
-- [ ] Default state definitions and keymaps should be re-evaluated.
-  - `keys_and_colors.py` and `state_definitions.json` are inconsistent.
 - [ ] Add support for filtering labels (e.g. based on probe and condition).
 
 ### TraceConfig
