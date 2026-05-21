@@ -218,6 +218,7 @@ def view(
     state_definitions: str | Path | None = None,
     keymap: dict | None = None,
     label_colors: dict | None = None,
+    label_alpha: float | None = None,
     **kwargs,
 ) -> LoupeApp:
     """Launch the Loupe viewer with xarray and/or DataFrame data.
@@ -332,6 +333,11 @@ def view(
         Programmatic ``state -> color`` mapping. Color values may be RGBA
         tuples, ``[R, G, B[, A]]`` lists, or hex strings (``"#RRGGBBAA"``).
         Overrides any colors also defined in the file.
+    label_alpha : float, optional
+        Initial label-overlay alpha multiplier in ``[0.0, 1.0]``. Equivalent
+        to setting the View → "Adjust Label Alpha…" slider at launch.
+        Defaults to ``1.0`` (use each state's alpha as defined in
+        ``label_colors``).
     **kwargs
         Forwarded to :class:`LoupeApp` (``video_path``,
         ``frame_times_path``, ``fixed_scale``, ``low_profile_x``, etc.).
@@ -752,6 +758,7 @@ def view(
         event_layers=event_layers,
         state_config=state_config,
         label_set=label_set,
+        label_alpha=label_alpha,
         **kwargs,
     )
     w.show()

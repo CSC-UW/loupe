@@ -1359,6 +1359,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         state_config: StateConfig | None = None,
         # Label data
         label_set: LabelSet | None = None,
+        # Initial label-overlay alpha multiplier (0.0 – 1.0). None → 1.0.
+        label_alpha: float | None = None,
     ):
         super().__init__()
         self.setWindowTitle("Loupe — Multi-Trace + Video + Labeling")
@@ -1424,9 +1426,21 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_brightness = (
             1.0  # brightness multiplier for alpha values (0.2 to 3.0)
         )
-        self.label_alpha_multiplier = (
-            1.0  # alpha multiplier for label overlay regions (0.0 to 1.0)
-        )
+        # alpha multiplier for label overlay regions (0.0 to 1.0)
+        if label_alpha is None:
+            self.label_alpha_multiplier = 1.0
+        else:
+            if (
+                not isinstance(label_alpha, (int, float))
+                or isinstance(label_alpha, bool)
+                or math.isnan(float(label_alpha))
+                or not (0.0 <= float(label_alpha) <= 1.0)
+            ):
+                raise ValueError(
+                    f"label_alpha must be a float in [0.0, 1.0], "
+                    f"got {label_alpha!r}"
+                )
+            self.label_alpha_multiplier = float(label_alpha)
         # Custom height factors for individual plot height control (1.0 = default)
         self.plot_height_factors: list[float] = []  # one per time series plot
         self.matrix_height_factors: list[float] = []  # one per matrix plot
@@ -2326,16 +2340,28 @@ class LoupeApp(QtWidgets.QMainWindow):
         for (_a, _b, name), bundle in self._label_visuals.items():
             color = self._label_brush_color(name)
             brush = pg.mkBrush(*color)
+            pen = pg.mkPen(*color)
             for _i, reg in bundle.plot_regions:
                 reg.setBrush(brush)
+                for line in reg.lines:
+                    line.setPen(pen)
             for _i, reg in bundle.dense_regions:
                 reg.setBrush(brush)
+                for line in reg.lines:
+                    line.setPen(pen)
             for _i, reg in bundle.matrix_regions:
                 reg.setBrush(brush)
+                for line in reg.lines:
+                    line.setPen(pen)
             for _i, reg in bundle.array_regions:
                 reg.setBrush(brush)
+                for line in reg.lines:
+                    line.setPen(pen)
         for (_a, _b, name), region in self._hypnogram_label_visuals.items():
-            region.setBrush(pg.mkBrush(*self._label_brush_color(name)))
+            color = self._label_brush_color(name)
+            region.setBrush(pg.mkBrush(*color))
+            for line in region.lines:
+                line.setPen(pg.mkPen(*color))
 
     def _adjust_label_alpha(self):
         """Show a dialog to adjust label overlay alpha (transparency)."""
@@ -5657,7 +5683,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not self._is_trace_plot_visible(i):
                 continue
             reg = pg.LinearRegionItem(
-                values=(a, b), brush=pg.mkBrush(*color), movable=False
+                values=(a, b),
+                brush=pg.mkBrush(*color),
+                pen=pg.mkPen(*color),
+                movable=False,
             )
             reg.setZValue(-20)
             plt.addItem(reg)
@@ -5665,7 +5694,10 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         for i, plt in enumerate(self.dense_plots):
             reg = pg.LinearRegionItem(
-                values=(a, b), brush=pg.mkBrush(*color), movable=False
+                values=(a, b),
+                brush=pg.mkBrush(*color),
+                pen=pg.mkPen(*color),
+                movable=False,
             )
             reg.setZValue(-20)
             plt.addItem(reg)
@@ -5675,7 +5707,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not self._is_matrix_plot_visible(i):
                 continue
             reg = pg.LinearRegionItem(
-                values=(a, b), brush=pg.mkBrush(*color), movable=False
+                values=(a, b),
+                brush=pg.mkBrush(*color),
+                pen=pg.mkPen(*color),
+                movable=False,
             )
             reg.setZValue(-20)
             plt.addItem(reg)
@@ -5685,7 +5720,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not self._is_array_plot_visible(i):
                 continue
             reg = pg.LinearRegionItem(
-                values=(a, b), brush=pg.mkBrush(*color), movable=False
+                values=(a, b),
+                brush=pg.mkBrush(*color),
+                pen=pg.mkPen(*color),
+                movable=False,
             )
             # Array plots draw their image at z=0; keep label regions on top
             # of the heatmap so they stay visible (-20 would hide them).
@@ -5729,7 +5767,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         a, b, name = float(row.start), float(row.end), str(row.label)
         color = self._label_brush_color(name)
         region = pg.LinearRegionItem(
-            values=(a, b), brush=pg.mkBrush(*color), movable=False
+            values=(a, b),
+            brush=pg.mkBrush(*color),
+            pen=pg.mkPen(*color),
+            movable=False,
         )
         region.setZValue(-10)
         self.hypnogram_plot.addItem(region)
