@@ -34,14 +34,14 @@
 
 ### RasterConfig
 
-- [ ] Configure matrix plots using `RasterConfig` objects, analagously to how `TraceConfig` objects configure trace plots.
-  - All `RasterConfig` objects are analogous to "dense" `TraceConfig` objects. There is no "stacked-subplots" equivalent.
-  - The default raster tick color should be white, just like for traces.
-  - Consider using `PlotCurveItem` instead of `ScatterPlotItem`, if we are not already, for optimum performance.
+- [ ] Consider using `PlotCurveItem` or `PlotScatteritem` instead of `PlotDataItem` for optimum performance.
+- [ ] Allow per-row colors
 
 ## Other
 
 - [ ] Consider renaming "Array view" to something more descriptive, like "Heatmap view", "Colormesh view", or "Image view"
+- [ ] Make "Trace View", "Array view", and "Raster Config" APIs as consistent as possible.
+  - [ ] "color" and "colors" kwargs are confusing. Consider renaming, e.g. to match Seaborn conventions ("hue", "palette", etc.).
 - [ ] Consider whether the README should be re-organized around plot/view types, rather than supported data formats. Data formats should still be covered, but in the context of plot types
   - An usage example for every plot type should be provided.
   - A markdown file with increased detail for each view, including performance/dev notes, could be linked to from the README.
