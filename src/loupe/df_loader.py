@@ -121,10 +121,13 @@ def dataframe_to_matrix_series(
         groups = [()]  # single synthetic group
 
     # ---- resolve color helper -----------------------------------------------
+    # Default tick color is white, matching traces.  Per-group palette colors
+    # require explicit opt-in via `colors=...` — group separation comes from
+    # being in different subplots, not from auto-cycling a palette.
     def _color_for(group_key: tuple, idx: int) -> tuple[int, int, int]:
         key = group_key[0] if len(group_key) == 1 else group_key
         if colors is None:
-            return _DEFAULT_COLORS[idx % len(_DEFAULT_COLORS)]
+            return (255, 255, 255)
         if isinstance(colors, dict):
             if key in colors:
                 return colors[key]

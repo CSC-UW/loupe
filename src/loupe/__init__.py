@@ -16,7 +16,14 @@ if TYPE_CHECKING:
 
     from loupe.app import LoupeApp
 
-__all__ = ["LabelSchema", "LabelSet", "StateConfig", "TraceConfig", "view"]
+__all__ = [
+    "LabelSchema",
+    "LabelSet",
+    "RasterConfig",
+    "StateConfig",
+    "TraceConfig",
+    "view",
+]
 
 
 @dataclass
@@ -101,6 +108,69 @@ class TraceConfig:
     decim_method: str = "peak"
 
 
+@dataclass
+class RasterConfig:
+    """Per-DataFrame display configuration for raster plots in :func:`view`.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Polars DataFrame of events.  Must contain *time_col* and *y_col*.
+    time_col : str
+        Column containing event timestamps in seconds (default ``"time"``).
+    y_col : str
+        Column whose values identify the matrix row for each event
+        (default ``"source_id"``).
+    group_col : str, list[str] or None
+        Column(s) used to split this DataFrame into separate raster
+        subplots.  ``None`` (default) puts all events in a single subplot.
+    alpha_col : str or None
+        Column for per-event opacity, normalized to *alpha_range*.
+    name : str
+        Base name for the raster subplots (default ``"events"``).  Group
+        values are appended when *group_col* is set.
+    color : str, RGB(A) tuple, or None
+        Single color applied to every group produced by this DataFrame
+        (e.g. ``"#a020f0"`` or ``(160, 32, 240)``).  Takes precedence over
+        *colors* when both are set.
+    colors : dict, list, tuple or None
+        Per-group palette: dict ``{group_value: (R,G,B)}``, list of tuples
+        assigned in sorted group order, or a single tuple applied to all
+        groups.  ``None`` (default) means white.
+    alpha_range : tuple[float, float]
+        ``(min_alpha, max_alpha)`` for normalizing *alpha_col* values.
+    """
+
+    data: "pl.DataFrame"
+    time_col: str = "time"
+    y_col: str = "source_id"
+    group_col: "str | list[str] | None" = None
+    alpha_col: str | None = None
+    name: str = "events"
+    color: "str | tuple | None" = None
+    colors: "dict | list | tuple | None" = None
+    alpha_range: tuple[float, float] = (0.3, 1.0)
+
+
+def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
+    """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
+
+    Raster rendering (``MatrixSeries.color``) expects exactly 3 channels —
+    the alpha is supplied separately per event via ``alpha_col``.
+    """
+    if isinstance(c, str):
+        s = c.strip().lstrip("#")
+        if len(s) in (6, 8):
+            try:
+                return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+            except ValueError:
+                pass
+        raise ValueError(f"Cannot parse raster color: {c!r}")
+    if isinstance(c, (tuple, list)) and len(c) >= 3:
+        return (int(c[0]), int(c[1]), int(c[2]))
+    raise ValueError(f"Cannot parse raster color: {c!r}")
+
+
 def view(
     data=None,
     *,
@@ -167,24 +237,36 @@ def view(
     filter_dict : dict, optional
         Dimension slicing applied to every loaded DataArray, e.g.
         ``{"syn_id": slice(3, 6), "time": slice(0, 1800)}``.
-    matrix_df : pl.DataFrame or list[pl.DataFrame], optional
-        In-memory Polars DataFrame(s) to display as matrix/raster plots.
-        Mutually exclusive with *matrix_parquet*.
+    matrix_df : pl.DataFrame, RasterConfig, or list thereof, optional
+        In-memory Polars DataFrame(s) (or :class:`RasterConfig` objects) to
+        display as raster plots.  Mutually exclusive with *matrix_parquet*.
+        Pass :class:`RasterConfig` to override per-source settings (color,
+        grouping, etc.); bare DataFrames inherit the top-level matrix
+        kwargs (``y_col``, ``group_col``, ``alpha_col``, ``matrix_name``,
+        ``matrix_colors``, ``alpha_range``) as defaults.
     matrix_parquet : str or list[str], optional
-        Path(s) to parquet file(s) to load as matrix/raster plots.
-        Mutually exclusive with *matrix_df*.
+        Path(s) to parquet file(s) to load as raster plots.  Mutually
+        exclusive with *matrix_df*.
     y_col : str
-        DataFrame column for matrix row assignment (default ``"source_id"``).
+        Default DataFrame column for matrix row assignment
+        (default ``"source_id"``).  Ignored for items wrapped in
+        :class:`RasterConfig`.
     group_col : str or list[str] or None
-        DataFrame column(s) to split into separate matrix subplots.
+        Default DataFrame column(s) to split into separate raster subplots.
+        Ignored for items wrapped in :class:`RasterConfig`.
     alpha_col : str or None
-        DataFrame column for per-event opacity.
+        Default DataFrame column for per-event opacity.  Ignored for items
+        wrapped in :class:`RasterConfig`.
     matrix_name : str
-        Base name for the matrix subplots (default ``"events"``).
+        Default base name for raster subplots (default ``"events"``).
+        Ignored for items wrapped in :class:`RasterConfig`.
     matrix_colors : dict, list, tuple or None
-        Color specification per group (see :func:`df_loader.dataframe_to_matrix_series`).
+        Default color specification per group (see
+        :func:`df_loader.dataframe_to_matrix_series`).  ``None`` means white.
+        Ignored for items wrapped in :class:`RasterConfig`.
     alpha_range : tuple[float, float]
-        ``(min_alpha, max_alpha)`` for normalizing *alpha_col*.
+        Default ``(min_alpha, max_alpha)`` for normalizing *alpha_col*.
+        Ignored for items wrapped in :class:`RasterConfig`.
     overlay : str or None
         Dimension name to overlay on (e.g. ``'syn_id'``).  When set, traces
         from different DataArrays that share the same coordinate value on this
@@ -274,6 +356,13 @@ def view(
         ev = pl.read_parquet("glut_events.parquet")
         w = view(matrix_df=ev, y_col="source_id", group_col="dmd",
                  alpha_col="snr_denoised")
+
+    Per-source settings via :class:`RasterConfig`::
+
+        from loupe import view, RasterConfig
+        w = view(matrix_df=RasterConfig(
+            ev, y_col="source_id", group_col="dmd", color="#ff00ff",
+        ))
 
     Combined::
 
@@ -564,21 +653,42 @@ def view(
 
         if not isinstance(matrix_df, list):
             matrix_df = [matrix_df]
-        all_ms = []
-        for i, mdf in enumerate(matrix_df):
-            prefix = matrix_name if len(matrix_df) == 1 else f"{matrix_name}_{i}"
-            all_ms.extend(
-                dataframe_to_matrix_series(
-                    mdf,
-                    time_col="time",
+        # Normalise to list[RasterConfig]: bare DataFrames inherit the
+        # top-level matrix kwargs as defaults; explicit RasterConfigs pass
+        # through unchanged.
+        raster_configs: list[RasterConfig] = []
+        n_inputs = len(matrix_df)
+        for i, item in enumerate(matrix_df):
+            default_name = matrix_name if n_inputs == 1 else f"{matrix_name}_{i}"
+            if isinstance(item, RasterConfig):
+                raster_configs.append(item)
+            else:
+                raster_configs.append(RasterConfig(
+                    data=item,
                     y_col=y_col,
                     group_col=group_col,
                     alpha_col=alpha_col,
-                    name=prefix,
+                    name=default_name,
                     colors=matrix_colors,
                     alpha_range=alpha_range,
-                )
+                ))
+        all_ms = []
+        for cfg in raster_configs:
+            new_ms = dataframe_to_matrix_series(
+                cfg.data,
+                time_col=cfg.time_col,
+                y_col=cfg.y_col,
+                group_col=cfg.group_col,
+                alpha_col=cfg.alpha_col,
+                name=cfg.name,
+                colors=cfg.colors,
+                alpha_range=cfg.alpha_range,
             )
+            if cfg.color is not None:
+                resolved_color = _parse_raster_color(cfg.color)
+                for ms in new_ms:
+                    ms.color = resolved_color
+            all_ms.extend(new_ms)
         if all_ms:
             matrix_series_list = all_ms
 
