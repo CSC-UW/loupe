@@ -302,11 +302,16 @@ class VideoConfig:
 
     Parameters
     ----------
-    video_path : str
-        Path to a video file readable by OpenCV (.mp4, .avi, .mov, .mkv).
-    frame_times_path : str
-        Path to a 1-D ``.npy`` file of per-frame timestamps in seconds,
-        used to align frames with the trace cursor.
+    video_path : str or list[str]
+        Path to a video file readable by OpenCV (.mp4, .avi, .mov, .mkv),
+        OR a list of such paths to be displayed as one continuous video
+        (concatenated in list order).  When a list is given,
+        *frame_times_path* must also be a list of the same length.
+    frame_times_path : str or list[str]
+        Path to a 1-D ``.npy`` file of per-frame timestamps in seconds, or
+        a list of such paths matching *video_path*.  Arrays are
+        concatenated as-is — the caller is responsible for putting them on
+        a single shared time axis (typically TDT-block-relative seconds).
     name : str or None
         Display label for this video — used as the placeholder text on the
         empty frame and as the entry name in the Show / Frame Step Target
@@ -317,8 +322,8 @@ class VideoConfig:
         previous hard-coded layout.
     """
 
-    video_path: str
-    frame_times_path: str
+    video_path: "str | list[str]"
+    frame_times_path: "str | list[str]"
     name: str | None = None
     stretch: int | None = None
 
@@ -435,7 +440,9 @@ def view(
     videos : VideoConfig or list[VideoConfig], optional
         Synchronized video sources for the right panel.  A single
         :class:`VideoConfig` is accepted as shorthand for a one-element
-        list.
+        list.  Both ``video_path`` and ``frame_times_path`` may be lists
+        of equal length, in which case the files are loaded as one
+        continuous (concatenated) video — see :class:`VideoConfig`.
     labels : pl.DataFrame, str, or Path, optional
         Initial labels.  Either a polars DataFrame (requires
         ``label_schema``) or a path to a ``.csv``, ``.htsv``,

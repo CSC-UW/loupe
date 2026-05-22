@@ -412,6 +412,65 @@ class HoverablePlotItem(pg.PlotItem):
         super().hoverLeaveEvent(ev)
 
 
+class MultiFileVideoCapture:
+    """Adapter exposing a list of MP4s as a single cv2.VideoCapture-like object.
+
+    Implements the subset of the cv2.VideoCapture interface used by
+    VideoWorker: isOpened, set(CAP_PROP_POS_FRAMES, idx), read, release,
+    get(prop). Frame indices are global across the concatenated sequence;
+    seeking transparently switches between underlying captures.
+    """
+
+    def __init__(self, paths: list[str]):
+        if cv2 is None:
+            raise RuntimeError("OpenCV (cv2) is not installed.")
+        self._caps = [cv2.VideoCapture(p) for p in paths]
+        counts = [int(c.get(cv2.CAP_PROP_FRAME_COUNT)) for c in self._caps]
+        # _cumulative[i] = total frames in files 0..i-1; _cumulative[-1] = total.
+        self._cumulative = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
+        self._total_frames = int(self._cumulative[-1])
+        self._active_idx = 0
+
+    def isOpened(self) -> bool:
+        return self._total_frames > 0 and all(c.isOpened() for c in self._caps)
+
+    def set(self, prop, value) -> bool:
+        if prop != cv2.CAP_PROP_POS_FRAMES:
+            return bool(self._caps[self._active_idx].set(prop, value))
+        if self._total_frames == 0:
+            return False
+        global_idx = max(0, min(int(value), self._total_frames - 1))
+        # file_idx = smallest j such that _cumulative[j+1] > global_idx.
+        file_idx = int(
+            np.searchsorted(self._cumulative[1:], global_idx, side="right")
+        )
+        if file_idx >= len(self._caps):
+            file_idx = len(self._caps) - 1
+        local_idx = global_idx - int(self._cumulative[file_idx])
+        self._active_idx = file_idx
+        return bool(
+            self._caps[file_idx].set(cv2.CAP_PROP_POS_FRAMES, int(local_idx))
+        )
+
+    def read(self):
+        if not self._caps:
+            return False, None
+        return self._caps[self._active_idx].read()
+
+    def release(self) -> None:
+        for c in self._caps:
+            c.release()
+        self._caps = []
+        self._cumulative = np.array([0], dtype=np.int64)
+        self._total_frames = 0
+        self._active_idx = 0
+
+    def get(self, prop):
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
+            return float(self._total_frames)
+        return self._caps[0].get(prop) if self._caps else 0.0
+
+
 class VideoWorker(QtCore.QObject):
     frameReady = QtCore.Signal(int, QtGui.QImage)
     opened = QtCore.Signal(bool, str)
@@ -426,18 +485,29 @@ class VideoWorker(QtCore.QObject):
 
     @QtCore.Slot(str)
     def open(self, path):
+        self._open([path])
+
+    @QtCore.Slot("QStringList")
+    def openConcat(self, paths):
+        self._open(list(paths))
+
+    def _open(self, paths: list[str]):
         if cv2 is None:
             self.opened.emit(False, "OpenCV (cv2) not installed.")
             return
         try:
             if self.cap is not None:
                 self.cap.release()
-            self.cap = cv2.VideoCapture(path)
+            if len(paths) == 1:
+                self.cap = cv2.VideoCapture(paths[0])
+            else:
+                self.cap = MultiFileVideoCapture(paths)
             self.cache.clear()
             self._requested_idx = None
             self._request_queued = False
             ok = bool(self.cap.isOpened())
-            self.opened.emit(ok, "" if ok else f"Failed to open: {path}")
+            msg = "" if ok else f"Failed to open: {paths}"
+            self.opened.emit(ok, msg)
         except Exception as e:
             self.opened.emit(False, str(e))
 
@@ -508,6 +578,9 @@ class VideoSlot:
 
     Bundles the worker/thread pair, frame times, last-rendered pixmap,
     UI label, and menu actions for one synchronized video source.
+    ``video_path`` and ``frame_times_path`` may each be either a single
+    path or a list of paths; when both are lists they are loaded as one
+    continuous (concatenated) video.
     """
 
     index: int
@@ -515,8 +588,8 @@ class VideoSlot:
     stretch: int
     worker: VideoWorker
     thread: QtCore.QThread
-    video_path: str | None = None
-    frame_times_path: str | None = None
+    video_path: "str | list[str] | None" = None
+    frame_times_path: "str | list[str] | None" = None
     label: QtWidgets.QLabel | None = None
     show_action: QtGui.QAction | None = None
     step_action: QtGui.QAction | None = None
@@ -5296,24 +5369,46 @@ class LoupeApp(QtWidgets.QMainWindow):
         slot.video_path = vpath
         slot.frame_times_path = ft_path
 
-        if not os.path.exists(vpath) or not os.path.exists(ft_path):
+        vpaths = [vpath] if isinstance(vpath, str) else list(vpath)
+        ft_paths = [ft_path] if isinstance(ft_path, str) else list(ft_path)
+        if len(vpaths) != len(ft_paths):
+            QtWidgets.QMessageBox.warning(
+                self,
+                f"{slot.name} config error",
+                f"video paths ({len(vpaths)}) and frame_times paths "
+                f"({len(ft_paths)}) must be the same length.",
+            )
+            return
+        missing = [p for p in vpaths + ft_paths if not os.path.exists(p)]
+        if missing:
             QtWidgets.QMessageBox.warning(
                 self,
                 "File Not Found",
-                f"{slot.name} or frame times file does not exist.",
+                f"{slot.name}: missing files: {missing}",
             )
             return
 
-        QtCore.QMetaObject.invokeMethod(
-            slot.worker,
-            "open",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, vpath),
-        )
+        if len(vpaths) == 1:
+            QtCore.QMetaObject.invokeMethod(
+                slot.worker,
+                "open",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, vpaths[0]),
+            )
+        else:
+            QtCore.QMetaObject.invokeMethod(
+                slot.worker,
+                "openConcat",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG("QStringList", vpaths),
+            )
+
         try:
-            ft = np.load(ft_path).astype(float)
-            if ft.ndim != 1:
-                raise ValueError("frame_times.npy must be 1-D")
+            ft_arrays = [np.load(p).astype(float) for p in ft_paths]
+            for ft in ft_arrays:
+                if ft.ndim != 1:
+                    raise ValueError("frame_times.npy must be 1-D")
+            ft = ft_arrays[0] if len(ft_arrays) == 1 else np.concatenate(ft_arrays)
             slot.frame_times = ft
             self._update_status(
                 f"Loaded frame_times for {slot.name} ({len(ft)} frames)."
