@@ -13,7 +13,13 @@ import pyqtgraph as pg
 import pytest
 from PySide6 import QtWidgets
 
+import loupe.app as _loupe_app
 from loupe import RasterConfig, view
+
+_EXAMPLE_STATE_DEFS = os.path.join(
+    os.path.dirname(_loupe_app.__file__),
+    "example_state_definitions.json",
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -42,6 +48,7 @@ def test_color_on_precedence_over_color():
                 color_on="cell_type",
                 color="#ff0000",
             ),
+            state_definitions=_EXAMPLE_STATE_DEFS,
         )
     ms = w.matrix_series[0]
     # Per-event coloring populated; the legacy single-color override was
@@ -60,6 +67,7 @@ def test_color_on_precedence_over_colors():
                 color_on="cell_type",
                 colors={"pyr": (1, 2, 3)},
             ),
+            state_definitions=_EXAMPLE_STATE_DEFS,
         )
     ms = w.matrix_series[0]
     assert ms.category_index is not None
@@ -72,7 +80,10 @@ def test_color_alone_still_applied_when_color_on_absent():
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        w = view(matrix_df=RasterConfig(df, color="#a020f0"))
+        w = view(
+            matrix_df=RasterConfig(df, color="#a020f0"),
+            state_definitions=_EXAMPLE_STATE_DEFS,
+        )
     ms = w.matrix_series[0]
     assert ms.color == (160, 32, 240)
     assert ms.category_index is None
