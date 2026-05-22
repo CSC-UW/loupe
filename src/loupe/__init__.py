@@ -132,13 +132,27 @@ class RasterConfig:
     color : str, RGB(A) tuple, or None
         Single color applied to every group produced by this DataFrame
         (e.g. ``"#a020f0"`` or ``(160, 32, 240)``).  Takes precedence over
-        *colors* when both are set.
+        *colors* when both are set.  Ignored when *color_on* is set.
     colors : dict, list, tuple or None
         Per-group palette: dict ``{group_value: (R,G,B)}``, list of tuples
         assigned in sorted group order, or a single tuple applied to all
-        groups.  ``None`` (default) means white.
+        groups.  ``None`` (default) means white.  Ignored when *color_on*
+        is set.
     alpha_range : tuple[float, float]
         ``(min_alpha, max_alpha)`` for normalizing *alpha_col* values.
+    color_on : str or None
+        Column whose values determine per-event color.  When set, each
+        event in the raster is colored according to its value in this
+        column.  Takes precedence over *color* and *colors* (both are
+        ignored, with a warning if either is also set).
+    color_on_config : dict or None
+        Optional ``{column_value: color}`` mapping used by *color_on*.
+        Each value may be an ``(R, G, B)`` tuple or a ``"#RRGGBB"`` hex
+        string.  Unique values not listed fall back to a default palette
+        cycle (with a warning).  ``None`` assigns the entire palette from
+        the default cycle (no warning).  When *group_col* is also set the
+        mapping is shared across every subplot so the same column value
+        always renders as the same color.
     """
 
     data: "pl.DataFrame"
@@ -150,6 +164,8 @@ class RasterConfig:
     color: "str | tuple | None" = None
     colors: "dict | list | tuple | None" = None
     alpha_range: tuple[float, float] = (0.3, 1.0)
+    color_on: str | None = None
+    color_on_config: dict | None = None
 
 
 def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
@@ -689,8 +705,18 @@ def view(
                 name=cfg.name,
                 colors=cfg.colors,
                 alpha_range=cfg.alpha_range,
+                color_on=cfg.color_on,
+                color_on_config=cfg.color_on_config,
             )
-            if cfg.color is not None:
+            if cfg.color_on is not None:
+                if cfg.color is not None or cfg.colors is not None:
+                    import warnings
+                    warnings.warn(
+                        "RasterConfig: color_on takes precedence; "
+                        "color/colors are ignored.",
+                        stacklevel=2,
+                    )
+            elif cfg.color is not None:
                 resolved_color = _parse_raster_color(cfg.color)
                 for ms in new_ms:
                     ms.color = resolved_color

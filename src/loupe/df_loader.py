@@ -6,6 +6,7 @@ the application works without polars installed.
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -49,6 +50,8 @@ def dataframe_to_matrix_series(
         | None
     ) = None,
     alpha_range: tuple[float, float] = (0.3, 1.0),
+    color_on: str | None = None,
+    color_on_config: dict | None = None,
 ) -> list:
     """Convert a Polars DataFrame into one or more MatrixSeries for raster display.
 
@@ -79,15 +82,35 @@ def dataframe_to_matrix_series(
         * list of ``(R, G, B)`` tuples (assigned in sorted group order)
         * single ``(R, G, B)`` tuple (applied to all groups)
         * ``None``: use default palette
+
+        Ignored when *color_on* is set.
     alpha_range : tuple[float, float]
         ``(min_alpha, max_alpha)`` range for normalizing *alpha_col* values.
+    color_on : str or None
+        Column whose values determine per-event color.  When set, each event
+        is colored according to its value in this column rather than by the
+        per-group *colors* setting.
+    color_on_config : dict or None
+        Optional ``{column_value: color}`` mapping driving the *color_on*
+        palette.  Values may be ``(R, G, B)`` tuples or ``"#RRGGBB"`` hex
+        strings.  Unique values not listed here cycle through the default
+        palette (with a warning).  ``None`` assigns the entire palette from
+        the default cycle (no warning).  When *group_col* is also set, this
+        palette is shared across every subplot so the same value always
+        renders as the same color.
 
     Returns
     -------
     list[MatrixSeries]
         One per group (or one total if no grouping).
     """
-    from loupe.app import MatrixSeries  # lazy to stay Qt-free at import time
+    from loupe.app import (  # lazy to stay Qt-free at import time
+        MATRIX_MAX_CATEGORIES,
+        MATRIX_NA_COLOR,
+        MatrixSeries,
+    )
+    # Lazy import for the color parser to avoid a circular import at module load.
+    from loupe import _parse_raster_color
 
     # ---- validate columns ---------------------------------------------------
     missing = []
@@ -103,6 +126,8 @@ def dataframe_to_matrix_series(
         gcols = []
     if alpha_col is not None and alpha_col not in df.columns:
         missing.append(alpha_col)
+    if color_on is not None and color_on not in df.columns:
+        missing.append(color_on)
     if missing:
         raise ValueError(
             f"DataFrame is missing required column(s): {missing}.  "
@@ -111,6 +136,62 @@ def dataframe_to_matrix_series(
 
     if df.height == 0:
         return []
+
+    # ---- shared categorical palette (built once across the whole DataFrame) -
+    # When color_on is set we precompute a single value -> category-index map
+    # and the matching RGB palette, then apply it inside each group's loop so
+    # the same column value always renders as the same color across subplots.
+    value_to_idx: dict[object, int] | None = None
+    shared_category_colors: list[tuple[int, int, int]] | None = None
+    na_idx: int | None = None
+    if color_on is not None:
+        import polars as pl  # lazy
+
+        non_null = df.filter(pl.col(color_on).is_not_null())
+        try:
+            global_uniques = sorted(non_null[color_on].unique().to_list())
+        except TypeError as exc:
+            raise ValueError(
+                f"color_on column {color_on!r} contains values that cannot be "
+                f"sorted ({exc}); use a column with a single, comparable dtype."
+            ) from exc
+
+        if len(global_uniques) > MATRIX_MAX_CATEGORIES:
+            raise ValueError(
+                f"color_on column {color_on!r} has {len(global_uniques)} unique "
+                f"values, exceeding MATRIX_MAX_CATEGORIES={MATRIX_MAX_CATEGORIES}. "
+                f"For high-cardinality columns prefer a colormap-style binning."
+            )
+
+        palette: dict[object, tuple[int, int, int]] = {}
+        unmapped: list[object] = []
+        if color_on_config is not None:
+            for v in global_uniques:
+                if v in color_on_config:
+                    palette[v] = _parse_raster_color(color_on_config[v])
+                else:
+                    unmapped.append(v)
+        else:
+            unmapped = list(global_uniques)
+        for i, v in enumerate(unmapped):
+            palette[v] = _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)]
+        if color_on_config is not None and unmapped:
+            warnings.warn(
+                f"color_on_config is missing entries for {unmapped!r}; "
+                f"falling back to default palette.",
+                stacklevel=2,
+            )
+
+        value_to_idx = {v: i for i, v in enumerate(global_uniques)}
+        shared_category_colors = [palette[v] for v in global_uniques]
+        if df[color_on].null_count() > 0:
+            na_idx = len(global_uniques)
+            shared_category_colors = shared_category_colors + [MATRIX_NA_COLOR]
+            warnings.warn(
+                f"color_on column {color_on!r} contains "
+                f"{df[color_on].null_count()} null values; rendered as gray.",
+                stacklevel=2,
+            )
 
     # ---- split into groups --------------------------------------------------
     if gcols:
@@ -176,11 +257,26 @@ def dataframe_to_matrix_series(
         else:
             alphas = np.ones(len(timestamps), dtype=np.float64)
 
-        # sort by time (required by _matrix_segment_for_window)
+        # per-event category indices (only when color_on is set)
+        if value_to_idx is not None:
+            raw_cat = gdf[color_on].to_list()  # list preserves None/null
+            cat_idx = np.empty(len(raw_cat), dtype=np.int16)
+            for i, v in enumerate(raw_cat):
+                if v is None:
+                    cat_idx[i] = na_idx if na_idx is not None else 0
+                else:
+                    cat_idx[i] = value_to_idx.get(v, 0)
+        else:
+            cat_idx = None
+
+        # sort by time (required by _matrix_segment_for_window). All per-event
+        # arrays must be reordered together — including the category index.
         order = np.argsort(timestamps)
         timestamps = timestamps[order]
         yvals = yvals[order]
         alphas = alphas[order]
+        if cat_idx is not None:
+            cat_idx = cat_idx[order]
 
         # name
         if gcols:
@@ -199,6 +295,8 @@ def dataframe_to_matrix_series(
                 alphas=alphas,
                 color=color,
                 n_rows=n_rows,
+                category_index=cat_idx,
+                category_colors=shared_category_colors if cat_idx is not None else None,
             )
         )
 
