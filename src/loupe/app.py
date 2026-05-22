@@ -1598,7 +1598,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Hypnogram overview
         self.hypnogram_widget = None
         self.hypnogram_plot = None
-        self.hypnogram_view_region = None
+        self._hypnogram_window_marker_lines: list[pg.InfiniteLine] = []
         self.hypnogram_zoomed = False
         self.hypnogram_zoom_padding = 30.0
 
@@ -1853,14 +1853,25 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.hypnogram_plot = hp
         rl.addWidget(self.hypnogram_widget, 1)
 
-        # Region showing the current window on the hypnogram
-        self.hypnogram_view_region = pg.LinearRegionItem(
-            values=(self.window_start, self.window_start + self.window_len),
-            brush=pg.mkBrush(255, 255, 255, 50),
-            movable=False,
-        )
-        self.hypnogram_view_region.setZValue(20)
-        self.hypnogram_plot.addItem(self.hypnogram_view_region)
+        # Two-tone outlined frame marking the current window on the hypnogram.
+        # Each edge is a thick dark outer line topped by a thinner bright inner
+        # line; the dark stroke dominates against light label fills, the bright
+        # stroke against dark ones, keeping the marker visible at any palette.
+        # Order: [start outer, start inner, end outer, end inner] — outers are
+        # added first so the inners draw on top at the same z-value.
+        a = self.window_start
+        b = self.window_start + self.window_len
+        outer_pen = pg.mkPen(0, 0, 0, 230, width=4)
+        inner_pen = pg.mkPen(255, 255, 255, 230, width=1.5)
+        self._hypnogram_window_marker_lines = [
+            pg.InfiniteLine(pos=a, angle=90, movable=False, pen=outer_pen),
+            pg.InfiniteLine(pos=a, angle=90, movable=False, pen=inner_pen),
+            pg.InfiniteLine(pos=b, angle=90, movable=False, pen=outer_pen),
+            pg.InfiniteLine(pos=b, angle=90, movable=False, pen=inner_pen),
+        ]
+        for line in self._hypnogram_window_marker_lines:
+            line.setZValue(20)
+            self.hypnogram_plot.addItem(line)
 
         # Ensure rescale happens when the splitter is adjusted
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
@@ -5812,6 +5823,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         """Force a full rebuild of all visual label regions."""
         self._sync_label_visuals(force_rebuild=True)
 
+    def _set_hypnogram_window_marker(self, a: float, b: float) -> None:
+        lines = self._hypnogram_window_marker_lines
+        if not lines:
+            return
+        lines[0].setPos(a)
+        lines[1].setPos(a)
+        lines[2].setPos(b)
+        lines[3].setPos(b)
+
     def _update_hypnogram_extents(self):
         if self.hypnogram_plot is None:
             return
@@ -5823,11 +5843,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             )
         else:
             self._update_hypnogram_xrange()
-        # Ensure the view region reflects current window
-        if self.hypnogram_view_region is not None:
-            a = self.window_start
-            b = self.window_start + self.window_len
-            self.hypnogram_view_region.setRegion((a, b))
+        # Ensure the window marker reflects current window
+        self._set_hypnogram_window_marker(
+            self.window_start, self.window_start + self.window_len
+        )
 
     def _delete_last_label(self):
         if len(self.label_set) == 0:
@@ -6284,9 +6303,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._refresh_curves()
         self._sync_window_label_visuals()
 
-        # Update hypnogram view region to show current window
-        if self.hypnogram_view_region is not None:
-            self.hypnogram_view_region.setRegion(xr)
+        # Update hypnogram window marker to show current window
+        self._set_hypnogram_window_marker(float(xr[0]), float(xr[1]))
         # If zoomed, keep hypnogram centered on the current window +/- padding
         if self.hypnogram_zoomed:
             self._update_hypnogram_xrange()
