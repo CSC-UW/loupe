@@ -19,7 +19,6 @@
   - The user should be able to choose whether 1 or more sets of labels are drawn as overlays. If labels from two distinct sets overlap, they should just be drawn over each other. It is up to the user to set their colors and alphas so that this doesn't look awful, if the user expects it to happen.
   - It should be possible to plot labels as their own narrow subplot, under e.g. a traces subplot.
   - It would be nice if different subplots could use different label overlays, but this may become extremely cumbersome for many subplots and labels, and could degrade performance.
-- [ ] It should be possible to control label alpha at load time.
 - [ ] Add support for filtering labels (e.g. based on probe and condition).
 
 ### TraceConfig
@@ -39,8 +38,7 @@
 
 ## Other
 
-- [ ] Consider renaming "Array view" to something more descriptive, like "Heatmap view", "Colormesh view", or "Image view"
-- [ ] Make "Trace View", "Array view", and "Raster Config" APIs as consistent as possible.
+- [ ] Make "TraceConfig", "HeatmapConfig", and "RasterConfig" APIs as consistent as possible.
   - [ ] "color" and "colors" kwargs are confusing. Consider renaming, e.g. to match Seaborn conventions ("hue", "palette", etc.).
 - [ ] Consider whether the README should be re-organized around plot/view types, rather than supported data formats. Data formats should still be covered, but in the context of plot types
   - An usage example for every plot type should be provided.

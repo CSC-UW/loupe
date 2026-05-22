@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from loupe.app import LoupeApp
 
 __all__ = [
+    "HeatmapConfig",
     "LabelSchema",
     "LabelSet",
     "RasterConfig",
@@ -29,19 +30,19 @@ __all__ = [
 
 @dataclass
 class TraceConfig:
-    """Per-DataArray display configuration for :func:`view`.
+    """Per-DataArray display configuration for line-plot views in :func:`view`.
+
+    For 2-D heatmap views, use :class:`HeatmapConfig` instead.
 
     Parameters
     ----------
     data : xr.DataArray
         The DataArray to display.
     mode : str
-        ``"stacked-subplots"`` (default) for one subplot per trace,
-        ``"dense"`` for EEG-style offset traces on a single axis, or
-        ``"array"`` for a 2-D heatmap (imshow-style) over time.
+        ``"stacked-subplots"`` (default) for one subplot per trace, or
+        ``"dense"`` for EEG-style offset traces on a single axis.
     order_by : str or None
-        Coordinate name to control trace ordering and spacing
-        (stacked / dense modes).
+        Coordinate name to control trace ordering and spacing.
     descending : bool
         Reverse the ordering given by *order_by*.
     gain : float
@@ -54,40 +55,12 @@ class TraceConfig:
     color_by : str or None
         Coordinate name whose categorical values determine per-trace color.
     color : str, RGB(A) tuple, or None
-        (line modes) Single color applied to every trace produced by this
-        DataArray, e.g. ``"#a020f0"`` or ``(160, 32, 240)``.  Overrides
-        ``color_by`` when both are set.  Ignored in array mode.
-    label : str, callable, or None
-        Display name override.
-
-        * In stacked-subplots / dense mode: a string used as the trace name
-          (or, for multi-trace DataArrays, as the name prefix replacing
-          ``data.name``).
-        * In array mode: either a string (used verbatim per subplot, no
-          ``"split_on=val"`` suffix) or a callable
-          ``(split_val, sub_da) -> str`` invoked once per split group.
-          1-arg callables ``(split_val) -> str`` are also accepted.
-    split_on : str or None
-        (array mode) Coordinate or dim name to split into one subplot per
-        unique value (e.g. one heatmap per dendrite).
-    sort_on : str or None
-        (array mode) Coordinate name on the row dim controlling y-axis row
-        order within each subplot.
-    colormap : str, Colormap, list, dict, or callable
-        (array mode) Matplotlib colormap name (e.g. ``"magma"``) or a
-        Colormap instance (e.g. ``cmcrameri.cm.batlow``).  Also accepts:
-
-        * a list — one entry per split group in iteration order, cycling;
-        * a dict ``{split_val: cmap}`` — keyed by split value;
-        * a callable ``(split_val, sub_da) -> str | Colormap`` — invoked
-          per split group.  1-arg callables ``(split_val) -> ...`` are also
-          accepted.
-    vmin, vmax : float or None
-        (array mode) Color scale limits.  Default is robust 1–99 percentile
-        per array.
-    decim_method : str
-        (array mode) Time-axis decimation when zoomed out. ``"peak"`` (max-
-        absolute per bin, preserves transients) or ``"mean"``.
+        Single color applied to every trace produced by this DataArray,
+        e.g. ``"#a020f0"`` or ``(160, 32, 240)``.  Overrides ``color_by``
+        when both are set.
+    label : str or None
+        Display name override.  Used as the trace name (or, for multi-trace
+        DataArrays, as the name prefix replacing ``data.name``).
     """
 
     data: xr.DataArray
@@ -99,8 +72,48 @@ class TraceConfig:
     traces_per_page: int | None = None
     color_by: str | None = None
     color: "str | tuple | None" = None
+    label: str | None = None
+
+
+@dataclass
+class HeatmapConfig:
+    """Per-DataArray display configuration for 2-D heatmap views in :func:`view`.
+
+    For line-plot views, use :class:`TraceConfig` instead.
+
+    Parameters
+    ----------
+    data : xr.DataArray
+        The DataArray to display as a heatmap (imshow-style) over time.
+    label : str, callable, or None
+        Display name override.  Either a string (used verbatim per subplot,
+        no ``"split_on=val"`` suffix) or a callable
+        ``(split_val, sub_da) -> str`` invoked once per split group.
+        1-arg callables ``(split_val) -> str`` are also accepted.
+    split_on : str or None
+        Coordinate or dim name to split into one subplot per unique value
+        (e.g. one heatmap per dendrite).
+    sort_on : str or None
+        Coordinate name on the row dim controlling y-axis row order within
+        each subplot.
+    colormap : str, Colormap, list, dict, or callable
+        Matplotlib colormap name (e.g. ``"magma"``) or a Colormap instance
+        (e.g. ``cmcrameri.cm.batlow``).  Also accepts:
+
+        * a list — one entry per split group in iteration order, cycling;
+        * a dict ``{split_val: cmap}`` — keyed by split value;
+        * a callable ``(split_val, sub_da) -> str | Colormap`` — invoked
+          per split group.  1-arg callables ``(split_val) -> ...`` are also
+          accepted.
+    vmin, vmax : float or None
+        Color scale limits.  Default is robust 1–99 percentile per array.
+    decim_method : str
+        Time-axis decimation when zoomed out. ``"peak"`` (max-absolute per
+        bin, preserves transients) or ``"mean"``.
+    """
+
+    data: xr.DataArray
     label: "str | Callable[..., str] | None" = None
-    # Array-mode parameters
     split_on: str | None = None
     sort_on: str | None = None
     colormap: "str | Colormap | list | dict | Callable[..., Any]" = "magma"
@@ -517,21 +530,26 @@ def view(
             for p, g in zip(paths, groups)
         ]
 
-    # ---- normalise data to list[TraceConfig] if needed --------------------
-    configs: list[TraceConfig] | None = None
+    # ---- normalise data to list[TraceConfig | HeatmapConfig] -------------
+    configs: list[TraceConfig | HeatmapConfig] | None = None
     if data is not None and overlay is None:
         if not isinstance(data, list):
             data = [data]
         configs = []
-        if array:
-            default_mode = "array"
-        elif dense:
-            default_mode = "dense"
-        else:
-            default_mode = "stacked-subplots"
+        default_mode = "dense" if dense else "stacked-subplots"
         for item in data:
-            if isinstance(item, TraceConfig):
+            if isinstance(item, (TraceConfig, HeatmapConfig)):
                 configs.append(item)
+            elif array:
+                configs.append(HeatmapConfig(
+                    data=item,
+                    split_on=split_on,
+                    sort_on=sort_on,
+                    colormap=colormap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    decim_method=decim_method,
+                ))
             else:
                 configs.append(TraceConfig(
                     data=item,
@@ -542,12 +560,6 @@ def view(
                     step=step,
                     traces_per_page=traces_per_page,
                     color_by=color_by,
-                    split_on=split_on,
-                    sort_on=sort_on,
-                    colormap=colormap,
-                    vmin=vmin,
-                    vmax=vmax,
-                    decim_method=decim_method,
                 ))
 
     # ---- build event_layers (validated above) ----------------------------
@@ -558,7 +570,7 @@ def view(
                 "Event markers only support a single DataArray input."
             )
         cfg = configs[0]
-        if cfg.mode != "stacked-subplots":
+        if not isinstance(cfg, TraceConfig) or cfg.mode != "stacked-subplots":
             raise ValueError(
                 "Event markers are only supported in stacked-subplots mode."
             )
@@ -616,16 +628,17 @@ def view(
                 getattr(c.data, "name", None) for c in configs
             )
             for i, cfg in enumerate(configs):
-                # In stacked/dense mode, an explicit cfg.label overrides the
+                # In line modes, an explicit cfg.label overrides the
                 # auto-derived prefix (which is what becomes the trace name
                 # for 1-D DataArrays).
-                if cfg.mode != "array" and isinstance(cfg.label, str):
+                is_heatmap = isinstance(cfg, HeatmapConfig)
+                if not is_heatmap and isinstance(cfg.label, str):
                     prefix = cfg.label
                 elif use_prefix:
                     prefix = str(cfg.data.name) if all_named else f"arr{i}"
                 else:
                     prefix = ""
-                if cfg.mode == "array":
+                if is_heatmap:
                     new_arrays = dataarray_to_arrays(
                         cfg.data,
                         split_on=cfg.split_on,
