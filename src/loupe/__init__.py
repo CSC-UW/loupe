@@ -22,6 +22,7 @@ __all__ = [
     "RasterConfig",
     "StateConfig",
     "TraceConfig",
+    "VideoConfig",
     "view",
 ]
 
@@ -152,6 +153,33 @@ class RasterConfig:
     alpha_range: tuple[float, float] = (0.3, 1.0)
 
 
+@dataclass
+class VideoConfig:
+    """Per-video display configuration for :func:`view`.
+
+    Parameters
+    ----------
+    video_path : str
+        Path to a video file readable by OpenCV (.mp4, .avi, .mov, .mkv).
+    frame_times_path : str
+        Path to a 1-D ``.npy`` file of per-frame timestamps in seconds,
+        used to align frames with the trace cursor.
+    name : str or None
+        Display label for this video — used as the placeholder text on the
+        empty frame and as the entry name in the Show / Frame Step Target
+        menus.  Defaults to ``"Video {i+1}"`` based on list position.
+    stretch : int or None
+        Initial vertical layout weight relative to other videos.  Defaults
+        to ``3`` for the first slot and ``2`` for the rest, matching the
+        previous hard-coded layout.
+    """
+
+    video_path: str
+    frame_times_path: str
+    name: str | None = None
+    stretch: int | None = None
+
+
 def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
     """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
 
@@ -210,6 +238,8 @@ def view(
     bool_event_arrays: list | None = None,
     event_markers: list[str] | None = None,
     event_marker_colors: list | None = None,
+    # Video sources
+    videos: "VideoConfig | list[VideoConfig] | None" = None,
     # Label loading
     labels: "pl.DataFrame | str | Path | None" = None,
     label_schema: LabelSchema | None = None,
@@ -338,9 +368,17 @@ def view(
         to setting the View → "Adjust Label Alpha…" slider at launch.
         Defaults to ``1.0`` (use each state's alpha as defined in
         ``label_colors``).
+    videos : VideoConfig or list[VideoConfig], optional
+        Synchronized video sources to display in the right panel.  Each
+        :class:`VideoConfig` carries a ``video_path``, a
+        ``frame_times_path`` (1-D ``.npy`` of per-frame timestamps in
+        seconds), and optional ``name`` / ``stretch`` overrides.  All
+        videos play together, locked to the trace cursor.  A single
+        :class:`VideoConfig` is accepted as shorthand for a one-element
+        list.
     **kwargs
-        Forwarded to :class:`LoupeApp` (``video_path``,
-        ``frame_times_path``, ``fixed_scale``, ``low_profile_x``, etc.).
+        Forwarded to :class:`LoupeApp` (``fixed_scale``,
+        ``low_profile_x``, etc.).
 
     Returns
     -------
@@ -747,6 +785,18 @@ def view(
     if config_subplot_order is not None and "subplot_order" not in kwargs:
         kwargs["subplot_order"] = config_subplot_order
 
+    if videos is None:
+        video_configs = []
+    elif isinstance(videos, VideoConfig):
+        video_configs = [videos]
+    else:
+        video_configs = list(videos)
+        for v in video_configs:
+            if not isinstance(v, VideoConfig):
+                raise TypeError(
+                    f"videos must contain VideoConfig instances, got {type(v).__name__}"
+                )
+
     w = LoupeApp(
         xr_series=xr_series,
         matrix_series_list=matrix_series_list,
@@ -759,6 +809,7 @@ def view(
         state_config=state_config,
         label_set=label_set,
         label_alpha=label_alpha,
+        video_configs=video_configs,
         **kwargs,
     )
     w.show()

@@ -52,13 +52,15 @@ def loupe_window(monkeypatch, qapp):
 
     yield window
 
-    for worker in (window._video_worker, window._video2_worker, window._video3_worker):
-        QtCore.QMetaObject.invokeMethod(worker, "stop", QtCore.Qt.QueuedConnection)
-    for thread in (window._video_thread, window._video2_thread, window._video3_thread):
-        thread.quit()
-        if not thread.wait(1000):
-            thread.terminate()
-            thread.wait(1000)
+    for slot in window.video_slots:
+        QtCore.QMetaObject.invokeMethod(
+            slot.worker, "stop", QtCore.Qt.QueuedConnection
+        )
+    for slot in window.video_slots:
+        slot.thread.quit()
+        if not slot.thread.wait(1000):
+            slot.thread.terminate()
+            slot.thread.wait(1000)
     window.close()
     qapp.processEvents()
 

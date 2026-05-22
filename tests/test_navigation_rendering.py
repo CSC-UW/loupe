@@ -86,21 +86,15 @@ def loupe_factory(monkeypatch, qapp):
     yield _make_window
 
     for window in windows:
-        for worker in (
-            window._video_worker,
-            window._video2_worker,
-            window._video3_worker,
-        ):
-            QtCore.QMetaObject.invokeMethod(worker, "stop", QtCore.Qt.QueuedConnection)
-        for thread in (
-            window._video_thread,
-            window._video2_thread,
-            window._video3_thread,
-        ):
-            thread.quit()
-            if not thread.wait(1000):
-                thread.terminate()
-                thread.wait(1000)
+        for slot in window.video_slots:
+            QtCore.QMetaObject.invokeMethod(
+                slot.worker, "stop", QtCore.Qt.QueuedConnection
+            )
+        for slot in window.video_slots:
+            slot.thread.quit()
+            if not slot.thread.wait(1000):
+                slot.thread.terminate()
+                slot.thread.wait(1000)
         window.close()
         qapp.processEvents()
 
@@ -227,40 +221,41 @@ def test_matrix_refresh_reuses_items_and_skips_hidden(loupe_factory, monkeypatch
 def test_request_video_frame_suppresses_duplicate_nearest_indices(
     loupe_factory, monkeypatch
 ):
+    from loupe.app import VideoSlot, VideoWorker
+
     window = loupe_factory(n_series=1, include_matrix=False)
-    frame_times = np.array([0.0, 1.0, 2.0], dtype=float)
+    # Test fixture creates LoupeApps with no video_configs, so attach a
+    # synthetic slot just for this test.
+    thread = QtCore.QThread(window)
+    worker = VideoWorker(cache_frames=4)
+    worker.moveToThread(thread)
+    slot = VideoSlot(
+        index=len(window.video_slots),
+        name="Test",
+        stretch=2,
+        worker=worker,
+        thread=thread,
+    )
+    slot.frame_times = np.array([0.0, 1.0, 2.0], dtype=float)
+    window.video_slots.append(slot)
+
     calls: list[int] = []
 
     with monkeypatch.context() as m:
         original_invoke = QtCore.QMetaObject.invokeMethod
 
         def fake_invoke(target, member, connection_type, *args):
-            if target is window._video_worker and member == "requestFrame":
-                calls.append(window._video_requested_frame_idx)
+            if target is slot.worker and member == "requestFrame":
+                calls.append(slot.requested_frame_idx)
                 return True
             return original_invoke(target, member, connection_type, *args)
 
         m.setattr(QtCore.QMetaObject, "invokeMethod", fake_invoke)
 
-        window._video_requested_frame_idx = None
-        window._request_video_frame(
-            frame_times=frame_times,
-            worker=window._video_worker,
-            requested_attr="_video_requested_frame_idx",
-            t=0.01,
-        )
-        window._request_video_frame(
-            frame_times=frame_times,
-            worker=window._video_worker,
-            requested_attr="_video_requested_frame_idx",
-            t=0.02,
-        )
-        window._request_video_frame(
-            frame_times=frame_times,
-            worker=window._video_worker,
-            requested_attr="_video_requested_frame_idx",
-            t=1.01,
-        )
+        slot.requested_frame_idx = None
+        window._request_video_frame(slot, t=0.01)
+        window._request_video_frame(slot, t=0.02)
+        window._request_video_frame(slot, t=1.01)
 
     assert calls == [0, 1]
 

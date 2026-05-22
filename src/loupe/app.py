@@ -15,6 +15,7 @@ import os
 import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -484,6 +485,30 @@ class VideoWorker(QtCore.QObject):
         self.cache.clear()
         self._requested_idx = None
         self._request_queued = False
+
+
+@dataclass
+class VideoSlot:
+    """Per-video runtime state for :class:`LoupeApp`.
+
+    Bundles the worker/thread pair, frame times, last-rendered pixmap,
+    UI label, and menu actions for one synchronized video source.
+    """
+
+    index: int
+    name: str
+    stretch: int
+    worker: VideoWorker
+    thread: QtCore.QThread
+    video_path: str | None = None
+    frame_times_path: str | None = None
+    label: QtWidgets.QLabel | None = None
+    show_action: QtGui.QAction | None = None
+    step_action: QtGui.QAction | None = None
+    frame_times: np.ndarray | None = None
+    is_open: bool = False
+    last_pixmap: QtGui.QPixmap | None = None
+    requested_frame_idx: int | None = None
 
 
 # ---------------- Label Summary Panel ----------------
@@ -1322,12 +1347,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         data_dir=None,
         data_files=None,
         colors=None,
-        video_path=None,
-        frame_times_path=None,
-        video2_path=None,
-        frame_times2_path=None,
-        video3_path=None,
-        frame_times3_path=None,
+        video_configs: list | None = None,
         fixed_scale=True,
         low_profile_x: bool | None = None,
         window_len: float = 10.0,
@@ -1514,32 +1534,30 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._low_profile_x_preference, total_subplots=0
         )
 
-        # Video
-        self.video_frame_times = None
-        self._video_is_open = False
-        self._video_thread = QtCore.QThread(self)
-        self._video_worker = VideoWorker(cache_frames=120)
-        self._video_worker.moveToThread(self._video_thread)
-        self.last_video_pixmap = None
-        self._video_requested_frame_idx: int | None = None
-
-        # Optional second video
-        self.video2_frame_times = None
-        self._video2_is_open = False
-        self._video2_thread = QtCore.QThread(self)
-        self._video2_worker = VideoWorker(cache_frames=120)
-        self._video2_worker.moveToThread(self._video2_thread)
-        self.last_video2_pixmap = None
-        self._video2_requested_frame_idx: int | None = None
-
-        # Optional third video
-        self.video3_frame_times = None
-        self._video3_is_open = False
-        self._video3_thread = QtCore.QThread(self)
-        self._video3_worker = VideoWorker(cache_frames=120)
-        self._video3_worker.moveToThread(self._video3_thread)
-        self.last_video3_pixmap = None
-        self._video3_requested_frame_idx: int | None = None
+        # Video slots — one VideoSlot per VideoConfig. Workers + threads
+        # are owned by the slot; labels/menu actions get attached later
+        # during _build_ui / _build_menu. Labels and shortcuts top out
+        # gracefully when more than 9 slots are supplied.
+        self.video_slots: list[VideoSlot] = []
+        configs = list(video_configs) if video_configs else []
+        for i, cfg in enumerate(configs):
+            thread = QtCore.QThread(self)
+            worker = VideoWorker(cache_frames=120)
+            worker.moveToThread(thread)
+            name = getattr(cfg, "name", None) or f"Video {i + 1}"
+            stretch = getattr(cfg, "stretch", None)
+            if stretch is None:
+                stretch = 3 if i == 0 else 2
+            slot = VideoSlot(
+                index=i,
+                name=name,
+                stretch=int(stretch),
+                worker=worker,
+                thread=thread,
+                video_path=getattr(cfg, "video_path", None),
+                frame_times_path=getattr(cfg, "frame_times_path", None),
+            )
+            self.video_slots.append(slot)
 
         # Playback
         self.is_playing = False
@@ -1557,8 +1575,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._deferred_view_refresh_needs_nav_slider = False
         # Playback speed (1.0 = real time)
         self.playback_speed = 1.0
-        # Which video to use for frame-by-frame stepping (1, 2, or 3)
-        self.frame_step_source = 1
+        # Index into self.video_slots that clocks frame-by-frame stepping
+        self.frame_step_source = 0
 
         # Hypnogram overview
         self.hypnogram_widget = None
@@ -1567,28 +1585,19 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.hypnogram_zoomed = False
         self.hypnogram_zoom_padding = 30.0
 
-        # Right panel layout references and video stretch defaults (used in _build_ui)
+        # Right panel layout references (used in _build_ui)
         self.right_layout = None
         self.videos_layout = None
         self.videos_widget = None
-        self.video1_stretch = 3
-        self.video2_stretch = 2
-        self.video3_stretch = 2
 
         self._build_ui()
 
         self.y_axis_dialog = None
 
-        self._video_worker.frameReady.connect(self._on_frame_ready)
-        self._video_worker.opened.connect(self._on_video_opened)
-        self._video2_worker.frameReady.connect(self._on_frame2_ready)
-        self._video2_worker.opened.connect(self._on_video2_opened)
-        self._video3_worker.frameReady.connect(self._on_frame3_ready)
-        self._video3_worker.opened.connect(self._on_video3_opened)
-
-        self._video_thread.start()
-        self._video2_thread.start()
-        self._video3_thread.start()
+        for slot in self.video_slots:
+            slot.worker.frameReady.connect(partial(self._on_frame_ready, slot))
+            slot.worker.opened.connect(partial(self._on_video_opened, slot))
+            slot.thread.start()
         # Store dense groups early (before set_series triggers plot creation)
         if dense_groups:
             self.dense_groups = dense_groups
@@ -1664,12 +1673,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._load_series_from_files(paths, colors=color_list)
         elif data_dir:
             self._load_series_from_dir(data_dir)
-        if video_path and frame_times_path:
-            self._load_video_data(video_path, frame_times_path)
-        if video2_path and frame_times2_path:
-            self._load_video2_data(video2_path, frame_times2_path)
-        if video3_path and frame_times3_path:
-            self._load_video3_data(video3_path, frame_times3_path)
+        for slot in self.video_slots:
+            if slot.video_path and slot.frame_times_path:
+                self._load_video_data(slot, slot.video_path, slot.frame_times_path)
 
         # Load matrix viewer data if provided
         if matrix_timestamps and matrix_yvals:
@@ -1708,10 +1714,10 @@ class LoupeApp(QtWidgets.QMainWindow):
     def eventFilter(self, obj, ev):
         try:
             if ev.type() == QtCore.QEvent.Type.Resize:
-                if obj is self.video_label:
-                    self._rescale_video_frame()
-                elif obj is self.video2_label:
-                    self._rescale_video2_frame()
+                for slot in self.video_slots:
+                    if obj is slot.label:
+                        self._rescale_video_frame(slot)
+                        break
         except Exception:
             pass
         return super().eventFilter(obj, ev)
@@ -1774,12 +1780,30 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.videos_layout.setContentsMargins(0, 0, 0, 0)
         self.videos_layout.setSpacing(4)
 
-        self.video_label = QtWidgets.QLabel("No video")
-        self.video_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumHeight(240)
-        self.video_label.setStyleSheet("background-color:#222;border:1px solid #444;")
-        self.videos_layout.addWidget(self.video_label, self.video1_stretch)
-        self.video_label.installEventFilter(self)
+        # Per-slot QLabels for video frames. Primary stays visible (shows
+        # the "No video" placeholder until a frame arrives); non-primary
+        # slots start hidden and reveal themselves on successful open.
+        for slot in self.video_slots:
+            lbl = QtWidgets.QLabel(f"No {slot.name.lower()}")
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            lbl.setMinimumHeight(240 if slot.index == 0 else 200)
+            lbl.setStyleSheet("background-color:#222;border:1px solid #444;")
+            if slot.index != 0:
+                lbl.hide()
+            self.videos_layout.addWidget(lbl, slot.stretch)
+            lbl.installEventFilter(self)
+            slot.label = lbl
+        # When there are no videos at all, keep a placeholder so the area
+        # is not empty (matches the prior "No video" look).
+        if not self.video_slots:
+            placeholder = QtWidgets.QLabel("No video")
+            placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            placeholder.setMinimumHeight(240)
+            placeholder.setStyleSheet(
+                "background-color:#222;border:1px solid #444;"
+            )
+            self.videos_layout.addWidget(placeholder, 3)
+            self._video_placeholder = placeholder
 
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("Cursor:"))
@@ -1794,27 +1818,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         rl.addWidget(self.videos_widget, 1)
         rl.addWidget(roww)
 
-        # Second video label (replaces image if video2 is loaded)
-        self.video2_label = QtWidgets.QLabel("No video 2")
-        self.video2_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video2_label.setMinimumHeight(200)
-        self.video2_label.setStyleSheet("background-color:#222;border:1px solid #444;")
-        self.video2_label.hide()
-        self.videos_layout.addWidget(self.video2_label, self.video2_stretch)
-        self.video2_label.installEventFilter(self)
-
-        # Label Summary panel (replaces former static image; hidden when 2+ videos)
+        # Label Summary panel (replaces former static image; hidden when
+        # any non-primary video opens — see _on_video_opened).
         self.label_summary_panel = LabelSummaryWidget(main_window=self)
         rl.addWidget(self.label_summary_panel, 2)
-
-        # Third video label (same size weighting as video2, stacked below)
-        self.video3_label = QtWidgets.QLabel("No video 3")
-        self.video3_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video3_label.setMinimumHeight(200)
-        self.video3_label.setStyleSheet("background-color:#222;border:1px solid #444;")
-        self.video3_label.hide()
-        self.videos_layout.addWidget(self.video3_label, self.video3_stretch)
-        self.video3_label.installEventFilter(self)
 
         # Hypnogram overview plot (full-recording labels with moving window box)
         self.hypnogram_widget = pg.PlotWidget()
@@ -1920,45 +1927,30 @@ class LoupeApp(QtWidgets.QMainWindow):
         adjust_video_sizes_action.triggered.connect(self._adjust_secondary_video_sizes)
         mview.addAction(adjust_video_sizes_action)
 
-        # Show/Hide videos (with hotkeys)
-        self.action_show_v1 = QtGui.QAction("Show Video 1", self)
-        self.action_show_v1.setCheckable(True)
-        self.action_show_v1.setChecked(True)
-        self.action_show_v1.setShortcut(QtGui.QKeySequence("Ctrl+Shift+1"))
-        self.action_show_v1.toggled.connect(lambda ch: self._set_video_visible(1, ch))
-        mview.addAction(self.action_show_v1)
-
-        self.action_show_v2 = QtGui.QAction("Show Video 2", self)
-        self.action_show_v2.setCheckable(True)
-        self.action_show_v2.setChecked(False)
-        self.action_show_v2.setShortcut(QtGui.QKeySequence("Ctrl+Shift+2"))
-        self.action_show_v2.toggled.connect(lambda ch: self._set_video_visible(2, ch))
-        mview.addAction(self.action_show_v2)
-
-        self.action_show_v3 = QtGui.QAction("Show Video 3", self)
-        self.action_show_v3.setCheckable(True)
-        self.action_show_v3.setChecked(False)
-        self.action_show_v3.setShortcut(QtGui.QKeySequence("Ctrl+Shift+3"))
-        self.action_show_v3.toggled.connect(lambda ch: self._set_video_visible(3, ch))
-        mview.addAction(self.action_show_v3)
+        # Show/Hide videos (with Ctrl+Shift+N hotkeys for N=1..9)
+        for slot in self.video_slots:
+            action = QtGui.QAction(f"Show {slot.name}", self)
+            action.setCheckable(True)
+            action.setChecked(slot.index == 0)
+            if slot.index < 9:
+                action.setShortcut(
+                    QtGui.QKeySequence(f"Ctrl+Shift+{slot.index + 1}")
+                )
+            action.toggled.connect(partial(self._set_video_visible, slot.index))
+            mview.addAction(action)
+            slot.show_action = action
 
         # Frame-step target selector
         step_menu = mview.addMenu("Frame Step Target")
         self.step_action_group = QtGui.QActionGroup(self)
         self.step_action_group.setExclusive(True)
-        self.step_target_v1 = QtGui.QAction("Video 1", self, checkable=True)
-        self.step_target_v2 = QtGui.QAction("Video 2", self, checkable=True)
-        self.step_target_v3 = QtGui.QAction("Video 3", self, checkable=True)
-        self.step_action_group.addAction(self.step_target_v1)
-        self.step_action_group.addAction(self.step_target_v2)
-        self.step_action_group.addAction(self.step_target_v3)
-        self.step_target_v1.setChecked(True)
-        self.step_target_v1.triggered.connect(lambda: self._set_frame_step_source(1))
-        self.step_target_v2.triggered.connect(lambda: self._set_frame_step_source(2))
-        self.step_target_v3.triggered.connect(lambda: self._set_frame_step_source(3))
-        step_menu.addAction(self.step_target_v1)
-        step_menu.addAction(self.step_target_v2)
-        step_menu.addAction(self.step_target_v3)
+        for slot in self.video_slots:
+            action = QtGui.QAction(slot.name, self, checkable=True)
+            self.step_action_group.addAction(action)
+            action.setChecked(slot.index == 0)
+            action.triggered.connect(partial(self._set_frame_step_source, slot.index))
+            step_menu.addAction(action)
+            slot.step_action = action
 
         # Playback speed
         playback_speed_action = QtGui.QAction("Set Playback Speed...", self)
@@ -5232,20 +5224,24 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._array_cache_keys[i] = cache_key
 
     # ---------- Video & Static Image ----------
-    def _load_video_data(self, vpath, ft_path):
+    def _load_video_data(self, slot: VideoSlot, vpath, ft_path):
         self._stop_playback_if_playing()
-        self._video_is_open = False
-        self.video_frame_times = None
-        self._video_requested_frame_idx = None
+        slot.is_open = False
+        slot.frame_times = None
+        slot.requested_frame_idx = None
+        slot.video_path = vpath
+        slot.frame_times_path = ft_path
 
         if not os.path.exists(vpath) or not os.path.exists(ft_path):
             QtWidgets.QMessageBox.warning(
-                self, "File Not Found", "Video or frame times file does not exist."
+                self,
+                "File Not Found",
+                f"{slot.name} or frame times file does not exist.",
             )
             return
 
         QtCore.QMetaObject.invokeMethod(
-            self._video_worker,
+            slot.worker,
             "open",
             QtCore.Qt.QueuedConnection,
             QtCore.Q_ARG(str, vpath),
@@ -5254,17 +5250,28 @@ class LoupeApp(QtWidgets.QMainWindow):
             ft = np.load(ft_path).astype(float)
             if ft.ndim != 1:
                 raise ValueError("frame_times.npy must be 1-D")
-            self.video_frame_times = ft
-            self._update_status(f"Loaded frame_times ({len(ft)} frames).")
+            slot.frame_times = ft
+            self._update_status(
+                f"Loaded frame_times for {slot.name} ({len(ft)} frames)."
+            )
             self._request_initial_frame()
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Frame times error", str(e))
-            self.video_frame_times = None
+            QtWidgets.QMessageBox.warning(
+                self, f"{slot.name} frame times error", str(e)
+            )
+            slot.frame_times = None
 
     def _on_load_video(self):
         if cv2 is None:
             QtWidgets.QMessageBox.warning(
                 self, "Video", "OpenCV (cv2) is not installed."
+            )
+            return
+        if not self.video_slots:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Video",
+                "No video slots configured. Pass videos=[VideoConfig(...)] to view().",
             )
             return
         vpath, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -5281,128 +5288,40 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not ft_path:
             return
 
-        self._load_video_data(vpath, ft_path)
+        self._load_video_data(self.video_slots[0], vpath, ft_path)
 
-    # ---------- Video2 ----------
-    def _load_video2_data(self, vpath, ft_path):
-        self._stop_playback_if_playing()
-        self._video2_is_open = False
-        self.video2_frame_times = None
-        self._video2_requested_frame_idx = None
-
-        if not os.path.exists(vpath) or not os.path.exists(ft_path):
-            QtWidgets.QMessageBox.warning(
-                self, "File Not Found", "Video2 or frame times file does not exist."
-            )
+    def _on_video_opened(self, slot: VideoSlot, ok, msg):
+        if not ok:
+            slot.is_open = False
+            QtWidgets.QMessageBox.warning(self, slot.name, msg or "Failed to open.")
             return
-
-        QtCore.QMetaObject.invokeMethod(
-            self._video2_worker,
-            "open",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, vpath),
-        )
-        try:
-            ft = np.load(ft_path).astype(float)
-            if ft.ndim != 1:
-                raise ValueError("frame_times.npy must be 1-D")
-            self.video2_frame_times = ft
-            self._update_status(f"Loaded frame_times2 ({len(ft)} frames).")
+        slot.is_open = True
+        slot.requested_frame_idx = None
+        if slot.label is not None:
+            slot.label.show()
+        # Hide the label-summary panel once any non-primary video opens
+        # (matches the historical "make room for a second video" behavior).
+        if slot.index != 0 and self.label_summary_panel is not None:
             self.label_summary_panel.hide()
-            self.video2_label.show()
-            self._request_initial_frame()
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Frame times 2 error", str(e))
-            self.video2_frame_times = None
-
-    def _on_video2_opened(self, ok, msg):
-        if not ok:
-            self._video2_is_open = False
-            QtWidgets.QMessageBox.warning(self, "Video2", msg or "Failed to open.")
-        else:
-            self._video2_is_open = True
-            self._video2_requested_frame_idx = None
-            self.label_summary_panel.hide()
-            self.video2_label.show()
-            self._request_initial_frame()
-
-    # ---------- Video3 ----------
-    def _load_video3_data(self, vpath, ft_path):
-        self._stop_playback_if_playing()
-        self._video3_is_open = False
-        self.video3_frame_times = None
-        self._video3_requested_frame_idx = None
-
-        if not os.path.exists(vpath) or not os.path.exists(ft_path):
-            QtWidgets.QMessageBox.warning(
-                self, "File Not Found", "Video3 or frame times file does not exist."
-            )
-            return
-
-        QtCore.QMetaObject.invokeMethod(
-            self._video3_worker,
-            "open",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, vpath),
-        )
-        try:
-            ft = np.load(ft_path).astype(float)
-            if ft.ndim != 1:
-                raise ValueError("frame_times.npy must be 1-D")
-            self.video3_frame_times = ft
-            self._update_status(f"Loaded frame_times3 ({len(ft)} frames).")
-            self.label_summary_panel.hide()
-            self.video3_label.show()
-            self._request_initial_frame()
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Frame times 3 error", str(e))
-            self.video3_frame_times = None
-
-    def _on_video3_opened(self, ok, msg):
-        if not ok:
-            self._video3_is_open = False
-            QtWidgets.QMessageBox.warning(self, "Video3", msg or "Failed to open.")
-        else:
-            self._video3_is_open = True
-            self._video3_requested_frame_idx = None
-            self.video3_label.show()
-            self._request_initial_frame()
-
-    def _on_video_opened(self, ok, msg):
-        if not ok:
-            self._video_is_open = False
-            QtWidgets.QMessageBox.warning(self, "Video", msg or "Failed to open.")
-        else:
-            self._video_is_open = True
-            self._video_requested_frame_idx = None
-            self._request_initial_frame()
+        self._request_initial_frame()
 
     def _request_initial_frame(self):
-        if self._video_is_open and self.video_frame_times is not None:
-            self._set_cursor_time(self.cursor_time, update_slider=True)
-        if self._video2_is_open and self.video2_frame_times is not None:
-            self._set_cursor_time(self.cursor_time, update_slider=False)
-        if self._video3_is_open and self.video3_frame_times is not None:
-            self._set_cursor_time(self.cursor_time, update_slider=False)
+        for slot in self.video_slots:
+            if slot.is_open and slot.frame_times is not None:
+                self._set_cursor_time(self.cursor_time, update_slider=(slot.index == 0))
 
-    def _request_video_frame(
-        self,
-        *,
-        frame_times: np.ndarray | None,
-        worker: VideoWorker,
-        requested_attr: str,
-        t: float,
-    ) -> None:
-        if frame_times is None or len(frame_times) == 0:
+    def _request_video_frame(self, slot: VideoSlot, t: float) -> None:
+        ft = slot.frame_times
+        if ft is None or len(ft) == 0:
             return
 
-        idx = find_nearest_frame(frame_times, t)
-        if getattr(self, requested_attr) == idx:
+        idx = find_nearest_frame(ft, t)
+        if slot.requested_frame_idx == idx:
             return
 
-        setattr(self, requested_attr, idx)
+        slot.requested_frame_idx = idx
         QtCore.QMetaObject.invokeMethod(
-            worker,
+            slot.worker,
             "requestFrame",
             QtCore.Qt.QueuedConnection,
             QtCore.Q_ARG(int, int(idx)),
@@ -5422,71 +5341,33 @@ class LoupeApp(QtWidgets.QMainWindow):
         if update_nav_slider:
             self._update_nav_slider_from_window()
 
-    def _on_frame_ready(self, idx, qimg):
-        if idx != self._video_requested_frame_idx:
+    def _on_frame_ready(self, slot: VideoSlot, idx, qimg):
+        if idx != slot.requested_frame_idx:
             return
         if qimg is None or qimg.isNull():
             return
         pix = QtGui.QPixmap.fromImage(qimg)
         if pix.isNull():
             return
+        slot.last_pixmap = pix
+        self._rescale_video_frame(slot)
 
-        self.last_video_pixmap = pix
-        self._rescale_video_frame()
+    def _rescale_video_frame(self, slot: VideoSlot):
+        if slot.last_pixmap is None or slot.label is None:
+            return
+        scaled = slot.last_pixmap.scaled(
+            slot.label.size(),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        slot.label.setPixmap(scaled)
 
-    def _on_frame2_ready(self, idx, qimg):
-        if idx != self._video2_requested_frame_idx:
-            return
-        if qimg is None or qimg.isNull():
-            return
-        pix = QtGui.QPixmap.fromImage(qimg)
-        if pix.isNull():
-            return
-        self.last_video2_pixmap = pix
-        self._rescale_video2_frame()
-
-    def _on_frame3_ready(self, idx, qimg):
-        if idx != self._video3_requested_frame_idx:
-            return
-        if qimg is None or qimg.isNull():
-            return
-        pix = QtGui.QPixmap.fromImage(qimg)
-        if pix.isNull():
-            return
-        self.last_video3_pixmap = pix
-        self._rescale_video3_frame()
-
-    def _rescale_video_frame(self):
-        if self.last_video_pixmap:
-            scaled = self.last_video_pixmap.scaled(
-                self.video_label.size(),
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
-            self.video_label.setPixmap(scaled)
-
-    def _rescale_video2_frame(self):
-        if self.last_video2_pixmap:
-            scaled = self.last_video2_pixmap.scaled(
-                self.video2_label.size(),
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
-            self.video2_label.setPixmap(scaled)
-
-    def _rescale_video3_frame(self):
-        if self.last_video3_pixmap:
-            scaled = self.last_video3_pixmap.scaled(
-                self.video3_label.size(),
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
-            self.video3_label.setPixmap(scaled)
+    def _rescale_all_video_frames(self):
+        for slot in self.video_slots:
+            self._rescale_video_frame(slot)
 
     def _on_splitter_moved(self, pos, index):
-        self._rescale_video_frame()
-        self._rescale_video2_frame()
-        self._rescale_video3_frame()
+        self._rescale_all_video_frames()
 
     # ---------- Selection / labeling ----------
     def _show_y_axis_dialog(self):
@@ -5942,26 +5823,28 @@ class LoupeApp(QtWidgets.QMainWindow):
             if key == QtCore.Qt.Key.Key_2:
                 self._zoom_active_plot_y(1.1)
                 return
-        # Ctrl+Shift+1/2/3 toggle video visibility
+        # Ctrl+Shift+N (N=1..9) toggles the Nth video's visibility
         if ev.modifiers() == (
             QtCore.Qt.KeyboardModifier.ControlModifier
             | QtCore.Qt.KeyboardModifier.ShiftModifier
         ):
-            if key == QtCore.Qt.Key.Key_1:
-                self._set_video_visible(1, not self.video_label.isVisible())
-                if self.action_show_v1:
-                    self.action_show_v1.setChecked(self.video_label.isVisible())
-                return
-            if key == QtCore.Qt.Key.Key_2:
-                self._set_video_visible(2, not self.video2_label.isVisible())
-                if self.action_show_v2:
-                    self.action_show_v2.setChecked(self.video2_label.isVisible())
-                return
-            if key == QtCore.Qt.Key.Key_3:
-                self._set_video_visible(3, not self.video3_label.isVisible())
-                if self.action_show_v3:
-                    self.action_show_v3.setChecked(self.video3_label.isVisible())
-                return
+            digit_keys = {
+                QtCore.Qt.Key.Key_1: 0, QtCore.Qt.Key.Key_2: 1,
+                QtCore.Qt.Key.Key_3: 2, QtCore.Qt.Key.Key_4: 3,
+                QtCore.Qt.Key.Key_5: 4, QtCore.Qt.Key.Key_6: 5,
+                QtCore.Qt.Key.Key_7: 6, QtCore.Qt.Key.Key_8: 7,
+                QtCore.Qt.Key.Key_9: 8,
+            }
+            if key in digit_keys:
+                i = digit_keys[key]
+                if 0 <= i < len(self.video_slots):
+                    slot = self.video_slots[i]
+                    if slot.label is not None:
+                        new_vis = not slot.label.isVisible()
+                        self._set_video_visible(i, new_vis)
+                        if slot.show_action is not None:
+                            slot.show_action.setChecked(slot.label.isVisible())
+                    return
 
         if key == QtCore.Qt.Key.Key_Space:
             self._toggle_playback()
@@ -6035,29 +5918,24 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.frame_step_source = int(which)
 
     def _available_frame_times(self, which: int):
-        if which == 1 and self.video_frame_times is not None:
-            return self.video_frame_times
-        if which == 2 and self.video2_frame_times is not None:
-            return self.video2_frame_times
-        if which == 3 and self.video3_frame_times is not None:
-            return self.video3_frame_times
+        if 0 <= which < len(self.video_slots):
+            return self.video_slots[which].frame_times
         return None
 
     def _fallback_frame_source(self) -> int:
-        # Choose first available in order 1,2,3
-        if self.video_frame_times is not None:
-            return 1
-        if self.video2_frame_times is not None:
-            return 2
-        if self.video3_frame_times is not None:
-            return 3
-        return 0
+        # First slot with frame_times loaded, else -1.
+        for slot in self.video_slots:
+            if slot.frame_times is not None:
+                return slot.index
+        return -1
 
     def _step_frame(self, direction: int):
         src = self.frame_step_source
         ft = self._available_frame_times(src)
         if ft is None:
             src = self._fallback_frame_source()
+            if src < 0:
+                return
             ft = self._available_frame_times(src)
             if ft is None:
                 return
@@ -6202,7 +6080,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         if self.is_playing:
             self._stop_playback_if_playing()
         else:
-            if self.video_frame_times is None:
+            primary_ft = (
+                self.video_slots[0].frame_times if self.video_slots else None
+            )
+            if primary_ft is None:
                 self._update_status("No video loaded to play.")
                 return
             self.is_playing = True
@@ -6390,24 +6271,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         if update_slider:
             self._update_window_cursor_from_cursor_time()
 
-        self._request_video_frame(
-            frame_times=self.video_frame_times,
-            worker=self._video_worker,
-            requested_attr="_video_requested_frame_idx",
-            t=self.cursor_time,
-        )
-        self._request_video_frame(
-            frame_times=self.video2_frame_times,
-            worker=self._video2_worker,
-            requested_attr="_video2_requested_frame_idx",
-            t=self.cursor_time,
-        )
-        self._request_video_frame(
-            frame_times=self.video3_frame_times,
-            worker=self._video3_worker,
-            requested_attr="_video3_requested_frame_idx",
-            t=self.cursor_time,
-        )
+        for slot in self.video_slots:
+            self._request_video_frame(slot, self.cursor_time)
 
         if not self.is_playing:
             self._update_status()
@@ -6499,7 +6364,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        self._rescale_video_frame()
+        self._rescale_all_video_frames()
         QtCore.QTimer.singleShot(50, self._refresh_curves)
         QtCore.QTimer.singleShot(60, self._align_left_axes)
         # Re-fit array plots when compact mode is on, since the available
@@ -6530,98 +6395,77 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _apply_video_stretches(self):
         if self.videos_layout is None:
             return
-        # Apply stretch to video widgets; hidden widgets will not take space
         try:
-
-            def set_stretch(widget, stretch):
-                idx = self.videos_layout.indexOf(widget)
+            for slot in self.video_slots:
+                if slot.label is None:
+                    continue
+                idx = self.videos_layout.indexOf(slot.label)
                 if idx >= 0:
-                    self.videos_layout.setStretch(idx, max(0, int(stretch)))
-
-            set_stretch(self.video_label, self.video1_stretch)
-            set_stretch(self.video2_label, self.video2_stretch)
-            set_stretch(self.video3_label, self.video3_stretch)
+                    self.videos_layout.setStretch(idx, max(0, int(slot.stretch)))
         except Exception:
             pass
-        # Trigger layout update to reflect new stretches
         if self.videos_widget is not None:
             self.videos_widget.updateGeometry()
             self.videos_widget.adjustSize()
 
-    def _set_video_stretches(self, v1: int, v2: int, v3: int):
-        self.video1_stretch = max(0, int(v1))
-        self.video2_stretch = max(0, int(v2))
-        self.video3_stretch = max(0, int(v3))
+    def _set_video_stretches(self, stretches: list[int]):
+        for slot, s in zip(self.video_slots, stretches):
+            slot.stretch = max(0, int(s))
         self._apply_video_stretches()
-        # Trigger a resize to update scaling
-        QtCore.QTimer.singleShot(0, self._rescale_video_frame)
-        QtCore.QTimer.singleShot(0, self._rescale_video2_frame)
-        QtCore.QTimer.singleShot(0, self._rescale_video3_frame)
+        QtCore.QTimer.singleShot(0, self._rescale_all_video_frames)
 
     def _adjust_secondary_video_sizes(self):
-        # Determine how many secondary videos are visible
-        vid2_present = self.video2_label.isVisible()
-        vid3_present = self.video3_label.isVisible()
-        if not vid2_present and not vid3_present:
+        visible_slots = [
+            s for s in self.video_slots
+            if s.label is not None and s.label.isVisible()
+        ]
+        if len(visible_slots) < 2:
             QtWidgets.QMessageBox.information(
                 self,
                 "Adjust Sizes",
-                "Secondary videos are not loaded.",
+                "Need at least two visible videos to adjust sizes.",
             )
             return
 
-        # Compute current total and primary share percentage
-        total = max(
-            1,
-            self.video1_stretch
-            + (self.video2_stretch if vid2_present else 0)
-            + (self.video3_stretch if vid3_present else 0),
-        )
-        current_primary_pct = int(round(100.0 * self.video1_stretch / total))
+        # Snapshot original stretches so Cancel can restore them.
+        original = [s.stretch for s in self.video_slots]
 
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Adjust Secondary Videos Size")
-        lay = QtWidgets.QVBoxLayout(dlg)
-        label = QtWidgets.QLabel("Primary video (Video 1) share (% of video area):")
-        lay.addWidget(label)
-        slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        slider.setRange(5, 95)
-        slider.setValue(current_primary_pct)
-        lay.addWidget(slider)
+        dlg.setWindowTitle("Adjust Video Sizes")
+        outer = QtWidgets.QVBoxLayout(dlg)
+        outer.addWidget(QtWidgets.QLabel(
+            "Layout weight per video (relative — larger = bigger):"
+        ))
+        form = QtWidgets.QFormLayout()
+        outer.addLayout(form)
 
-        pct_lbl = QtWidgets.QLabel(f"{current_primary_pct:d}%")
-        lay.addWidget(pct_lbl)
+        spinboxes: list[tuple[VideoSlot, QtWidgets.QSpinBox]] = []
+        for slot in visible_slots:
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(0, 20)
+            spin.setValue(int(slot.stretch))
+            form.addRow(slot.name, spin)
+            spinboxes.append((slot, spin))
 
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
-        lay.addWidget(btns)
+        outer.addWidget(btns)
 
-        def on_change(val):
-            pct_lbl.setText(f"{val:d}%")
-            # Live preview: recompute stretches based on percentage
-            primary = int(val)
-            remainder = 100 - primary
-            v1 = primary
-            if vid2_present and vid3_present:
-                v2 = max(1, remainder // 2)
-                v3 = max(1, remainder - v2)
-            elif vid2_present:
-                v2 = remainder
-                v3 = 0
-            else:
-                v2 = 0
-                v3 = remainder
-            self._set_video_stretches(v1, v2, v3)
+        def apply_preview(*_):
+            new_stretches = list(original)
+            for slot, spin in spinboxes:
+                new_stretches[slot.index] = spin.value()
+            self._set_video_stretches(new_stretches)
 
-        slider.valueChanged.connect(on_change)
+        for _, spin in spinboxes:
+            spin.valueChanged.connect(apply_preview)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
 
-        # Initialize preview
-        on_change(slider.value())
-        dlg.exec()
-        # If canceled, nothing to do; if accepted, stretches already applied
+        apply_preview()
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            self._set_video_stretches(original)
 
     # ---------- Trace visibility ----------
     def _apply_trace_visibility(self):
@@ -6813,21 +6657,14 @@ class LoupeApp(QtWidgets.QMainWindow):
             traceback.print_exc()
 
     def _set_video_visible(self, which: int, visible: bool):
-        lbl = None
-        if which == 1:
-            lbl = self.video_label
-        elif which == 2:
-            lbl = self.video2_label
-        elif which == 3:
-            lbl = self.video3_label
-        if lbl is None:
+        if not (0 <= which < len(self.video_slots)):
             return
-        lbl.setVisible(bool(visible))
+        slot = self.video_slots[which]
+        if slot.label is None:
+            return
+        slot.label.setVisible(bool(visible))
         self._apply_video_stretches()
-        # Rescale frames to current label sizes
-        QtCore.QTimer.singleShot(0, self._rescale_video_frame)
-        QtCore.QTimer.singleShot(0, self._rescale_video2_frame)
-        QtCore.QTimer.singleShot(0, self._rescale_video3_frame)
+        QtCore.QTimer.singleShot(0, self._rescale_all_video_frames)
 
     # ---------- Help/Status & cleanup ----------
 
@@ -6904,24 +6741,15 @@ class LoupeApp(QtWidgets.QMainWindow):
     def closeEvent(self, ev):
         try:
             self._stop_playback_if_playing()
-            QtCore.QMetaObject.invokeMethod(
-                self._video_worker, "stop", QtCore.Qt.QueuedConnection
-            )
-            QtCore.QMetaObject.invokeMethod(
-                self._video2_worker, "stop", QtCore.Qt.QueuedConnection
-            )
-            QtCore.QMetaObject.invokeMethod(
-                self._video3_worker, "stop", QtCore.Qt.QueuedConnection
-            )
-            self._video_thread.quit()
-            self._video2_thread.quit()
-            self._video3_thread.quit()
-            if not self._video_thread.wait(1000):
-                self._video_thread.terminate()
-            if not self._video2_thread.wait(1000):
-                self._video2_thread.terminate()
-            if not self._video3_thread.wait(1000):
-                self._video3_thread.terminate()
+            for slot in self.video_slots:
+                QtCore.QMetaObject.invokeMethod(
+                    slot.worker, "stop", QtCore.Qt.QueuedConnection
+                )
+            for slot in self.video_slots:
+                slot.thread.quit()
+            for slot in self.video_slots:
+                if not slot.thread.wait(1000):
+                    slot.thread.terminate()
         except Exception as e:
             print(f"ERROR: Exception during closeEvent: {e}")
         super().closeEvent(ev)
@@ -7094,17 +6922,25 @@ def main():
         LabelSet.from_path(args.labels) if args.labels else None
     )
 
+    # Build VideoConfig list from CLI flags (skip any pair missing one half).
+    from loupe import VideoConfig
+    cli_video_pairs = [
+        (args.video, args.frame_times),
+        (args.video2, args.frame_times2),
+        (args.video3, args.frame_times3),
+    ]
+    video_configs = [
+        VideoConfig(video_path=v, frame_times_path=ft)
+        for v, ft in cli_video_pairs
+        if v and ft
+    ]
+
     app = QtWidgets.QApplication(sys.argv)
     w = LoupeApp(
         data_dir=args.data_dir,
         data_files=args.data_files,
         colors=args.colors,
-        video_path=args.video,
-        frame_times_path=args.frame_times,
-        video2_path=args.video2,
-        frame_times2_path=args.frame_times2,
-        video3_path=args.video3,
-        frame_times3_path=args.frame_times3,
+        video_configs=video_configs,
         fixed_scale=not args.auto_scale,
         low_profile_x=args.low_profile_x,
         # Matrix viewer arguments
