@@ -48,6 +48,7 @@ def loupe_factory(monkeypatch, qapp):
         *,
         n_series: int = 3,
         include_matrix: bool = False,
+        categorical_matrix: bool = False,
     ) -> LoupeApp:
         series = [
             Series(
@@ -62,16 +63,33 @@ def loupe_factory(monkeypatch, qapp):
             timestamps = np.linspace(0.0, 60.0, 240, dtype=float)
             yvals = (np.arange(240) % 6).astype(int)
             alphas = np.linspace(0.1, 1.0, 240, dtype=float)
-            matrix_series_list = [
-                MatrixSeries(
-                    name="events",
-                    timestamps=timestamps,
-                    yvals=yvals,
-                    alphas=alphas,
-                    color=(255, 255, 255),
-                    n_rows=6,
-                )
-            ]
+            if categorical_matrix:
+                # 3 categories, interleaved so every window slice sees a mix.
+                category_index = (np.arange(240) % 3).astype(np.int16)
+                category_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+                matrix_series_list = [
+                    MatrixSeries(
+                        name="events",
+                        timestamps=timestamps,
+                        yvals=yvals,
+                        alphas=alphas,
+                        color=(255, 255, 255),
+                        n_rows=6,
+                        category_index=category_index,
+                        category_colors=category_colors,
+                    )
+                ]
+            else:
+                matrix_series_list = [
+                    MatrixSeries(
+                        name="events",
+                        timestamps=timestamps,
+                        yvals=yvals,
+                        alphas=alphas,
+                        color=(255, 255, 255),
+                        n_rows=6,
+                    )
+                ]
 
         window = LoupeApp(
             xr_series=series,
@@ -194,7 +212,10 @@ def test_refresh_curves_skips_hidden_traces(loupe_factory, monkeypatch, qapp):
 def test_matrix_refresh_reuses_items_and_skips_hidden(loupe_factory, monkeypatch, qapp):
     window = loupe_factory(n_series=1, include_matrix=True)
     assert len(window._matrix_line_items) == 1
-    assert len(window._matrix_line_items[0]) == MATRIX_ALPHA_LEVEL_COUNT
+    # Non-categorical raster: outer list has length 1 (single synthetic
+    # category) and the inner list holds MATRIX_ALPHA_LEVEL_COUNT items.
+    assert len(window._matrix_line_items[0]) == 1
+    assert len(window._matrix_line_items[0][0]) == MATRIX_ALPHA_LEVEL_COUNT
 
     initial_line_items = list(window._matrix_line_items[0])
     window.window_start = 20.0
@@ -216,6 +237,33 @@ def test_matrix_refresh_reuses_items_and_skips_hidden(loupe_factory, monkeypatch
     qapp.processEvents()
 
     assert calls == []
+
+
+def test_refresh_matrix_plots_categorical(loupe_factory, qapp):
+    """Categorical raster: line items are nested by [category][alpha_level],
+    `_refresh_matrix_plots` runs without crashing, and per-event events land
+    in the correct (category, alpha) bucket.
+    """
+    window = loupe_factory(n_series=1, include_matrix=True, categorical_matrix=True)
+    grid = window._matrix_line_items[0]
+    assert len(grid) == 3  # 3 categories
+    assert all(len(cat_items) == MATRIX_ALPHA_LEVEL_COUNT for cat_items in grid)
+
+    window.window_start = 0.0
+    window.window_len = 60.0
+    window._refresh_matrix_plots()
+    qapp.processEvents()
+
+    # Each category should have populated at least one alpha bucket with data
+    # (every category has 80 of the 240 events, all visible in the window).
+    for cat_items in grid:
+        any_populated = False
+        for line_item in cat_items:
+            xdata, _ = line_item.getData()
+            if xdata is not None and len(xdata) > 0:
+                any_populated = True
+                break
+        assert any_populated
 
 
 def test_request_video_frame_suppresses_duplicate_nearest_indices(

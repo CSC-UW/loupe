@@ -73,8 +73,12 @@ class MatrixSeries:
     timestamps: np.ndarray  # 1D array of event times (seconds)
     yvals: np.ndarray  # 1D array of integer row indices (0 to N_rows-1)
     alphas: np.ndarray  # 1D array of alpha values (0.0 to 1.0)
-    color: tuple  # (R, G, B) base color for events
+    color: tuple  # (R, G, B) fallback color used when category_index is None
     n_rows: int  # number of unique rows (max(yvals) + 1)
+    # Per-event categorical coloring. Both fields must be set together or both
+    # left as None; None preserves the legacy single-color fast path.
+    category_index: np.ndarray | None = None  # (N,) int16, parallel to timestamps
+    category_colors: list[tuple[int, int, int]] | None = None  # one RGB per category index
 
 
 @dataclass
@@ -119,6 +123,17 @@ class LabelVisualBundle:
 
 
 MATRIX_ALPHA_LEVEL_COUNT = 11
+
+# Maximum number of distinct categorical color values supported by `color_on=`.
+# Beyond this, the user almost certainly wants colormap-style binning rather
+# than per-value colors, so we fail loudly. 32 categories × 11 alpha buckets
+# = 352 PlotDataItems per raster subplot — a reasonable upper bound.
+MATRIX_MAX_CATEGORIES = 32
+
+# Color used for events whose `color_on` value is null/None/NaN. Matches the
+# dense plot's _CATEGORY_NA_COLOR gray (sans the alpha channel — raster alpha
+# is per-event, not part of the base color).
+MATRIX_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
 
 
 @dataclass
@@ -1432,8 +1447,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.matrix_items: list[pg.ScatterPlotItem | None] = []
         self.matrix_cur_lines: list[pg.InfiniteLine] = []
         self.matrix_sel_regions: list[pg.LinearRegionItem] = []
-        self._matrix_line_items: list[list[pg.PlotDataItem]] = []
-        self._matrix_pens: list[list[QtGui.QPen]] = []
+        # Shape: [matrix_idx][category_idx][alpha_level] -> PlotDataItem / QPen.
+        # For non-categorical raster series the outer category dim is length 1.
+        self._matrix_line_items: list[list[list[pg.PlotDataItem]]] = []
+        self._matrix_pens: list[list[list[QtGui.QPen]]] = []
         # Matrix rendering settings
         self.matrix_event_height = (
             0.1  # distance from center in each direction (0.1-0.5)
@@ -4491,45 +4508,61 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._apply_custom_plot_heights()
 
-    def _build_matrix_alpha_pens(self, ms: MatrixSeries) -> list[QtGui.QPen]:
-        r, g, b = ms.color
+    def _build_matrix_pens(self, ms: MatrixSeries) -> list[list[QtGui.QPen]]:
+        """Build one row of 11 alpha-graded pens per category color.
+
+        Returns a nested list shaped ``[n_categories][MATRIX_ALPHA_LEVEL_COUNT]``.
+        For non-categorical series ``ms.category_colors`` is ``None`` and the
+        outer dimension is length 1, reproducing the single-color fast path.
+        """
+        if ms.category_colors is not None:
+            base_colors = ms.category_colors
+        else:
+            base_colors = [ms.color]
         return [
-            pg.mkPen(
-                color=(
-                    r,
-                    g,
-                    b,
-                    int((alevel / (MATRIX_ALPHA_LEVEL_COUNT - 1)) * 255),
-                ),
-                width=self.matrix_event_thickness,
-            )
-            for alevel in range(MATRIX_ALPHA_LEVEL_COUNT)
+            [
+                pg.mkPen(
+                    color=(
+                        r,
+                        g,
+                        b,
+                        int((alevel / (MATRIX_ALPHA_LEVEL_COUNT - 1)) * 255),
+                    ),
+                    width=self.matrix_event_thickness,
+                )
+                for alevel in range(MATRIX_ALPHA_LEVEL_COUNT)
+            ]
+            for (r, g, b) in base_colors
         ]
 
     def _create_matrix_render_items(
         self, plt: pg.PlotItem, ms: MatrixSeries
-    ) -> tuple[list[pg.PlotDataItem], list[QtGui.QPen]]:
-        pens = self._build_matrix_alpha_pens(ms)
-        line_items: list[pg.PlotDataItem] = []
-        for pen in pens:
-            line_item = pg.PlotDataItem(
-                [], [], pen=pen, connect="pairs", antialias=False
-            )
-            plt.addItem(line_item)
-            line_items.append(line_item)
-        return line_items, pens
+    ) -> tuple[list[list[pg.PlotDataItem]], list[list[QtGui.QPen]]]:
+        pens_grid = self._build_matrix_pens(ms)
+        line_items_grid: list[list[pg.PlotDataItem]] = []
+        for cat_pens in pens_grid:
+            cat_items: list[pg.PlotDataItem] = []
+            for pen in cat_pens:
+                line_item = pg.PlotDataItem(
+                    [], [], pen=pen, connect="pairs", antialias=False
+                )
+                plt.addItem(line_item)
+                cat_items.append(line_item)
+            line_items_grid.append(cat_items)
+        return line_items_grid, pens_grid
 
     def _refresh_matrix_pen_cache(self) -> None:
         for midx, ms in enumerate(self.matrix_series):
             if midx >= len(self._matrix_line_items):
                 break
-            pens = self._build_matrix_alpha_pens(ms)
+            pens_grid = self._build_matrix_pens(ms)
             if midx < len(self._matrix_pens):
-                self._matrix_pens[midx] = pens
+                self._matrix_pens[midx] = pens_grid
             else:
-                self._matrix_pens.append(pens)
-            for line_item, pen in zip(self._matrix_line_items[midx], pens):
-                line_item.setPen(pen)
+                self._matrix_pens.append(pens_grid)
+            for cat_items, cat_pens in zip(self._matrix_line_items[midx], pens_grid):
+                for line_item, pen in zip(cat_items, cat_pens):
+                    line_item.setPen(pen)
 
     def _is_trace_plot_visible(self, plot_idx: int) -> bool:
         return (
@@ -4545,23 +4578,28 @@ class LoupeApp(QtWidgets.QMainWindow):
         self, ms: MatrixSeries, t0: float, t1: float, max_events: int = 10000
     ):
         """
-        Return event data for the [t0, t1] window, limited to max_events for performance.
-        Returns (timestamps, yvals, alphas) arrays for events in the window.
+        Return event data for the [t0, t1] window, limited to max_events for
+        performance. Returns ``(timestamps, yvals, alphas, cats)`` where
+        ``cats`` is the per-event category index (or ``None`` when the
+        MatrixSeries has no categorical coloring).
         """
         if t1 <= t0 or len(ms.timestamps) == 0:
-            return np.empty(0), np.empty(0), np.empty(0)
+            empty_cats = None if ms.category_index is None else np.empty(0, dtype=np.int16)
+            return np.empty(0), np.empty(0), np.empty(0), empty_cats
 
         # Binary search for window bounds (timestamps are sorted)
         i0 = np.searchsorted(ms.timestamps, t0, side="left")
         i1 = np.searchsorted(ms.timestamps, t1, side="right")
 
         if i0 >= i1:
-            return np.empty(0), np.empty(0), np.empty(0)
+            empty_cats = None if ms.category_index is None else np.empty(0, dtype=np.int16)
+            return np.empty(0), np.empty(0), np.empty(0), empty_cats
 
         # Slice to window
         ts = ms.timestamps[i0:i1]
         ys = ms.yvals[i0:i1]
         als = ms.alphas[i0:i1]
+        cats = ms.category_index[i0:i1] if ms.category_index is not None else None
 
         # Downsample if too many events (uniform sampling)
         if len(ts) > max_events:
@@ -4569,8 +4607,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             ts = ts[::step]
             ys = ys[::step]
             als = als[::step]
+            if cats is not None:
+                cats = cats[::step]
 
-        return ts, ys, als
+        return ts, ys, als, cats
 
     # ------------------------------------------------------------------ dense
     def _dense_visible_indices(self, group_idx: int) -> list[int]:
@@ -5031,14 +5071,15 @@ class LoupeApp(QtWidgets.QMainWindow):
             if midx >= len(self._matrix_line_items):
                 continue
 
-            ts, ys, als = self._matrix_segment_for_window(ms, t0, t1)
-            line_items = self._matrix_line_items[midx]
-            if not line_items:
+            ts, ys, als, cats = self._matrix_segment_for_window(ms, t0, t1)
+            line_items_grid = self._matrix_line_items[midx]
+            if not line_items_grid:
                 continue
 
             if len(ts) == 0:
-                for line_item in line_items:
-                    line_item.setData([], [], _callSync="off")
+                for cat_items in line_items_grid:
+                    for line_item in cat_items:
+                        line_item.setData([], [], _callSync="off")
                 continue
 
             # Calculate Y positions for each event
@@ -5055,18 +5096,30 @@ class LoupeApp(QtWidgets.QMainWindow):
                 int
             )
 
-            for alevel, line_item in enumerate(line_items):
-                mask = alpha_levels == alevel
-                if not np.any(mask):
-                    line_item.setData([], [], _callSync="off")
-                    continue
+            # Non-categorical series use a single synthetic category (index 0).
+            cats_arr = cats if cats is not None else np.zeros(len(ts), dtype=np.int16)
 
-                indices = np.where(mask)[0]
-                seg_x = np.repeat(ts[indices], 2)
-                seg_y = np.empty(2 * len(indices))
-                seg_y[0::2] = y_bottoms[indices]
-                seg_y[1::2] = y_tops[indices]
-                line_item.setData(seg_x, seg_y, _callSync="off")
+            for cidx, cat_items in enumerate(line_items_grid):
+                cat_mask = cats_arr == cidx
+                if not np.any(cat_mask):
+                    for line_item in cat_items:
+                        line_item.setData([], [], _callSync="off")
+                    continue
+                cat_levels = alpha_levels[cat_mask]
+                cat_ts = ts[cat_mask]
+                cat_yb = y_bottoms[cat_mask]
+                cat_yt = y_tops[cat_mask]
+                for alevel, line_item in enumerate(cat_items):
+                    amask = cat_levels == alevel
+                    if not np.any(amask):
+                        line_item.setData([], [], _callSync="off")
+                        continue
+                    indices = np.where(amask)[0]
+                    seg_x = np.repeat(cat_ts[indices], 2)
+                    seg_y = np.empty(2 * len(indices))
+                    seg_y[0::2] = cat_yb[indices]
+                    seg_y[1::2] = cat_yt[indices]
+                    line_item.setData(seg_x, seg_y, _callSync="off")
 
     # ---------- Array (heatmap) plots ----------
 
