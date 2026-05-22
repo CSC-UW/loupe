@@ -33,33 +33,42 @@ from loupe import view, TraceConfig
 # In-memory DataArray (stacked subplots, one per trace)
 ds = xr.open_zarr("data.zarr", group="dmd_2")
 da = ds["data"].sel(syn_id=slice(3, 6), time=slice(0, 1800)).load()
-w = view(da)
+w = view(TraceConfig(da))
 
 # Dense view — all traces on a single axis (EEG-style)
-w = view(da, dense=True, traces_per_page=16, order_by="y", descending=True)
+w = view(TraceConfig(da, mode="dense", traces_per_page=16,
+                    order_by="y", descending=True))
 
 # Set initial time window to 30 seconds
-w = view(da, dense=True, window_len=30)
+w = view(TraceConfig(da, mode="dense"), window_len=30)
 
-# Mixed mode — per-DataArray display configuration
-w = view(data=[
+# Mixed layout — list position determines top-to-bottom subplot order
+w = view([
     TraceConfig(da1, mode="dense", gain=2.0, traces_per_page=20),
     TraceConfig(da2, mode="stacked-subplots"),
 ])
 
-# Path-based (loads and filters automatically)
-w = view(path="data.zarr", group="dmd_2",
-         filter_dict={"syn_id": slice(3, 6), "time": slice(0, 1800)})
+# Path-based loader (zarr/netCDF; filter applied before load)
+w = view(TraceConfig.from_path(
+    "data.zarr", group="dmd_2",
+    filter_dict={"syn_id": slice(3, 6), "time": slice(0, 1800)},
+))
 
 # With time-synchronized videos — pass one or more VideoConfig items
 from loupe import VideoConfig
-w = view(da, videos=[
+w = view(TraceConfig(da), videos=[
     VideoConfig("cam1.mp4", "cam1_frame_times.npy", name="side cam"),
     VideoConfig("cam2.mp4", "cam2_frame_times.npy", name="overhead"),
     VideoConfig("thermal.mp4", "thermal_frame_times.npy", name="thermal"),
 ])
 # A single VideoConfig is accepted as shorthand for a one-element list.
 ```
+
+Every data input to `view()` must be wrapped in a Config:
+`TraceConfig` for line traces, `HeatmapConfig` for 2-D heatmaps,
+`RasterConfig` for DataFrame rasters, or `Zip` to co-plot traces sharing a
+shared coordinate across multiple DataArrays. Bare DataArrays / DataFrames
+are not accepted.
 
 #### Command line (npy files)
 ```bash
@@ -138,10 +147,10 @@ Pass labels into `view()`:
 
 ```python
 import polars as pl
-from loupe import view, LabelSchema
+from loupe import view, LabelSchema, TraceConfig
 
 # Legacy CSV (no schema needed)
-view(da, labels="labels.csv")
+view(TraceConfig(da), labels="labels.csv")
 
 # HTSV with custom column names + extras shown in the GUI
 schema = LabelSchema(
@@ -152,14 +161,14 @@ schema = LabelSchema(
     label_col="state",
     extra_cols=("scorer", "confidence"),
 )
-view(da, labels="hypnogram.htsv", label_schema=schema)
+view(TraceConfig(da), labels="hypnogram.htsv", label_schema=schema)
 
 # Visbrain .txt (start of each bout = previous bout's end)
-view(da, labels="hypnogram.txt")
+view(TraceConfig(da), labels="hypnogram.txt")
 
 # Existing in-memory polars DataFrame
 df = pl.read_parquet("labels.parquet")
-view(da, labels=df, label_schema=schema)
+view(TraceConfig(da), labels=df, label_schema=schema)
 ```
 
 `extra_cols` columns appear as additional cells in the labels summary table,
@@ -171,7 +180,7 @@ writes a copy. The original file is **never** overwritten unless the caller
 explicitly opted in:
 
 ```python
-view(da, labels="labels.htsv", label_schema=schema, labels_writeback=True)
+view(TraceConfig(da), labels="labels.htsv", label_schema=schema, labels_writeback=True)
 ```
 
 When `labels_writeback=True`, an extra File → Save Labels (overwrite source)
@@ -211,7 +220,7 @@ forward (`{key: state}`) or inverse (`{state: [keys]}`):
 
 ```python
 view(
-    da,
+    TraceConfig(da),
     keymap={"Wake": ["w", "W"], "NREM": ["1", "n"]},
     label_colors={"Wake": "#00d128", "NREM": "#291effA0"},
 )
@@ -233,20 +242,20 @@ raises `LoupeConfigError` at load time.
 #### Dense view
 The dense view plots many traces (potentially hundreds) on a single pair of axes, like an EEG viewer. Each trace is mean-subtracted, scaled by a gain factor, and offset vertically.
 
-Parameters (pass to `view()` or wrap in `TraceConfig`):
-- `dense=True` — enable dense mode for all DataArrays (convenience shorthand).
-- `mode="dense"` — enable dense mode via `TraceConfig`.
+`TraceConfig` parameters that control the dense view:
+- `mode="dense"` — enable dense mode.
 - `order_by` — coordinate name to control trace ordering and vertical spacing (e.g., `"y"` for electrode depth). If not specified and there is exactly one non-time dimension, its coordinate values are used automatically.
 - `descending` — reverse the trace order (default `False`).
 - `gain` — amplitude gain multiplier (default `1.0`). Also adjustable at runtime via Alt+scroll or the Dense View Controls dialog (Ctrl+G).
 - `step` — show every *n*-th trace (default `1` = all).
 - `traces_per_page` — how many traces to show at once (default `None` = all). A vertical scrollbar appears when set. Adjustable at runtime via the Dense View Controls dialog.
-- `window_len` — initial time window duration in seconds (default `10.0`). Applies to all display modes, not just dense.
 
-When multiple DataArrays are loaded, each can independently be dense or stacked-subplots by wrapping in `TraceConfig`:
+`view()`-level: `window_len` — initial time window duration in seconds (default `10.0`). Applies to all display modes.
+
+When multiple DataArrays are loaded, each `TraceConfig` independently chooses dense or stacked-subplots:
 ```python
 from loupe import view, TraceConfig
-view(data=[
+view([
     TraceConfig(lfp, mode="dense", order_by="y", descending=True, traces_per_page=16),
     TraceConfig(emg, mode="stacked-subplots"),
 ])
@@ -256,9 +265,7 @@ Both views share synchronized X (time) axes.
 #### Array view
 The array view renders an `xr.DataArray` as a 2-D heatmap (imshow-style) over time, with one row per entry of a non-time dimension. It is designed for inspecting many traces at once at fine-grained detail — e.g. `dF[syn_id, time]` shown as a heatmap with synapses on the y-axis and time on the x-axis — while keeping all the synchronized cursor / labeling / video / hypnogram infrastructure of Loupe.
 
-Parameters (pass to `view()` or wrap in `TraceConfig`):
-- `array=True` — enable array mode for all DataArrays (convenience shorthand).
-- `mode="array"` — enable array mode via `TraceConfig`.
+`HeatmapConfig` parameters:
 - `split_on` — coordinate or dim name to split into one subplot per unique value (e.g. `'dend-ID'` to get one heatmap per dendrite). Uses `xr.DataArray.groupby`, so works with both dim names and 1-D coords on a dim.
 - `sort_on` — coordinate name on the row dim controlling y-axis row order (sorted ascending).
 - `colormap` — matplotlib colormap name. A list applies one entry per `split_on` group in order. Default `"magma"`.
@@ -268,13 +275,13 @@ Parameters (pass to `view()` or wrap in `TraceConfig`):
 Each subplot must have exactly one non-time dim remaining after the split — otherwise a clear error is raised.
 
 ```python
-from loupe import view
+from loupe import view, HeatmapConfig
 # Per-dendrite heatmap, rows ordered by anatomical position:
-w = view(dnv, array=True, split_on="dend-ID", sort_on="pos",
-         colormap=["magma", "viridis", "plasma", "inferno"])
+w = view(HeatmapConfig(dnv, split_on="dend-ID", sort_on="pos",
+                       colormap=["magma", "viridis", "plasma", "inferno"]))
 
 # Single array (no split):
-w = view(dF_one_dend, array=True, sort_on="pos")
+w = view(HeatmapConfig(dF_one_dend, sort_on="pos"))
 ```
 
 The **Array Plot Control Board** (View → Array Plot Controls…, `Ctrl+Shift+A`) provides per-subplot live adjustment of:

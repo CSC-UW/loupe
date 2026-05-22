@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from loupe.app import LoupeApp
 
 __all__ = [
+    "EventLayer",
     "HeatmapConfig",
     "LabelSchema",
     "LabelSet",
@@ -24,8 +25,45 @@ __all__ = [
     "StateConfig",
     "TraceConfig",
     "VideoConfig",
+    "Zip",
     "view",
 ]
+
+
+@dataclass
+class EventLayer:
+    """Point markers drawn on top of a stacked-subplots :class:`TraceConfig`.
+
+    Pass one or more in :attr:`TraceConfig.event_layers` to overlay spike-,
+    seizure-, or other point-event markers on the trace they annotate.
+
+    Parameters
+    ----------
+    marker : str
+        Marker symbol.  ``'o'`` renders a semi-transparent filled circle;
+        ``'x'`` renders a solid X.  Other pyqtgraph symbols (``'+'``,
+        ``'s'``, ``'t'``, …) fall through with a default outlined style.
+    color : str or RGB(A) tuple
+        Marker color — named string, hex (``"#RRGGBB"``), or
+        ``(R, G, B[, A])`` tuple.
+    bool_array : xr.DataArray
+        Boolean DataArray whose dims/shape match the parent
+        :class:`TraceConfig`'s ``data``.  ``True`` at sample *i* on trace
+        *j* draws a marker at ``y = trace_value`` at that timepoint.
+    size : float, optional
+        Marker size in points.  ``None`` (default) picks 8.0 for ``'o'``
+        and 9.0 for other markers.
+    alpha : int, optional
+        Marker alpha in ``0..255``.  ``None`` (default) picks 110 for
+        ``'o'`` (semi-transparent fill) and 255 for other markers
+        (solid stroke).
+    """
+
+    marker: str
+    color: "str | tuple"
+    bool_array: "xr.DataArray"
+    size: float | None = None
+    alpha: int | None = None
 
 
 @dataclass
@@ -61,6 +99,12 @@ class TraceConfig:
     label : str or None
         Display name override.  Used as the trace name (or, for multi-trace
         DataArrays, as the name prefix replacing ``data.name``).
+    event_layers : list[EventLayer] or None
+        Optional point-event markers drawn on top of the traces produced by
+        this DataArray.  Stacked-subplots mode only; at most one
+        :class:`TraceConfig` per window may carry event layers, and no
+        :class:`HeatmapConfig` / :class:`RasterConfig` / :class:`Zip` may
+        appear alongside.
     """
 
     data: xr.DataArray
@@ -73,6 +117,45 @@ class TraceConfig:
     color_by: str | None = None
     color: "str | tuple | None" = None
     label: str | None = None
+    event_layers: "list[EventLayer] | None" = None
+
+    @classmethod
+    def from_path(
+        cls,
+        path: str,
+        *,
+        group: str | None = None,
+        variable: str = "data",
+        filter_dict: dict | None = None,
+        **trace_kwargs,
+    ) -> "TraceConfig":
+        """Load a DataArray from a zarr / netCDF store and wrap it in a
+        :class:`TraceConfig`.
+
+        Parameters
+        ----------
+        path : str
+            Path to a ``.zarr`` directory or a netCDF file.
+        group : str or None
+            Group within the store (e.g. ``'dmd_2'``).
+        variable : str
+            Variable name inside the dataset (default ``'data'``).
+        filter_dict : dict or None
+            Dimension slicing to apply before loading, e.g.
+            ``{"syn_id": slice(3, 6), "time": slice(0, 1800)}``.
+        **trace_kwargs
+            Forwarded to :class:`TraceConfig` (``mode``, ``order_by``, …).
+
+        Returns
+        -------
+        TraceConfig
+        """
+        from loupe.xr_loader import load_xarray_from_path
+
+        da = load_xarray_from_path(
+            path, group=group, variable=variable, filter_dict=filter_dict
+        )
+        return cls(data=da, **trace_kwargs)
 
 
 @dataclass
@@ -181,6 +264,37 @@ class RasterConfig:
     color_on: str | None = None
     color_on_config: dict | None = None
 
+    @classmethod
+    def from_parquet(
+        cls,
+        path: "str | list[str]",
+        *,
+        time_col: str = "time",
+        **raster_kwargs,
+    ) -> "RasterConfig":
+        """Load one or more parquet files into a DataFrame and wrap it in a
+        :class:`RasterConfig`.
+
+        Parameters
+        ----------
+        path : str or list[str]
+            Path(s) to parquet file(s).  Multiple paths are concatenated.
+        time_col : str
+            Time column name (default ``"time"``).  Files using ``"t_sec"``
+            are auto-renamed for backward compatibility.
+        **raster_kwargs
+            Forwarded to :class:`RasterConfig` (``y_col``, ``group_col``,
+            ``alpha_col``, …).
+
+        Returns
+        -------
+        RasterConfig
+        """
+        from loupe.df_loader import load_dataframe_from_parquet
+
+        df = load_dataframe_from_parquet(path, time_col=time_col)
+        return cls(data=df, time_col=time_col, **raster_kwargs)
+
 
 @dataclass
 class VideoConfig:
@@ -209,6 +323,64 @@ class VideoConfig:
     stretch: int | None = None
 
 
+@dataclass
+class Zip:
+    """Co-plot traces sharing a coordinate value across multiple DataArrays.
+
+    ``Zip([TraceConfig(F), TraceConfig(dFF), TraceConfig(denoised)], on="syn_id")``
+    produces one subplot per unique ``syn_id`` value; each subplot holds the
+    F, dF/F, and denoised trace for that synapse.  Semantics match Python's
+    :func:`zip` along the named dim.
+
+    Parameters
+    ----------
+    traces : list[TraceConfig]
+        Two or more :class:`TraceConfig` instances whose ``data`` shares
+        the dim named by *on*.  Only ``color`` and ``label`` on each
+        TraceConfig apply within a Zip; other fields must remain at their
+        defaults (Zip dictates the per-subplot layout).
+    on : str
+        Coordinate dim to zip on (e.g. ``"syn_id"``).
+    colors : list, optional
+        One color per wrapped TraceConfig.  If omitted, a default palette
+        is used.
+    label : str, optional
+        Optional subplot-name prefix.
+    """
+
+    traces: list
+    on: str
+    colors: list | None = None
+    label: str | None = None
+
+    def __post_init__(self):
+        if len(self.traces) < 2:
+            raise ValueError("Zip requires at least 2 TraceConfigs")
+        meaningless = {
+            "mode": "stacked-subplots",
+            "order_by": None,
+            "descending": False,
+            "gain": 1.0,
+            "step": 1,
+            "traces_per_page": None,
+            "color_by": None,
+            "event_layers": None,
+        }
+        for i, t in enumerate(self.traces):
+            if not isinstance(t, TraceConfig):
+                raise TypeError(
+                    f"Zip.traces[{i}] must be a TraceConfig, got "
+                    f"{type(t).__name__}."
+                )
+            for fname, fdefault in meaningless.items():
+                actual = getattr(t, fname)
+                if actual != fdefault:
+                    raise ValueError(
+                        f"Zip.traces[{i}].{fname}={actual!r} is meaningless "
+                        f"within a Zip; only `color` and `label` apply."
+                    )
+
+
 def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
     """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
 
@@ -229,44 +401,9 @@ def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
 
 
 def view(
-    data=None,
+    data: "TraceConfig | HeatmapConfig | RasterConfig | Zip | list | None" = None,
     *,
-    path: str | list[str] | None = None,
-    group: str | list[str] | None = None,
-    variable: str = "data",
-    filter_dict: dict | None = None,
-    # DataFrame / matrix parameters
-    matrix_df=None,
-    matrix_parquet: str | list[str] | None = None,
-    y_col: str = "source_id",
-    group_col: str | list[str] | None = None,
-    alpha_col: str | None = None,
-    matrix_name: str = "events",
-    matrix_colors=None,
-    alpha_range: tuple[float, float] = (0.3, 1.0),
-    overlay: str | None = None,
-    overlay_colors: list | None = None,
-    # Dense / display mode convenience parameters
-    dense: bool = False,
-    gain: float = 1.0,
-    order_by: str | None = None,
-    descending: bool = False,
-    step: int = 1,
-    traces_per_page: int | None = None,
-    color_by: str | None = None,
-    # Array (heatmap) mode convenience parameters
-    array: bool = False,
-    split_on: str | None = None,
-    sort_on: str | None = None,
-    colormap: "str | Colormap | list[str | Colormap]" = "magma",
-    vmin: float | None = None,
-    vmax: float | None = None,
-    decim_method: str = "peak",
     window_len: float = 10.0,
-    # Bool-event marker overlays (stacked-subplots mode only)
-    bool_event_arrays: list | None = None,
-    event_markers: list[str] | None = None,
-    event_marker_colors: list | None = None,
     # Video sources
     videos: "VideoConfig | list[VideoConfig] | None" = None,
     # Label loading
@@ -280,131 +417,44 @@ def view(
     label_alpha: float | None = None,
     **kwargs,
 ) -> LoupeApp:
-    """Launch the Loupe viewer with xarray and/or DataFrame data.
+    """Launch the Loupe viewer.
 
     Parameters
     ----------
-    data : xr.DataArray or list[xr.DataArray], optional
-        In-memory DataArray(s) to display as time-series traces.  Each must
-        have a ``'time'`` dimension.
-    path : str or list[str], optional
-        Path(s) to zarr or netCDF stores.  Mutually exclusive with *data*.
-    group : str or list[str], optional
-        Group(s) within the store(s) (e.g. ``'dmd_2'``).  A single string
-        is applied to every path; a list must match *path* length.
-    variable : str
-        Variable name in the dataset (default ``'data'``).
-    filter_dict : dict, optional
-        Dimension slicing applied to every loaded DataArray, e.g.
-        ``{"syn_id": slice(3, 6), "time": slice(0, 1800)}``.
-    matrix_df : pl.DataFrame, RasterConfig, or list thereof, optional
-        In-memory Polars DataFrame(s) (or :class:`RasterConfig` objects) to
-        display as raster plots.  Mutually exclusive with *matrix_parquet*.
-        Pass :class:`RasterConfig` to override per-source settings (color,
-        grouping, etc.); bare DataFrames inherit the top-level matrix
-        kwargs (``y_col``, ``group_col``, ``alpha_col``, ``matrix_name``,
-        ``matrix_colors``, ``alpha_range``) as defaults.
-    matrix_parquet : str or list[str], optional
-        Path(s) to parquet file(s) to load as raster plots.  Mutually
-        exclusive with *matrix_df*.
-    y_col : str
-        Default DataFrame column for matrix row assignment
-        (default ``"source_id"``).  Ignored for items wrapped in
-        :class:`RasterConfig`.
-    group_col : str or list[str] or None
-        Default DataFrame column(s) to split into separate raster subplots.
-        Ignored for items wrapped in :class:`RasterConfig`.
-    alpha_col : str or None
-        Default DataFrame column for per-event opacity.  Ignored for items
-        wrapped in :class:`RasterConfig`.
-    matrix_name : str
-        Default base name for raster subplots (default ``"events"``).
-        Ignored for items wrapped in :class:`RasterConfig`.
-    matrix_colors : dict, list, tuple or None
-        Default color specification per group (see
-        :func:`df_loader.dataframe_to_matrix_series`).  ``None`` means white.
-        Ignored for items wrapped in :class:`RasterConfig`.
-    alpha_range : tuple[float, float]
-        Default ``(min_alpha, max_alpha)`` for normalizing *alpha_col*.
-        Ignored for items wrapped in :class:`RasterConfig`.
-    overlay : str or None
-        Dimension name to overlay on (e.g. ``'syn_id'``).  When set, traces
-        from different DataArrays that share the same coordinate value on this
-        dimension are plotted on the same subplot.  Requires *data* to be a
-        list of at least 2 DataArrays.
-    overlay_colors : list or None
-        Optional list of colors (one per input DataArray) for overlay mode.
-        Each element can be a hex string (``'#RRGGBB'``) or an RGB(A) tuple.
-        If not specified, a default palette is used.
-    dense : bool
-        If True, display all DataArrays in dense (EEG-style) mode by default.
-        Ignored for items wrapped in :class:`TraceConfig`.
-    gain : float
-        Default amplitude gain multiplier (applied to all DataArrays not
-        wrapped in :class:`TraceConfig`).
-    order_by : str or None
-        Default coordinate name for trace ordering.
-    descending : bool
-        Reverse the ordering given by *order_by*.
-    step : int
-        Default trace step (dense mode only, 1 = show all).
-    traces_per_page : int or None
-        How many traces to show at once in dense mode (None = all).
-        Use Option+scroll to page through the rest.
-    color_by : str or None
-        Coordinate name whose categorical values determine per-trace color.
-        Uses a colorblind-friendly palette visible against the black background.
-    bool_event_arrays : list[xr.DataArray] or None
-        Optional list of boolean DataArrays whose dims/shape match *data*.
-        ``True`` at sample i indicates a point event on that trace at that
-        timepoint; markers are drawn at ``y = trace_value`` so they sit on
-        the line.  Stacked-subplots mode only.
-    event_markers : list[str] or None
-        One marker symbol per entry in *bool_event_arrays*.  ``'o'`` renders
-        a semi-transparent filled circle; ``'x'`` renders a solid X. Other
-        pyqtgraph symbols (``'+'``, ``'s'``, ``'t'``, …) fall through with
-        a default outlined style.
-    event_marker_colors : list or None
-        One color per entry in *bool_event_arrays* — named string, hex, or
-        ``(r, g, b[, a])`` tuple.
-    labels : pl.DataFrame, str, or Path, optional
-        Optional initial labels. Either a polars DataFrame (in which case
-        ``label_schema`` is required) or a path to a ``.csv``, ``.htsv``,
-        ``.parquet``, or Visbrain ``.txt`` file. For ``.htsv`` and ``.parquet``,
-        ``label_schema`` is also required. CSV defaults to the legacy
-        ``start_s/end_s/label/note`` schema; ``.txt`` to Visbrain.
-    label_schema : LabelSchema, optional
-        Describes how the user's columns map to start/end/duration/label/note
-        and which extra columns to display in the GUI.
-    labels_writeback : bool
-        If True, the GUI's "Save Labels (overwrite source)" action will
-        overwrite the file passed in ``labels``. Default False; the source
-        file is never overwritten without this opt-in.
-    state_definitions : str or Path, optional
-        Path to a JSON file with ``"keymap"`` and ``"label_colors"`` keys.
-        See ``example_state_definitions.json`` for the schema.
-    keymap : dict, optional
-        Programmatic state hotkeys. Accepts either forward
-        (``{"w": "Wake", "1": "NREM"}``) or inverse
-        (``{"Wake": ["w", "W"]}``) form. Multiple hotkeys per state are
-        supported. Overrides any keys also defined in the file.
-    label_colors : dict, optional
-        Programmatic ``state -> color`` mapping. Color values may be RGBA
-        tuples, ``[R, G, B[, A]]`` lists, or hex strings (``"#RRGGBBAA"``).
-        Overrides any colors also defined in the file.
-    label_alpha : float, optional
-        Initial label-overlay alpha multiplier in ``[0.0, 1.0]``. Equivalent
-        to setting the View → "Adjust Label Alpha…" slider at launch.
-        Defaults to ``1.0`` (use each state's alpha as defined in
-        ``label_colors``).
+    data : Config or list of Configs, optional
+        One or more of :class:`TraceConfig`, :class:`HeatmapConfig`,
+        :class:`RasterConfig`, or :class:`Zip`.  A bare scalar Config is
+        accepted as shorthand for a one-element list.  List position
+        determines top-to-bottom subplot order.
+
+        Bare ``xr.DataArray`` and ``pl.DataFrame`` inputs are **not**
+        accepted — wrap them explicitly in ``TraceConfig(da)`` or
+        ``RasterConfig(df)``.
+    window_len : float
+        Initial time window in seconds (default ``10.0``).
     videos : VideoConfig or list[VideoConfig], optional
-        Synchronized video sources to display in the right panel.  Each
-        :class:`VideoConfig` carries a ``video_path``, a
-        ``frame_times_path`` (1-D ``.npy`` of per-frame timestamps in
-        seconds), and optional ``name`` / ``stretch`` overrides.  All
-        videos play together, locked to the trace cursor.  A single
+        Synchronized video sources for the right panel.  A single
         :class:`VideoConfig` is accepted as shorthand for a one-element
         list.
+    labels : pl.DataFrame, str, or Path, optional
+        Initial labels.  Either a polars DataFrame (requires
+        ``label_schema``) or a path to a ``.csv``, ``.htsv``,
+        ``.parquet``, or Visbrain ``.txt`` file.
+    label_schema : LabelSchema, optional
+        Required when ``labels`` is a DataFrame or an ``.htsv``/
+        ``.parquet`` file.
+    labels_writeback : bool
+        If True, the GUI's "Save Labels (overwrite source)" action will
+        overwrite the file passed in ``labels``.  Default False.
+    state_definitions : str or Path, optional
+        Path to a JSON file with ``"keymap"`` and ``"label_colors"``.
+    keymap : dict, optional
+        Programmatic state hotkeys; overrides ``state_definitions``.
+    label_colors : dict, optional
+        Programmatic ``state -> color`` map; overrides
+        ``state_definitions``.
+    label_alpha : float, optional
+        Initial label-overlay alpha multiplier in ``[0.0, 1.0]``.
     **kwargs
         Forwarded to :class:`LoupeApp` (``fixed_scale``,
         ``low_profile_x``, etc.).
@@ -413,367 +463,292 @@ def view(
     -------
     LoupeApp
         The viewer window.  In Jupyter (with ``%gui qt6``) the window stays
-        alive after the call returns.  In a script the call blocks until the
-        window is closed.
+        alive after the call returns.  In a script the call blocks until
+        the window is closed.
 
     Examples
     --------
-    xarray time-series::
+    In-memory traces::
 
-        w = view(path="data.zarr", group="dmd_2",
-                 filter_dict={"syn_id": slice(3, 6), "time": slice(0, 1800)})
+        view(TraceConfig(da))
 
-    DataFrame raster plot::
+    From a zarr store::
 
-        import polars as pl
-        ev = pl.read_parquet("glut_events.parquet")
-        w = view(matrix_df=ev, y_col="source_id", group_col="dmd",
-                 alpha_col="snr_denoised")
+        view(TraceConfig.from_path("data.zarr", group="dmd_2",
+                                   filter_dict={"syn_id": slice(3, 6)}))
 
-    Per-source settings via :class:`RasterConfig`::
+    DataFrame raster::
 
-        from loupe import view, RasterConfig
-        w = view(matrix_df=RasterConfig(
-            ev, y_col="source_id", group_col="dmd", color="#ff00ff",
+        view(RasterConfig(ev, y_col="source_id", group_col="dmd",
+                          alpha_col="snr_denoised"))
+
+    Mixed layout (list order = top-to-bottom)::
+
+        view([
+            TraceConfig(traces),
+            RasterConfig(events, group_col="dmd"),
+            HeatmapConfig(dff, split_on="dend-ID", sort_on="pos"),
+        ])
+
+    Zip (one subplot per shared coord value)::
+
+        view(Zip(
+            [TraceConfig(F), TraceConfig(dFF), TraceConfig(denoised)],
+            on="syn_id", colors=["#ff0000", "#00ff00", "#0000ff"],
         ))
-
-    Combined::
-
-        w = view(path="traces.zarr", group="dmd_2",
-                 matrix_df=ev, y_col="source_id", group_col="dmd",
-                 alpha_col="snr_denoised")
     """
     from PySide6 import QtWidgets
 
-    from loupe.app import ArraySeries, DenseGroup, LoupeApp, Series
+    from loupe.app import (
+        ArraySeries,
+        DenseGroup,
+        EventLayer as _RenderedEventLayer,
+        LoupeApp,
+        Series,
+    )
+    from loupe.df_loader import dataframe_to_matrix_series
     from loupe.xr_loader import (
+        convert_event_arrays_aligned_with,
         convert_xarray_inputs_overlay,
         convert_xarray_inputs_with_order,
         dataarray_to_arrays,
-        load_xarray_from_path,
     )
 
-    if dense and array:
-        raise ValueError("Cannot pass dense=True and array=True together.")
-
-    if data is not None and path is not None:
-        raise ValueError("Provide either 'data' or 'path', not both.")
-    if matrix_df is not None and matrix_parquet is not None:
-        raise ValueError("Provide either 'matrix_df' or 'matrix_parquet', not both.")
-
-    # ---- validate bool_event_arrays / event_markers / event_marker_colors -
-    # All three must be provided together; only stacked-subplots inputs
-    # accept event-marker overlays in v1.
-    _ev_inputs = (bool_event_arrays, event_markers, event_marker_colors)
-    use_event_markers = any(x is not None for x in _ev_inputs)
-    if use_event_markers:
-        if not all(x is not None for x in _ev_inputs):
-            raise ValueError(
-                "bool_event_arrays, event_markers, and event_marker_colors "
-                "must all be provided together."
+    # ---- normalize data into a list of Configs ----------------------------
+    _allowed = (TraceConfig, HeatmapConfig, RasterConfig, Zip)
+    if data is None:
+        data_list: list = []
+    elif isinstance(data, _allowed):
+        data_list = [data]
+    elif isinstance(data, list):
+        data_list = list(data)
+    else:
+        raise TypeError(
+            f"view() data= must be a Config or list of Configs (TraceConfig, "
+            f"HeatmapConfig, RasterConfig, Zip), got {type(data).__name__}. "
+            f"Wrap bare DataArrays in TraceConfig(da) and bare DataFrames "
+            f"in RasterConfig(df)."
+        )
+    for i, item in enumerate(data_list):
+        if not isinstance(item, _allowed):
+            raise TypeError(
+                f"view() data[{i}] must be TraceConfig / HeatmapConfig / "
+                f"RasterConfig / Zip, got {type(item).__name__}. Wrap bare "
+                f"DataArrays in TraceConfig(da) and bare DataFrames in "
+                f"RasterConfig(df)."
             )
-        if not (
-            len(bool_event_arrays)
-            == len(event_markers)
-            == len(event_marker_colors)
+
+    # ---- cross-Config validation ------------------------------------------
+    n_zip = sum(1 for x in data_list if isinstance(x, Zip))
+    if n_zip > 1:
+        raise ValueError("Only one Zip is supported per window in this release.")
+    if n_zip == 1:
+        if any(isinstance(x, (TraceConfig, HeatmapConfig)) for x in data_list):
+            raise ValueError(
+                "Zip cannot coexist with TraceConfig or HeatmapConfig in the "
+                "same window. Move the traces into the Zip, or remove the Zip."
+            )
+
+    event_carrier = next(
+        (
+            x for x in data_list
+            if isinstance(x, TraceConfig) and x.event_layers is not None
+        ),
+        None,
+    )
+    if event_carrier is not None:
+        if event_carrier.mode != "stacked-subplots":
+            raise ValueError(
+                "TraceConfig.event_layers require mode='stacked-subplots'."
+            )
+        others = [x for x in data_list if x is not event_carrier]
+        if any(
+            isinstance(x, TraceConfig) and x.event_layers is not None
+            for x in others
         ):
             raise ValueError(
-                "bool_event_arrays, event_markers, and event_marker_colors "
-                "must all be the same length."
+                "Only one TraceConfig may carry event_layers per window."
             )
-        if len(bool_event_arrays) == 0:
-            raise ValueError("bool_event_arrays cannot be empty.")
-        if dense or array or overlay is not None:
+        if any(isinstance(x, (HeatmapConfig, RasterConfig, Zip)) for x in others):
             raise ValueError(
-                "Event markers are only supported in the default "
-                "stacked-subplots mode (not dense, array, or overlay)."
+                "TraceConfig.event_layers cannot coexist with HeatmapConfig / "
+                "RasterConfig / Zip in the same window."
             )
-        if matrix_df is not None or matrix_parquet is not None:
+        if any(isinstance(x, TraceConfig) for x in others):
             raise ValueError(
-                "Event markers are not supported alongside matrix/raster "
-                "DataFrame inputs."
-            )
-        if path is not None:
-            raise ValueError(
-                "Event markers require an in-memory `data=` DataArray "
-                "(not `path=`)."
-            )
-        if data is None:
-            raise ValueError(
-                "Event markers require an in-memory `data=` DataArray."
-            )
-        if isinstance(data, list):
-            raise ValueError(
-                "Event markers only support a single DataArray input "
-                "(not a list of DataArrays)."
+                "TraceConfig.event_layers require a single TraceConfig in the "
+                "data list."
             )
 
-    # ---- resolve path(s) to in-memory DataArrays --------------------------
-    if path is not None:
-        paths = [path] if isinstance(path, str) else list(path)
-        # Normalise group to a list matching paths
-        if group is None:
-            groups = [None] * len(paths)
-        elif isinstance(group, str):
-            groups = [group] * len(paths)
-        else:
-            groups = list(group)
-            if len(groups) != len(paths):
-                raise ValueError(
-                    f"group list length ({len(groups)}) must match "
-                    f"path list length ({len(paths)})"
-                )
-
-        data = [
-            load_xarray_from_path(p, group=g, variable=variable,
-                                  filter_dict=filter_dict)
-            for p, g in zip(paths, groups)
-        ]
-
-    # ---- normalise data to list[TraceConfig | HeatmapConfig] -------------
-    configs: list[TraceConfig | HeatmapConfig] | None = None
-    if data is not None and overlay is None:
-        if not isinstance(data, list):
-            data = [data]
-        configs = []
-        default_mode = "dense" if dense else "stacked-subplots"
-        for item in data:
-            if isinstance(item, (TraceConfig, HeatmapConfig)):
-                configs.append(item)
-            elif array:
-                configs.append(HeatmapConfig(
-                    data=item,
-                    split_on=split_on,
-                    sort_on=sort_on,
-                    colormap=colormap,
-                    vmin=vmin,
-                    vmax=vmax,
-                    decim_method=decim_method,
-                ))
-            else:
-                configs.append(TraceConfig(
-                    data=item,
-                    mode=default_mode,
-                    order_by=order_by,
-                    descending=descending,
-                    gain=gain,
-                    step=step,
-                    traces_per_page=traces_per_page,
-                    color_by=color_by,
-                ))
-
-    # ---- build event_layers (validated above) ----------------------------
-    event_layers = None
-    if use_event_markers:
-        if configs is None or len(configs) != 1:
-            raise ValueError(
-                "Event markers only support a single DataArray input."
-            )
-        cfg = configs[0]
-        if not isinstance(cfg, TraceConfig) or cfg.mode != "stacked-subplots":
-            raise ValueError(
-                "Event markers are only supported in stacked-subplots mode."
-            )
-        from loupe.app import EventLayer
-        from loupe.xr_loader import convert_event_arrays_aligned_with
-
-        bool_per_layer = convert_event_arrays_aligned_with(
-            cfg.data,
-            list(bool_event_arrays),
-            order_by=cfg.order_by,
-            descending=cfg.descending,
-        )
-        # Per-marker defaults preserve the v1 spec: 'o' = semi-transparent
-        # circle (alpha 110, size 8), 'x' / others = solid stroke (alpha 255,
-        # size 9). User can override live via View → Adjust Event Marker
-        # Properties.
-        event_layers = []
-        for m, c, bps in zip(event_markers, event_marker_colors, bool_per_layer):
-            if m == "o":
-                size, alpha = 8.0, 110
-            else:
-                size, alpha = 9.0, 255
-            event_layers.append(
-                EventLayer(
-                    marker=m, color=c, bool_per_series=bps,
-                    size=size, alpha=alpha,
-                )
-            )
-
-    # ---- convert DataArray(s) → Series / DenseGroups / ArraySeries -------
-    xr_series: list[Series] | None = None
-    stacked_colors: list | None = None  # one entry per Series in xr_series; None = default
+    # ---- dispatch each Config to its converter ----------------------------
+    xr_series: list[Series] = []
+    stacked_colors_acc: list = []
+    any_stacked_color = False
+    dense_list: list[DenseGroup] = []
+    array_list: list[ArraySeries] = []
+    matrix_list = []
     overlay_groups = None
-    dense_groups: list[DenseGroup] | None = None
-    array_series: list[ArraySeries] | None = None
-    # subplot_order: list of ("ts"|"dense"|"array", idx) entries describing
-    # the visual layout top-to-bottom. Built in the same order configs are
-    # processed so that interleaving lines and arrays in the input list
-    # produces an interleaved on-screen layout.
-    config_subplot_order: list[tuple[str, int]] | None = None
-    if data is not None:
-        if overlay is not None:
-            if not isinstance(data, list):
-                data = [data]
-            overlay_groups = convert_xarray_inputs_overlay(data, overlay)
-        elif configs is not None:
-            stacked_series: list[Series] = []
-            stacked_colors_acc: list = []
-            any_color = False
-            dense_list: list[DenseGroup] = []
-            array_list: list[ArraySeries] = []
-            order_acc: list[tuple[str, int]] = []
-            use_prefix = len(configs) > 1
-            all_named = all(
-                getattr(c.data, "name", None) for c in configs
-            )
-            for i, cfg in enumerate(configs):
-                # In line modes, an explicit cfg.label overrides the
-                # auto-derived prefix (which is what becomes the trace name
-                # for 1-D DataArrays).
-                is_heatmap = isinstance(cfg, HeatmapConfig)
-                if not is_heatmap and isinstance(cfg.label, str):
-                    prefix = cfg.label
-                elif use_prefix:
-                    prefix = str(cfg.data.name) if all_named else f"arr{i}"
-                else:
-                    prefix = ""
-                if is_heatmap:
-                    new_arrays = dataarray_to_arrays(
-                        cfg.data,
-                        split_on=cfg.split_on,
-                        sort_on=cfg.sort_on,
-                        colormap=cfg.colormap,
-                        vmin=cfg.vmin,
-                        vmax=cfg.vmax,
-                        decim_method=cfg.decim_method,
-                        name_prefix=prefix,
-                        label=cfg.label,
-                    )
-                    base = len(array_list)
-                    array_list.extend(new_arrays)
-                    for j in range(len(new_arrays)):
-                        order_acc.append(("array", base + j))
-                elif cfg.mode == "dense":
-                    tuples, order_vals, trace_labels, color_vals = convert_xarray_inputs_with_order(
-                        cfg.data,
-                        order_by=cfg.order_by,
-                        descending=cfg.descending,
-                        name_prefix=prefix,
-                        color_by=cfg.color_by,
-                    )
-                    series_objs = [Series(n, t, y) for n, t, y in tuples]
-                    group_name = (
-                        cfg.label if isinstance(cfg.label, str) else None
-                    ) or prefix or cfg.data.name or f"dense_{i}"
-                    dense_idx = len(dense_list)
-                    dense_list.append(DenseGroup(
-                        name=str(group_name),
-                        series=series_objs,
-                        trace_labels=trace_labels,
-                        order_values=order_vals,
-                        color_values=color_vals,
-                        descending=cfg.descending,
-                        gain=cfg.gain,
-                        step=cfg.step,
-                        traces_per_page=cfg.traces_per_page,
-                    ))
-                    order_acc.append(("dense", dense_idx))
-                else:
-                    tuples, _, _, _ = convert_xarray_inputs_with_order(
-                        cfg.data,
-                        order_by=cfg.order_by,
-                        descending=cfg.descending,
-                        name_prefix=prefix,
-                        color_by=cfg.color_by,
-                    )
-                    new_series = [Series(n, t, y) for n, t, y in tuples]
-                    base = len(stacked_series)
-                    stacked_series.extend(new_series)
-                    # One color slot per produced Series (broadcast cfg.color)
-                    for j, _s in enumerate(new_series):
-                        stacked_colors_acc.append(cfg.color)
-                        if cfg.color is not None:
-                            any_color = True
-                        order_acc.append(("ts", base + j))
-            if stacked_series:
-                xr_series = stacked_series
-                if any_color:
-                    stacked_colors = stacked_colors_acc
-            if dense_list:
-                dense_groups = dense_list
-            if array_list:
-                array_series = array_list
-            # Only forward an order if it actually deviates from the default
-            # (ts → dense → array). Avoids carrying around a no-op list.
-            default_order = (
-                [("ts", k) for k in range(len(stacked_series))]
-                + [("dense", k) for k in range(len(dense_list))]
-                + [("array", k) for k in range(len(array_list))]
-            )
-            if order_acc != default_order:
-                config_subplot_order = order_acc
+    overlay_colors: list | None = None
+    order_acc: list[tuple[str, int]] = []
+    event_layers_rendered: list | None = None
 
-    # ---- resolve DataFrame(s) to MatrixSeries -----------------------------
-    matrix_series_list = None
-    if matrix_parquet is not None:
-        from loupe.df_loader import load_dataframe_from_parquet
+    # Prefix is used to namespace trace names when multiple xarray Configs
+    # contribute traces; same logic as before, but scoped to xr-source Configs.
+    xr_configs = [c for c in data_list if isinstance(c, (TraceConfig, HeatmapConfig))]
+    use_prefix = len(xr_configs) > 1
+    all_named = all(getattr(c.data, "name", None) for c in xr_configs)
 
-        matrix_df = load_dataframe_from_parquet(matrix_parquet)
+    def _prefix_for(cfg, i):
+        if isinstance(cfg, TraceConfig) and isinstance(cfg.label, str):
+            return cfg.label
+        if isinstance(cfg, HeatmapConfig) and isinstance(cfg.label, str):
+            return cfg.label
+        if use_prefix:
+            return str(cfg.data.name) if all_named else f"arr{i}"
+        return ""
 
-    if matrix_df is not None:
-        from loupe.df_loader import dataframe_to_matrix_series
-
-        if not isinstance(matrix_df, list):
-            matrix_df = [matrix_df]
-        # Normalise to list[RasterConfig]: bare DataFrames inherit the
-        # top-level matrix kwargs as defaults; explicit RasterConfigs pass
-        # through unchanged.
-        raster_configs: list[RasterConfig] = []
-        n_inputs = len(matrix_df)
-        for i, item in enumerate(matrix_df):
-            default_name = matrix_name if n_inputs == 1 else f"{matrix_name}_{i}"
-            if isinstance(item, RasterConfig):
-                raster_configs.append(item)
-            else:
-                raster_configs.append(RasterConfig(
-                    data=item,
-                    y_col=y_col,
-                    group_col=group_col,
-                    alpha_col=alpha_col,
-                    name=default_name,
-                    colors=matrix_colors,
-                    alpha_range=alpha_range,
-                ))
-        all_ms = []
-        for cfg in raster_configs:
+    for i, item in enumerate(data_list):
+        if isinstance(item, Zip):
+            das = [t.data for t in item.traces]
+            overlay_groups = convert_xarray_inputs_overlay(das, item.on)
+            overlay_colors = item.colors
+        elif isinstance(item, RasterConfig):
             new_ms = dataframe_to_matrix_series(
-                cfg.data,
-                time_col=cfg.time_col,
-                y_col=cfg.y_col,
-                group_col=cfg.group_col,
-                alpha_col=cfg.alpha_col,
-                name=cfg.name,
-                colors=cfg.colors,
-                alpha_range=cfg.alpha_range,
-                color_on=cfg.color_on,
-                color_on_config=cfg.color_on_config,
+                item.data,
+                time_col=item.time_col,
+                y_col=item.y_col,
+                group_col=item.group_col,
+                alpha_col=item.alpha_col,
+                name=item.name,
+                colors=item.colors,
+                alpha_range=item.alpha_range,
+                color_on=item.color_on,
+                color_on_config=item.color_on_config,
             )
-            if cfg.color_on is not None:
-                if cfg.color is not None or cfg.colors is not None:
+            if item.color_on is not None:
+                if item.color is not None or item.colors is not None:
                     import warnings
                     warnings.warn(
                         "RasterConfig: color_on takes precedence; "
                         "color/colors are ignored.",
                         stacklevel=2,
                     )
-            elif cfg.color is not None:
-                resolved_color = _parse_raster_color(cfg.color)
+            elif item.color is not None:
+                resolved = _parse_raster_color(item.color)
                 for ms in new_ms:
-                    ms.color = resolved_color
-            all_ms.extend(new_ms)
-        if all_ms:
-            matrix_series_list = all_ms
+                    ms.color = resolved
+            base = len(matrix_list)
+            matrix_list.extend(new_ms)
+            for j in range(len(new_ms)):
+                order_acc.append(("matrix", base + j))
+        elif isinstance(item, HeatmapConfig):
+            prefix = _prefix_for(item, i)
+            new_arrays = dataarray_to_arrays(
+                item.data,
+                split_on=item.split_on,
+                sort_on=item.sort_on,
+                colormap=item.colormap,
+                vmin=item.vmin,
+                vmax=item.vmax,
+                decim_method=item.decim_method,
+                name_prefix=prefix,
+                label=item.label,
+            )
+            base = len(array_list)
+            array_list.extend(new_arrays)
+            for j in range(len(new_arrays)):
+                order_acc.append(("array", base + j))
+        else:  # TraceConfig
+            cfg = item
+            prefix = _prefix_for(cfg, i)
+            if cfg.mode == "dense":
+                tuples, order_vals, trace_labels, color_vals = convert_xarray_inputs_with_order(
+                    cfg.data,
+                    order_by=cfg.order_by,
+                    descending=cfg.descending,
+                    name_prefix=prefix,
+                    color_by=cfg.color_by,
+                )
+                series_objs = [Series(n, t, y) for n, t, y in tuples]
+                group_name = (
+                    cfg.label if isinstance(cfg.label, str) else None
+                ) or prefix or cfg.data.name or f"dense_{i}"
+                dense_idx = len(dense_list)
+                dense_list.append(DenseGroup(
+                    name=str(group_name),
+                    series=series_objs,
+                    trace_labels=trace_labels,
+                    order_values=order_vals,
+                    color_values=color_vals,
+                    descending=cfg.descending,
+                    gain=cfg.gain,
+                    step=cfg.step,
+                    traces_per_page=cfg.traces_per_page,
+                ))
+                order_acc.append(("dense", dense_idx))
+            elif cfg.mode == "stacked-subplots":
+                tuples, _, _, _ = convert_xarray_inputs_with_order(
+                    cfg.data,
+                    order_by=cfg.order_by,
+                    descending=cfg.descending,
+                    name_prefix=prefix,
+                    color_by=cfg.color_by,
+                )
+                new_series = [Series(n, t, y) for n, t, y in tuples]
+                base = len(xr_series)
+                xr_series.extend(new_series)
+                for _s in new_series:
+                    stacked_colors_acc.append(cfg.color)
+                    if cfg.color is not None:
+                        any_stacked_color = True
+                    order_acc.append(("ts", base))
+                    base += 1
+                if cfg.event_layers is not None:
+                    bool_per_layer = convert_event_arrays_aligned_with(
+                        cfg.data,
+                        [layer.bool_array for layer in cfg.event_layers],
+                        order_by=cfg.order_by,
+                        descending=cfg.descending,
+                    )
+                    event_layers_rendered = []
+                    for layer, bps in zip(cfg.event_layers, bool_per_layer):
+                        size = layer.size
+                        if size is None:
+                            size = 8.0 if layer.marker == "o" else 9.0
+                        alpha = layer.alpha
+                        if alpha is None:
+                            alpha = 110 if layer.marker == "o" else 255
+                        event_layers_rendered.append(
+                            _RenderedEventLayer(
+                                marker=layer.marker,
+                                color=layer.color,
+                                bool_per_series=bps,
+                                size=size,
+                                alpha=alpha,
+                            )
+                        )
+            else:
+                raise ValueError(
+                    f"Unknown TraceConfig.mode={cfg.mode!r} "
+                    f"(expected 'stacked-subplots' or 'dense')."
+                )
+
+    # Compute subplot_order, forwarded only if it deviates from the default
+    # (ts → dense → matrix → array) — matches the default ordering inside
+    # LoupeApp so callers without mixed input never carry a no-op list.
+    default_order = (
+        [("ts", k) for k in range(len(xr_series))]
+        + [("dense", k) for k in range(len(dense_list))]
+        + [("matrix", k) for k in range(len(matrix_list))]
+        + [("array", k) for k in range(len(array_list))]
+    )
+    config_subplot_order = order_acc if order_acc != default_order else None
+
+    xr_series_out = xr_series or None
+    stacked_colors = stacked_colors_acc if any_stacked_color else None
+    dense_groups = dense_list or None
+    array_series = array_list or None
+    matrix_series_list = matrix_list or None
 
     # ---- Qt event loop ----------------------------------------------------
     app = QtWidgets.QApplication.instance()
@@ -815,12 +790,8 @@ def view(
                 writeback_allowed=labels_writeback,
             )
 
-    # Per-line colors derived from TraceConfig.color, unless the caller
-    # passed an explicit colors= kwarg (which wins).
     if stacked_colors is not None and "colors" not in kwargs:
         kwargs["colors"] = stacked_colors
-    # Initial layout order derived from TraceConfig list order; caller-supplied
-    # subplot_order (via kwargs) wins.
     if config_subplot_order is not None and "subplot_order" not in kwargs:
         kwargs["subplot_order"] = config_subplot_order
 
@@ -837,14 +808,14 @@ def view(
                 )
 
     w = LoupeApp(
-        xr_series=xr_series,
+        xr_series=xr_series_out,
         matrix_series_list=matrix_series_list,
         overlay_groups=overlay_groups,
         overlay_colors=overlay_colors,
         dense_groups=dense_groups,
         array_series=array_series,
         window_len=window_len,
-        event_layers=event_layers,
+        event_layers=event_layers_rendered,
         state_config=state_config,
         label_set=label_set,
         label_alpha=label_alpha,

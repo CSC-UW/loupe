@@ -24,6 +24,7 @@
 ### TraceConfig
 
 - [ ] It should be possible to control the height of each stacked subplot with a shortcut, e.g. `Cmd + .` / `Cmd + ,`, similar to the current matrix view controls. Perhaps one generic mechanism could apply to all subplot types.
+- [ ] `EventLayer` should be renamed something more descriptive, like `PointLabels` (perhaps what are currently referred to as "labels" could be `IntervalLabels`).
 
 #### Dense mode
 
@@ -34,7 +35,6 @@
 ### RasterConfig
 
 - [ ] Consider using `PlotCurveItem` or `PlotScatteritem` instead of `PlotDataItem` for optimum performance.
-- [ ] Allow per-row colors
 
 ## Other
 
@@ -43,7 +43,6 @@
 - [ ] Consider whether the README should be re-organized around plot/view types, rather than supported data formats. Data formats should still be covered, but in the context of plot types
   - An usage example for every plot type should be provided.
   - A markdown file with increased detail for each view, including performance/dev notes, could be linked to from the README.
-- [ ] Consider whether data should always be provided using `...Config` objects, rather than being direclty passed to `view()`.
 - [ ] `app.py` is getting huge, consider refactoring for agent friendliness.
 - [ ] Consider splitting the "Technical design" section of the README into a separate document.
 - [ ] Margins around stacked subplots should be reduced, if possible, to maximize information density.

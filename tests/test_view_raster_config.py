@@ -1,7 +1,7 @@
-"""Tests for `view(matrix_df=RasterConfig(...))` interaction between
-`color_on` and the legacy `color` / `colors` fields. The precedence rule
-(color_on wins, with a warning if both kinds of color spec are supplied) lives
-inside `view()`, so we have to construct a real LoupeApp to exercise it."""
+"""Tests for `view(RasterConfig(...))` interaction between `color_on` and
+the legacy `color` / `colors` fields. The precedence rule (color_on wins,
+with a warning if both kinds of color spec are supplied) lives inside
+`view()`, so we have to construct a real LoupeApp to exercise it."""
 
 import os
 
@@ -43,7 +43,7 @@ def test_color_on_precedence_over_color():
     df = _events_df()
     with pytest.warns(UserWarning, match="color_on takes precedence"):
         w = view(
-            matrix_df=RasterConfig(
+            RasterConfig(
                 df,
                 color_on="cell_type",
                 color="#ff0000",
@@ -62,7 +62,7 @@ def test_color_on_precedence_over_colors():
     df = _events_df()
     with pytest.warns(UserWarning, match="color_on takes precedence"):
         w = view(
-            matrix_df=RasterConfig(
+            RasterConfig(
                 df,
                 color_on="cell_type",
                 colors={"pyr": (1, 2, 3)},
@@ -81,7 +81,7 @@ def test_color_alone_still_applied_when_color_on_absent():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         w = view(
-            matrix_df=RasterConfig(df, color="#a020f0"),
+            RasterConfig(df, color="#a020f0"),
             state_definitions=_EXAMPLE_STATE_DEFS,
         )
     ms = w.matrix_series[0]
