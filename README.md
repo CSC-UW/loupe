@@ -1,6 +1,6 @@
 ## Loupe — Multi‑trace + Multi‑video data viewer
 
-Loupe is a fast, Qt-based application for interactive time‑series review and labeling. It combines a high‑performance windowed renderer for multiple traces with one to three time‑synchronized videos, a global hypnogram overview, and an efficient click‑and‑drag labeling workflow. While its labeling system is well-suited for sleep scoring, Loupe is a general-purpose tool for inspecting any time‑series data at fine-grained detail.
+Loupe is a fast, Qt-based application for interactive time‑series review and labeling. It combines a high‑performance windowed renderer for multiple traces with any number of time‑synchronized videos, a global hypnogram overview, and an efficient click‑and‑drag labeling workflow. While its labeling system is well-suited for sleep scoring, Loupe is a general-purpose tool for inspecting any time‑series data at fine-grained detail.
 
 This document explains:
 - What the application does
@@ -50,6 +50,15 @@ w = view(data=[
 # Path-based (loads and filters automatically)
 w = view(path="data.zarr", group="dmd_2",
          filter_dict={"syn_id": slice(3, 6), "time": slice(0, 1800)})
+
+# With time-synchronized videos — pass one or more VideoConfig items
+from loupe import VideoConfig
+w = view(da, videos=[
+    VideoConfig("cam1.mp4", "cam1_frame_times.npy", name="side cam"),
+    VideoConfig("cam2.mp4", "cam2_frame_times.npy", name="overhead"),
+    VideoConfig("thermal.mp4", "thermal_frame_times.npy", name="thermal"),
+])
+# A single VideoConfig is accepted as shorthand for a one-element list.
 ```
 
 #### Command line (npy files)
@@ -103,9 +112,13 @@ python -m loupe.app \
 - Each DataArray can be displayed in **stacked-subplots** mode (one subplot per trace, the default) or **dense** mode (all traces on a single axis with vertical offsets). See "Dense view" below.
 
 #### Videos
-- Provide `--video/--frame_times` for the first video, `--video2/--frame_times2` for the second, and `--video3/--frame_times3` for the third.
-- Frame times are 1‑D numpy arrays of timestamps (seconds) matching the video's frames.
-- A static image (`--image`) can be shown when only one video is present or for custom use.
+- From Python, pass one or more `VideoConfig` items via the `videos=` kwarg on `view()` (a bare `VideoConfig` is also accepted as shorthand for a one-element list). Each `VideoConfig` takes:
+  - `video_path` — path to a file readable by OpenCV (`.mp4`, `.avi`, `.mov`, `.mkv`).
+  - `frame_times_path` — path to a 1‑D `.npy` of per-frame timestamps in seconds, used to align frames with the trace cursor.
+  - `name` (optional) — display label used for the empty-frame placeholder and the Show / Frame Step Target menu entries. Defaults to `"Video {i+1}"`.
+  - `stretch` (optional) — initial vertical layout weight relative to other videos. Defaults to 3 for the first slot and 2 for the rest.
+- From the CLI, use `--video/--frame_times`, `--video2/--frame_times2`, and `--video3/--frame_times3` for up to three videos. The flags are pair-wise: omitting either half of a pair drops that slot.
+- All loaded videos play together, locked to the trace cursor. Each runs in its own `VideoWorker` thread.
 
 #### Labels
 Loupe loads and saves labels via a small registry of formats and a `LabelSchema`
@@ -290,7 +303,7 @@ Video:
 - `--video, --frame_times` — main video and frame times.
 - `--video2, --frame_times2` — second video and frame times.
 - `--video3, --frame_times3` — third video and frame times.
-- `--image` — static image (shown when a 2nd/3rd video is not used).
+- Beyond three videos: drive Loupe from Python via `view(..., videos=[VideoConfig(...), ...])`.
 
 Display:
 - `--fixed_scale` — disable Y auto‑scaling; initial per‑trace Y limits are set from robust percentiles (1–99%) with padding.
@@ -322,8 +335,8 @@ Left side:
 - Each plot has a vertical cursor line synchronized across traces.
 
 Right side:
-- Videos panel: up to three time‑synchronized videos stacked vertically, plus a per‑window cursor slider underneath the top video.
-- An optional static image can be shown if fewer than three videos are loaded.
+- Videos panel: any number of time‑synchronized videos stacked vertically (CLI exposes up to three; Python `view(..., videos=[...])` accepts more), plus a per‑window cursor slider underneath the top video.
+- When no videos are loaded, a dark placeholder occupies the videos panel area.
 - Hypnogram overview at the bottom: shows full‑recording label spans and a translucent region indicating the current window.
 
 Top:
@@ -352,7 +365,7 @@ Dense view controls
 Playback and frame stepping
 - Space: toggle playback (loops within current window).
 - View → Set Playback Speed…: choose 0.25× to 4× (default 1×).
-- View → Frame Step Target → Video 1/2/3: pick which video to step.
+- View → Frame Step Target → *video name*: pick which video clocks Left/Right stepping (defaults to the first slot). Menu entries are built from each `VideoConfig.name`.
 - Left/Right arrow: step the selected video one frame back/forward (holding repeats).
 
 Selection & labeling
@@ -383,9 +396,9 @@ Subplot management
 - Ctrl+H: open Subplot Control Board (height, visibility, order for all subplots — stacked, dense, and matrix).
 
 Video controls
-- View → Adjust Secondary Videos Size…: slider to reduce/enlarge Video 1's share so Video 2/3 gain space (live preview).
-- View → Show Video 1/2/3 (checkable) or:
-  - Ctrl+Shift+1 / Ctrl+Shift+2 / Ctrl+Shift+3 to toggle each video.
+- View → Adjust Secondary Videos Size…: one spinbox per visible video (`QFormLayout`) sets each slot's layout weight, with live preview. Cancel restores the previous weights.
+- View → Show *video name* (checkable, one entry per slot) or:
+  - Ctrl+Shift+N (N = 1..9) toggles the visibility of the Nth video.
 - Videos auto‑scale to their label sizes; resizing the splitter re‑scales the frames.
 
 Matrix viewer controls
@@ -477,7 +490,7 @@ Videos and threading
 Layout and sizing
 - Left plot spines (Y axes) are aligned by measuring axis widths and applying the maximum using `setWidth()`.
 - `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels. If you do not pass the flag, Loupe now turns this on automatically when 3 or more total subplots are loaded at launch.
-- The videos are grouped in a dedicated right‑panel container with its own vertical layout. Stretches are applied only to video rows so you can reallocate space between Video 1 vs Videos 2/3 without fighting other controls.
+- The videos are grouped in a dedicated right‑panel container with its own vertical layout. Each `VideoSlot` carries its own stretch (default 3 for the first slot, 2 for the rest), reallocated via View → Adjust Secondary Videos Size… without fighting other controls.
 - Traces are placed in a `GraphicsLayoutWidget` wrapped in a `QScrollArea` (for stacked-subplot vertical paging). Dense plots add a `QScrollBar` to the right of the plot area for vertical trace navigation.
 - Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Three plot types are supported: `"ts"` (stacked subplots), `"dense"`, and `"matrix"`. Each has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically.
 - Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing dense, matrix, and stacked-subplot plots in any order.
@@ -531,8 +544,10 @@ Performance notes
     `_merge_adjacent_same_labels`, `_finalize_label_change`.
   - Rendering pipeline: `_apply_x_range`, `_refresh_curves`,
     `_refresh_dense_curves`, `_sync_label_visuals`.
-  - Video plumbing: `VideoWorker`,
-    `_on_frame_ready`/`_on_frame2_ready`/`_on_frame3_ready`.
+  - Video plumbing: `VideoConfig` (public, `loupe.VideoConfig`), `VideoSlot`
+    (internal, one per loaded video), `VideoWorker`, and the slot-loop helpers
+    `_on_frame_ready(slot, ...)`, `_rescale_video_frame(slot)`,
+    `_request_video_frame(slot, t)`.
 
 ---
 
