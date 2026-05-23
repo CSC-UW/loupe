@@ -594,6 +594,7 @@ class VideoSlot:
     show_action: QtGui.QAction | None = None
     step_action: QtGui.QAction | None = None
     frame_times: np.ndarray | None = None
+    frame_times_correction: float = 0.0
     is_open: bool = False
     last_pixmap: QtGui.QPixmap | None = None
     requested_frame_idx: int | None = None
@@ -1646,6 +1647,9 @@ class LoupeApp(QtWidgets.QMainWindow):
                 thread=thread,
                 video_path=getattr(cfg, "video_path", None),
                 frame_times_path=getattr(cfg, "frame_times_path", None),
+                frame_times_correction=float(
+                    getattr(cfg, "frame_times_correction", 0.0) or 0.0
+                ),
             )
             self.video_slots.append(slot)
 
@@ -5409,9 +5413,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                 if ft.ndim != 1:
                     raise ValueError("frame_times.npy must be 1-D")
             ft = ft_arrays[0] if len(ft_arrays) == 1 else np.concatenate(ft_arrays)
+            corr = slot.frame_times_correction
+            if corr:
+                ft = ft + corr
             slot.frame_times = ft
+            corr_note = f", {corr:+g}s correction" if corr else ""
             self._update_status(
-                f"Loaded frame_times for {slot.name} ({len(ft)} frames)."
+                f"Loaded frame_times for {slot.name} ({len(ft)} frames{corr_note})."
             )
             self._request_initial_frame()
         except Exception as e:

@@ -126,6 +126,7 @@ python -m loupe.app \
   - `frame_times_path` — path to a 1‑D `.npy` of per-frame timestamps in seconds, used to align frames with the trace cursor.
   - `name` (optional) — display label used for the empty-frame placeholder and the Show / Frame Step Target menu entries. Defaults to `"Video {i+1}"`.
   - `stretch` (optional) — initial vertical layout weight relative to other videos. Defaults to 3 for the first slot and 2 for the rest.
+  - `frame_times_correction` (optional, default `0.0`) — float (seconds) added to every frame time after loading. Applied uniformly whether `frame_times_path` is a single file or a list; useful as a quick alignment shim against the trace cursor without rewriting the underlying `.npy` files.
 - From the CLI, use `--video/--frame_times`, `--video2/--frame_times2`, and `--video3/--frame_times3` for up to three videos. The flags are pair-wise: omitting either half of a pair drops that slot.
 - All loaded videos play together, locked to the trace cursor. Each runs in its own `VideoWorker` thread.
 

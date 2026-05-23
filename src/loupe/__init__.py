@@ -320,12 +320,19 @@ class VideoConfig:
         Initial vertical layout weight relative to other videos.  Defaults
         to ``3`` for the first slot and ``2`` for the rest, matching the
         previous hard-coded layout.
+    frame_times_correction : float
+        Scalar (seconds) added to every frame time after loading.  Applied
+        uniformly whether *frame_times_path* is a single file or a list —
+        the offset is added once to the (possibly concatenated) array.
+        Useful as a quick alignment shim against the trace cursor without
+        rewriting the underlying ``.npy`` files.  Defaults to ``0.0``.
     """
 
     video_path: "str | list[str]"
     frame_times_path: "str | list[str]"
     name: str | None = None
     stretch: int | None = None
+    frame_times_correction: float = 0.0
 
 
 @dataclass
