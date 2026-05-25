@@ -90,12 +90,18 @@ class TraceConfig:
     traces_per_page : int or None
         How many traces to show at once in dense mode. ``None`` = all.
         Use Alt+scroll to page through the rest.
-    color_by : str or None
+    hue : str or None
         Coordinate name whose categorical values determine per-trace color.
+        Overridden by *color* when both are set.
+    palette : dict, list, or None
+        Per-*hue*-value color mapping.  ``dict {value: color}`` keys each
+        unique *hue* value to a color; a list of colors is assigned in
+        sorted *hue*-value order.  ``None`` falls back to a default palette.
+        Ignored when *hue* is unset.
     color : str, RGB(A) tuple, or None
         Single color applied to every trace produced by this DataArray,
-        e.g. ``"#a020f0"`` or ``(160, 32, 240)``.  Overrides ``color_by``
-        when both are set.
+        e.g. ``"#a020f0"`` or ``(160, 32, 240)``.  Overrides ``hue`` /
+        ``palette`` when both are set.
     array_name : bool or str
         Controls the array-level component of each trace name.  ``False``
         (default) prepends nothing; multi-trace DataArrays render as just
@@ -118,7 +124,8 @@ class TraceConfig:
     gain: float = 1.0
     step: int = 1
     traces_per_page: int | None = None
-    color_by: str | None = None
+    hue: str | None = None
+    palette: "dict | list | None" = None
     color: "str | tuple | None" = None
     array_name: bool | str = False
     sample_markers: "list[SampleMarkers] | None" = None
@@ -174,19 +181,21 @@ class HeatmapConfig:
         The DataArray to display as a heatmap (imshow-style) over time.
     array_name : bool, str, or callable
         Controls subplot names.  ``False`` (default) names subplots as
-        just ``"{split_on}={split_val}"`` (or an empty string when there's
+        just ``"{split_by}={split_val}"`` (or an empty string when there's
         no split).  ``True`` uses ``data.name`` as the prefix and raises
         ``ValueError`` if it's unset.  A string is used as the prefix
         verbatim.  A callable ``(split_val, sub_da) -> str`` (or 1-arg
         ``(split_val) -> str``) is invoked per split group and its return
         value is the full subplot name.
-    split_on : str or None
+    split_by : str or None
         Coordinate or dim name to split into one subplot per unique value
         (e.g. one heatmap per dendrite).
-    sort_on : str or None
+    order_by : str or None
         Coordinate name on the row dim controlling y-axis row order within
         each subplot.
-    colormap : str, Colormap, list, dict, or callable
+    descending : bool
+        Reverse the ordering given by *order_by*.
+    cmap : str, Colormap, list, dict, or callable
         Matplotlib colormap name (e.g. ``"magma"``) or a Colormap instance
         (e.g. ``cmcrameri.cm.batlow``).  Also accepts:
 
@@ -204,9 +213,10 @@ class HeatmapConfig:
 
     data: xr.DataArray
     array_name: "bool | str | Callable[..., str]" = False
-    split_on: str | None = None
-    sort_on: str | None = None
-    colormap: "str | Colormap | list | dict | Callable[..., Any]" = "magma"
+    split_by: str | None = None
+    order_by: str | None = None
+    descending: bool = False
+    cmap: "str | Colormap | list | dict | Callable[..., Any]" = "magma"
     vmin: float | None = None
     vmax: float | None = None
     decim_method: str = "peak"
@@ -219,68 +229,65 @@ class RasterConfig:
     Parameters
     ----------
     data : pl.DataFrame
-        Polars DataFrame of events.  Must contain *time_col* and *y_col*.
-    time_col : str
+        Polars DataFrame of events.  Must contain *time_by* and *y_by*.
+    time_by : str
         Column containing event timestamps in seconds (default ``"time"``).
-    y_col : str
+    y_by : str
         Column whose values identify the raster row for each event
         (default ``"source_id"``).
-    group_col : str, list[str] or None
+    split_by : str, list[str] or None
         Column(s) used to split this DataFrame into separate raster
         subplots.  ``None`` (default) puts all events in a single subplot.
-    alpha_col : str or None
+    alpha_by : str or None
         Column for per-event opacity, normalized to *alpha_range*.
-    array_name : str
+    array_name : str or callable
         Array-level component of each subplot label.  ``""`` (default)
         leaves grouped subplots labeled by raw group values (e.g.
         ``"CA1-SR"``) and ungrouped subplots labeled with an empty
         string.  A non-empty string is used as a prefix verbatim
         (e.g. ``array_name="units"`` → ``"units: CA1-SR"``).  Multi-column
         groups join values with ``"-"`` (e.g. ``"imec0-CA1-SR"``).
+        A callable ``(group_val, sub_df) -> str`` (or 1-arg
+        ``(group_val) -> str``) is invoked per group and its return value
+        is the full subplot name.
+    hue : str or None
+        Column whose values determine per-event color.  When set, each
+        event in the raster is colored according to its value in this
+        column.  Takes precedence over *color* (which is ignored, with a
+        warning, if also set).  Pair with *palette* to control the mapping.
+    palette : dict, list, tuple or None
+        Per-*hue*-value (or per-group, when *hue* is unset) color mapping:
+        dict ``{value: (R,G,B)}`` or ``{value: "#RRGGBB"}``, a list of
+        colors assigned in sorted-value order, or a single tuple applied to
+        all values.  ``None`` (default) falls back to white (no *hue*) or a
+        default palette cycle (with *hue*).  When *hue* and *split_by* are
+        both set the mapping is shared across every subplot so the same
+        column value always renders as the same color.
     color : str, RGB(A) tuple, or None
         Single color applied to every group produced by this DataFrame
         (e.g. ``"#a020f0"`` or ``(160, 32, 240)``).  Takes precedence over
-        *colors* when both are set.  Ignored when *color_on* is set.
-    colors : dict, list, tuple or None
-        Per-group palette: dict ``{group_value: (R,G,B)}``, list of tuples
-        assigned in sorted group order, or a single tuple applied to all
-        groups.  ``None`` (default) means white.  Ignored when *color_on*
-        is set.
+        *palette* when both are set.  Ignored when *hue* is set.
     alpha_range : tuple[float, float]
-        ``(min_alpha, max_alpha)`` for normalizing *alpha_col* values.
-    color_on : str or None
-        Column whose values determine per-event color.  When set, each
-        event in the raster is colored according to its value in this
-        column.  Takes precedence over *color* and *colors* (both are
-        ignored, with a warning if either is also set).
-    color_on_config : dict or None
-        Optional ``{column_value: color}`` mapping used by *color_on*.
-        Each value may be an ``(R, G, B)`` tuple or a ``"#RRGGBB"`` hex
-        string.  Unique values not listed fall back to a default palette
-        cycle (with a warning).  ``None`` assigns the entire palette from
-        the default cycle (no warning).  When *group_col* is also set the
-        mapping is shared across every subplot so the same column value
-        always renders as the same color.
+        ``(min_alpha, max_alpha)`` for normalizing *alpha_by* values.
     """
 
     data: "pl.DataFrame"
-    time_col: str = "time"
-    y_col: str = "source_id"
-    group_col: "str | list[str] | None" = None
-    alpha_col: str | None = None
-    array_name: str = ""
+    time_by: str = "time"
+    y_by: str = "source_id"
+    split_by: "str | list[str] | None" = None
+    alpha_by: str | None = None
+    array_name: "str | Callable[..., str]" = ""
+    hue: str | None = None
+    palette: "dict | list | tuple | None" = None
     color: "str | tuple | None" = None
-    colors: "dict | list | tuple | None" = None
     alpha_range: tuple[float, float] = (0.3, 1.0)
-    color_on: str | None = None
-    color_on_config: dict | None = None
 
     @classmethod
     def from_parquet(
         cls,
         path: "str | list[str]",
         *,
-        time_col: str = "time",
+        time_by: str = "time",
         **raster_kwargs,
     ) -> "RasterConfig":
         """Load one or more parquet files into a DataFrame and wrap it in a
@@ -290,12 +297,12 @@ class RasterConfig:
         ----------
         path : str or list[str]
             Path(s) to parquet file(s).  Multiple paths are concatenated.
-        time_col : str
+        time_by : str
             Time column name (default ``"time"``).  Files using ``"t_sec"``
             are auto-renamed for backward compatibility.
         **raster_kwargs
-            Forwarded to :class:`RasterConfig` (``y_col``, ``group_col``,
-            ``alpha_col``, …).
+            Forwarded to :class:`RasterConfig` (``y_by``, ``split_by``,
+            ``alpha_by``, …).
 
         Returns
         -------
@@ -303,8 +310,8 @@ class RasterConfig:
         """
         from loupe.df_loader import load_dataframe_from_parquet
 
-        df = load_dataframe_from_parquet(path, time_col=time_col)
-        return cls(data=df, time_col=time_col, **raster_kwargs)
+        df = load_dataframe_from_parquet(path, time_by=time_by)
+        return cls(data=df, time_by=time_by, **raster_kwargs)
 
 
 @dataclass
@@ -395,7 +402,8 @@ class Zip:
             "gain": 1.0,
             "step": 1,
             "traces_per_page": None,
-            "color_by": None,
+            "hue": None,
+            "palette": None,
             "array_name": False,
             "sample_markers": None,
         }
@@ -418,7 +426,7 @@ def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
     """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
 
     Raster rendering (``RasterSeries.color``) expects exactly 3 channels —
-    the alpha is supplied separately per event via ``alpha_col``.
+    the alpha is supplied separately per event via ``alpha_by``.
     """
     if isinstance(c, str):
         s = c.strip().lstrip("#")
@@ -513,15 +521,15 @@ def view(
 
     DataFrame raster::
 
-        view(RasterConfig(ev, y_col="source_id", group_col="dmd",
-                          alpha_col="snr_denoised"))
+        view(RasterConfig(ev, y_by="source_id", split_by="dmd",
+                          alpha_by="snr_denoised"))
 
     Mixed layout (list order = top-to-bottom)::
 
         view([
             TraceConfig(traces),
-            RasterConfig(events, group_col="dmd"),
-            HeatmapConfig(dff, split_on="dend-ID", sort_on="pos"),
+            RasterConfig(events, split_by="dmd"),
+            HeatmapConfig(dff, split_by="dend-ID", order_by="pos"),
         ])
 
     Zip (one subplot per shared coord value)::
@@ -668,26 +676,32 @@ def view(
         elif isinstance(item, RasterConfig):
             new_ms = dataframe_to_raster_series(
                 item.data,
-                time_col=item.time_col,
-                y_col=item.y_col,
-                group_col=item.group_col,
-                alpha_col=item.alpha_col,
+                time_by=item.time_by,
+                y_by=item.y_by,
+                split_by=item.split_by,
+                alpha_by=item.alpha_by,
                 array_name=item.array_name,
-                colors=item.colors,
+                palette=item.palette,
                 alpha_range=item.alpha_range,
-                color_on=item.color_on,
-                color_on_config=item.color_on_config,
+                hue=item.hue,
                 reporter=reporter,
             )
-            if item.color_on is not None:
-                if item.color is not None or item.colors is not None:
+            if item.hue is not None:
+                if item.color is not None:
                     import warnings
                     warnings.warn(
-                        "RasterConfig: color_on takes precedence; "
-                        "color/colors are ignored.",
+                        "RasterConfig: hue takes precedence; "
+                        "color is ignored.",
                         stacklevel=2,
                     )
             elif item.color is not None:
+                if item.palette is not None:
+                    import warnings
+                    warnings.warn(
+                        "RasterConfig: color takes precedence over palette; "
+                        "palette is ignored.",
+                        stacklevel=2,
+                    )
                 resolved = _parse_raster_color(item.color)
                 for ms in new_ms:
                     ms.color = resolved
@@ -706,9 +720,10 @@ def view(
             )
             new_heatmaps = dataarray_to_heatmaps(
                 item.data,
-                split_on=item.split_on,
-                sort_on=item.sort_on,
-                colormap=item.colormap,
+                split_by=item.split_by,
+                order_by=item.order_by,
+                descending=item.descending,
+                cmap=item.cmap,
                 vmin=item.vmin,
                 vmax=item.vmax,
                 decim_method=item.decim_method,
@@ -728,7 +743,7 @@ def view(
                     order_by=cfg.order_by,
                     descending=cfg.descending,
                     name_prefix=prefix,
-                    color_by=cfg.color_by,
+                    hue=cfg.hue,
                     reporter=reporter,
                 )
                 series_objs = [Series(n, t, y) for n, t, y in tuples]
@@ -740,6 +755,7 @@ def view(
                     trace_labels=trace_labels,
                     order_values=order_vals,
                     color_values=color_vals,
+                    palette=cfg.palette,
                     descending=cfg.descending,
                     gain=cfg.gain,
                     step=cfg.step,
@@ -752,7 +768,7 @@ def view(
                     order_by=cfg.order_by,
                     descending=cfg.descending,
                     name_prefix=prefix,
-                    color_by=cfg.color_by,
+                    hue=cfg.hue,
                     reporter=reporter,
                 )
                 new_series = [Series(n, t, y) for n, t, y in tuples]

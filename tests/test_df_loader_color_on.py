@@ -1,6 +1,6 @@
-"""Tests for the `color_on` / `color_on_config` features of
-`dataframe_to_raster_series`. These exercise the categorical-coloring data
-plumbing without touching the renderer."""
+"""Tests for the `hue` / `palette` features of `dataframe_to_raster_series`.
+These exercise the categorical-coloring data plumbing without touching the
+renderer."""
 
 import os
 
@@ -26,12 +26,12 @@ def _basic_df(n: int = 30, seed: int = 0) -> pl.DataFrame:
     })
 
 
-def test_color_on_basic():
+def test_hue_basic():
     df = _basic_df()
     out = dataframe_to_raster_series(
         df,
-        color_on="cat",
-        color_on_config={
+        hue="cat",
+        palette={
             "a": (255, 0, 0),
             "b": "#00ff00",
             "c": (0, 0, 255),
@@ -48,23 +48,23 @@ def test_color_on_basic():
     assert ms.category_index.dtype == np.int16
 
 
-def test_color_on_missing_config_no_warning():
+def test_hue_missing_palette_no_warning():
     df = _basic_df()
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # Any warning becomes a test failure.
-        out = dataframe_to_raster_series(df, color_on="cat")
+        out = dataframe_to_raster_series(df, hue="cat")
     ms = out[0]
     # 3 sorted unique values → first 3 entries from the default palette.
     assert ms.category_colors == list(_DEFAULT_COLORS[:3])
 
 
-def test_color_on_partial_config_warns():
+def test_hue_partial_palette_warns():
     df = _basic_df()
     with pytest.warns(UserWarning, match="missing entries"):
         out = dataframe_to_raster_series(
             df,
-            color_on="cat",
-            color_on_config={"a": (123, 45, 67)},
+            hue="cat",
+            palette={"a": (123, 45, 67)},
         )
     ms = out[0]
     # 'a' uses configured color; 'b' and 'c' fall back to default palette[0], [1].
@@ -73,7 +73,7 @@ def test_color_on_partial_config_warns():
     assert ms.category_colors[2] == _DEFAULT_COLORS[1]
 
 
-def test_color_on_with_alpha_col_preserves_parallel_order():
+def test_hue_with_alpha_by_preserves_parallel_order():
     rng = np.random.default_rng(1)
     n = 50
     df = pl.DataFrame({
@@ -90,7 +90,7 @@ def test_color_on_with_alpha_col_preserves_parallel_order():
     df = df.with_columns(pl.arange(0, n).alias("orig_idx"))
 
     out = dataframe_to_raster_series(
-        df, color_on="cat", alpha_col="snr",
+        df, hue="cat", alpha_by="snr",
     )
     ms = out[0]
 
@@ -108,7 +108,7 @@ def test_color_on_with_alpha_col_preserves_parallel_order():
     assert ms.alphas.shape == ms.timestamps.shape
 
 
-def test_color_on_with_group_col_shared_palette():
+def test_hue_with_split_by_shared_palette():
     # Two DMD groups; cat=c appears in both but cat=a only in group 1 and
     # cat=b only in group 2. The shared palette must still emit identical
     # category_colors across the two RasterSeries and stable indices.
@@ -120,9 +120,9 @@ def test_color_on_with_group_col_shared_palette():
     })
     out = dataframe_to_raster_series(
         df,
-        group_col="dmd",
-        color_on="cat",
-        color_on_config={"a": (255, 0, 0), "b": (0, 255, 0), "c": (0, 0, 255)},
+        split_by="dmd",
+        hue="cat",
+        palette={"a": (255, 0, 0), "b": (0, 255, 0), "c": (0, 0, 255)},
     )
     assert len(out) == 2
     ms1, ms2 = out
@@ -137,14 +137,14 @@ def test_color_on_with_group_col_shared_palette():
     assert list(ms2.category_index) == [1, 2, 2]
 
 
-def test_color_on_with_nulls_appends_na_category():
+def test_hue_with_nulls_appends_na_category():
     df = pl.DataFrame({
         "time":      [0.1, 0.2, 0.3, 0.4],
         "source_id": [0,   0,   1,   1],
         "cat":       ["a", None, "b", None],
     })
     with pytest.warns(UserWarning, match="null values"):
-        out = dataframe_to_raster_series(df, color_on="cat")
+        out = dataframe_to_raster_series(df, hue="cat")
     ms = out[0]
     # 2 real categories (a, b) + 1 NA category appended at the end.
     assert len(ms.category_colors) == 3
@@ -153,7 +153,7 @@ def test_color_on_with_nulls_appends_na_category():
     assert list(ms.category_index) == [0, 2, 1, 2]
 
 
-def test_color_on_too_many_categories_raises():
+def test_hue_too_many_categories_raises():
     n = RASTER_MAX_CATEGORIES + 1
     df = pl.DataFrame({
         "time": np.linspace(0.0, 1.0, n),
@@ -161,29 +161,29 @@ def test_color_on_too_many_categories_raises():
         "cat": [f"cat_{i}" for i in range(n)],
     })
     with pytest.raises(ValueError, match="RASTER_MAX_CATEGORIES"):
-        dataframe_to_raster_series(df, color_on="cat")
+        dataframe_to_raster_series(df, hue="cat")
 
 
-def test_color_on_missing_column_raises():
+def test_hue_missing_column_raises():
     df = _basic_df()
     with pytest.raises(ValueError, match="missing required column"):
-        dataframe_to_raster_series(df, color_on="not_a_real_column")
+        dataframe_to_raster_series(df, hue="not_a_real_column")
 
 
-def test_color_on_hex_strings_in_config():
+def test_hue_hex_strings_in_palette():
     df = _basic_df()
     out = dataframe_to_raster_series(
         df,
-        color_on="cat",
-        color_on_config={"a": "#ff8000", "b": "#00ff80", "c": "#8000ff"},
+        hue="cat",
+        palette={"a": "#ff8000", "b": "#00ff80", "c": "#8000ff"},
     )
     ms = out[0]
     assert ms.category_colors == [(255, 128, 0), (0, 255, 128), (128, 0, 255)]
 
 
-def test_color_on_none_preserves_legacy_behavior():
+def test_hue_none_preserves_legacy_behavior():
     df = _basic_df()
-    out = dataframe_to_raster_series(df)  # no color_on
+    out = dataframe_to_raster_series(df)  # no hue
     ms = out[0]
     assert ms.category_index is None
     assert ms.category_colors is None

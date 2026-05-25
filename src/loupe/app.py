@@ -85,13 +85,13 @@ class HeatmapSeries:
 
     Represents a single 2-D buffer ``Y`` of shape ``(n_rows, n_time)`` with a
     shared time axis ``t``.  Each row corresponds to one entry of the row dim
-    after ``sort_on`` ordering; each column corresponds to one time sample.
+    after ``order_by`` ordering; each column corresponds to one time sample.
     """
 
     name: str
     t: np.ndarray  # 1-D, shape (n_time,), seconds, monotonic
     Y: np.ndarray  # 2-D, shape (n_rows, n_time), float32, NaN→-inf at load
-    row_labels: np.ndarray | None  # values of sort_on per row (post-sort), or None
+    row_labels: np.ndarray | None  # values of order_by per row (post-sort), or None
     row_dim_name: str  # name of the row dimension (for tooltips / control board)
     colormap: "str | Colormap" = "magma"  # matplotlib colormap name or Colormap instance
     vmin: float = 0.0
@@ -122,13 +122,13 @@ class IntervalLabelVisualBundle:
 
 RASTER_ALPHA_LEVEL_COUNT = 11
 
-# Maximum number of distinct categorical color values supported by `color_on=`.
+# Maximum number of distinct categorical color values supported by `hue=`.
 # Beyond this, the user almost certainly wants colormap-style binning rather
 # than per-value colors, so we fail loudly. 32 categories × 11 alpha buckets
 # = 352 PlotDataItems per raster subplot — a reasonable upper bound.
 RASTER_MAX_CATEGORIES = 32
 
-# Color used for events whose `color_on` value is null/None/NaN. Matches the
+# Color used for events whose `hue` value is null/None/NaN. Matches the
 # dense plot's _CATEGORY_NA_COLOR gray (sans the alpha channel — raster alpha
 # is per-event, not part of the base color).
 RASTER_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
@@ -143,6 +143,7 @@ class DenseGroup:
     trace_labels: list[str]
     order_values: np.ndarray | None = None
     color_values: np.ndarray | None = None
+    palette: "dict | list | None" = None
     descending: bool = False
     gain: float = 1.0
     step: int = 1
@@ -3787,12 +3788,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         self,
         data,
         *,
-        time_col: str = "time",
-        y_col: str = "source_id",
-        group_col: str | list[str] | None = None,
-        alpha_col: str | None = None,
+        time_by: str = "time",
+        y_by: str = "source_id",
+        split_by: str | list[str] | None = None,
+        alpha_by: str | None = None,
         array_name: str = "",
-        colors=None,
+        palette=None,
         alpha_range: tuple[float, float] = (0.3, 1.0),
     ):
         """Load a Polars DataFrame as raster plots.
@@ -3801,22 +3802,22 @@ class LoupeApp(QtWidgets.QMainWindow):
         ----------
         data : pl.DataFrame, list[pl.DataFrame], or str
             In-memory DataFrame(s), or a path to a parquet file.
-        time_col : str
+        time_by : str
             Column with event timestamps (seconds).
-        y_col : str
+        y_by : str
             Column for raster row assignment.
-        group_col : str or list[str] or None
+        split_by : str or list[str] or None
             Column(s) to split into separate subplots.
-        alpha_col : str or None
+        alpha_by : str or None
             Column for per-event opacity.
         array_name : str
             Array-level prefix for each subplot label.  ``""`` (default)
             uses the raw group value(s); a non-empty string is used as a
             prefix verbatim.
-        colors : dict, list, tuple or None
-            Color specification per group.
+        palette : dict, list, tuple or None
+            Per-group color specification.
         alpha_range : tuple[float, float]
-            ``(min_alpha, max_alpha)`` for normalizing *alpha_col*.
+            ``(min_alpha, max_alpha)`` for normalizing *alpha_by*.
         """
         from loupe.df_loader import (
             dataframe_to_raster_series,
@@ -3824,7 +3825,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
 
         if isinstance(data, str):
-            data = load_dataframe_from_parquet(data, time_col=time_col)
+            data = load_dataframe_from_parquet(data, time_by=time_by)
 
         if not isinstance(data, list):
             data = [data]
@@ -3834,12 +3835,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             all_ms.extend(
                 dataframe_to_raster_series(
                     mdf,
-                    time_col=time_col,
-                    y_col=y_col,
-                    group_col=group_col,
-                    alpha_col=alpha_col,
+                    time_by=time_by,
+                    y_by=y_by,
+                    split_by=split_by,
+                    alpha_by=alpha_by,
                     array_name=array_name,
-                    colors=colors,
+                    palette=palette,
                     alpha_range=alpha_range,
                 )
             )
@@ -4807,18 +4808,34 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _dense_category_map(self, group_idx: int) -> dict[str, tuple] | None:
         """Build a stable category -> RGBA mapping for a dense group.
 
-        Returns *None* if the group has no ``color_values``.
+        Returns *None* if the group has no ``color_values``.  When
+        ``group.palette`` is provided, it overrides the default cycle:
+        ``dict`` mappings are looked up by stringified category key, and
+        ``list``/``tuple`` palettes are assigned in first-seen order.
+        Categories without a palette entry fall back to the default cycle.
         """
         group = self.dense_groups[group_idx]
         if group.color_values is None or len(group.color_values) != len(group.series):
             return None
+        user_palette = group.palette
+        user_dict: dict | None = None
+        user_list: list | None = None
+        if isinstance(user_palette, dict):
+            user_dict = {str(k): v for k, v in user_palette.items()}
+        elif isinstance(user_palette, (list, tuple)):
+            user_list = list(user_palette)
         seen: dict[str, tuple] = {}
-        palette = self._CATEGORY_COLORS
+        default_palette = self._CATEGORY_COLORS
         for v in group.color_values:
             key = str(v)
             if key in seen:
                 continue
-            seen[key] = palette[len(seen) % len(palette)]
+            if user_dict is not None and key in user_dict:
+                seen[key] = user_dict[key]
+            elif user_list is not None and len(user_list) > 0:
+                seen[key] = user_list[len(seen) % len(user_list)]
+            else:
+                seen[key] = default_palette[len(seen) % len(default_palette)]
         return seen
 
     def _dense_pens(self, group_idx: int) -> list:
@@ -4876,7 +4893,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-        # Create curves (one pen per visible trace; may vary by color_by category)
+        # Create curves (one pen per visible trace; may vary by hue category)
         pens = self._dense_pens(group_idx)
         curves: list[pg.PlotDataItem] = []
         for pen in pens:

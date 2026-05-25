@@ -234,9 +234,10 @@ Both views share synchronized X (time) axes.
 The heatmap view renders an `xr.DataArray` as a 2-D heatmap (imshow-style) over time, with one row per entry of a non-time dimension. It is designed for inspecting many traces at once at fine-grained detail — e.g. `dF[syn_id, time]` shown as a heatmap with synapses on the y-axis and time on the x-axis — while keeping all the synchronized cursor / labeling / video / hypnogram infrastructure of Loupe.
 
 `HeatmapConfig` parameters:
-- `split_on` — coordinate or dim name to split into one subplot per unique value (e.g. `'dend-ID'` to get one heatmap per dendrite). Uses `xr.DataArray.groupby`, so works with both dim names and 1-D coords on a dim.
-- `sort_on` — coordinate name on the row dim controlling y-axis row order (sorted ascending).
-- `colormap` — matplotlib colormap name. A list applies one entry per `split_on` group in order. Default `"magma"`.
+- `split_by` — coordinate or dim name to split into one subplot per unique value (e.g. `'dend-ID'` to get one heatmap per dendrite). Uses `xr.DataArray.groupby`, so works with both dim names and 1-D coords on a dim.
+- `order_by` — coordinate name on the row dim controlling y-axis row order (sorted ascending).
+- `descending` — reverse the row ordering given by `order_by` (default `False`).
+- `cmap` — matplotlib colormap name. A list applies one entry per `split_by` group in order. Default `"magma"`.
 - `vmin`, `vmax` — color scale limits. Default is robust 1–99 percentile per heatmap.
 - `decim_method` — `"peak"` (max-absolute per bin, preserves transients; default) or `"mean"`.
 
@@ -245,11 +246,11 @@ Each subplot must have exactly one non-time dim remaining after the split — ot
 ```python
 from loupe import view, HeatmapConfig
 # Per-dendrite heatmap, rows ordered by anatomical position:
-w = view(HeatmapConfig(dnv, split_on="dend-ID", sort_on="pos",
-                       colormap=["magma", "viridis", "plasma", "inferno"]))
+w = view(HeatmapConfig(dnv, split_by="dend-ID", order_by="pos",
+                       cmap=["magma", "viridis", "plasma", "inferno"]))
 
 # Single heatmap (no split):
-w = view(HeatmapConfig(dF_one_dend, sort_on="pos"))
+w = view(HeatmapConfig(dF_one_dend, order_by="pos"))
 ```
 
 The **Heatmap Plot Controls** dialog (View → Heatmap Plot Controls…, `Ctrl+Shift+H`) provides per-subplot live adjustment of:

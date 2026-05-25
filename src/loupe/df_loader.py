@@ -7,7 +7,7 @@ the application works without polars installed.
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     import polars as pl
 
 # ---------------------------------------------------------------------------
-# Default color palette for groups (when no explicit colors given)
+# Default color palette for groups (when no explicit palette given)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_COLORS: list[tuple[int, int, int]] = [
@@ -30,6 +30,18 @@ _DEFAULT_COLORS: list[tuple[int, int, int]] = [
 ]
 
 
+def _call_with_optional_subdf(fn: Callable, group_val, sub_df) -> str:
+    """Call *fn* with ``(group_val, sub_df)`` or ``(group_val,)``.
+
+    Mirrors xr_loader's ``_call_with_optional_subda`` for the DataFrame path:
+    callable ``array_name`` may accept either signature.
+    """
+    try:
+        return fn(group_val, sub_df)
+    except TypeError:
+        return fn(group_val)
+
+
 # ---------------------------------------------------------------------------
 # Core conversion
 # ---------------------------------------------------------------------------
@@ -38,20 +50,19 @@ _DEFAULT_COLORS: list[tuple[int, int, int]] = [
 def dataframe_to_raster_series(
     df: pl.DataFrame,
     *,
-    time_col: str = "time",
-    y_col: str = "source_id",
-    group_col: str | list[str] | None = None,
-    alpha_col: str | None = None,
-    array_name: str = "",
-    colors: (
+    time_by: str = "time",
+    y_by: str = "source_id",
+    split_by: str | list[str] | None = None,
+    alpha_by: str | None = None,
+    array_name: "str | Callable[..., str]" = "",
+    palette: (
         dict[object, tuple[int, int, int]]
         | list[tuple[int, int, int]]
         | tuple[int, int, int]
         | None
     ) = None,
     alpha_range: tuple[float, float] = (0.3, 1.0),
-    color_on: str | None = None,
-    color_on_config: dict | None = None,
+    hue: str | None = None,
     reporter=None,
 ) -> list:
     """Convert a Polars DataFrame into one or more RasterSeries for raster display.
@@ -59,50 +70,43 @@ def dataframe_to_raster_series(
     Parameters
     ----------
     df : pl.DataFrame
-        Must contain *time_col* and *y_col* columns at minimum.
-    time_col : str
+        Must contain *time_by* and *y_by* columns at minimum.
+    time_by : str
         Column containing event timestamps in seconds.
-    y_col : str
+    y_by : str
         Column whose values identify the raster row for each event (e.g.
         ``"source_id"``).  Unique values are mapped to contiguous 0-based
         integer indices within each group.
-    group_col : str or list[str] or None
+    split_by : str or list[str] or None
         Column(s) used to split the DataFrame into separate RasterSeries
-        subplots.  Each unique combination of group_col values becomes one
+        subplots.  Each unique combination of *split_by* values becomes one
         subplot.  ``None`` means all events share a single subplot.
-    alpha_col : str or None
+    alpha_by : str or None
         Column for per-event opacity.  Values are normalized to
         *alpha_range*.  ``None`` gives every event alpha = 1.0.
-    array_name : str
+    array_name : str or callable
         Array-level component of each subplot label.  ``""`` (default)
         leaves grouped subplots labeled by raw group values (e.g.
         ``"CA1-SR"``) and ungrouped subplots labeled with an empty
         string.  A non-empty string is used as a prefix verbatim
         (e.g. ``array_name="units"`` → ``"units: CA1-SR"``).  Multi-column
         groups join values with ``"-"`` (e.g. ``"imec0-CA1-SR"``).
-    colors : dict, list, tuple or None
-        Color specification per group:
-
-        * dict mapping group value -> ``(R, G, B)``
-        * list of ``(R, G, B)`` tuples (assigned in sorted group order)
-        * single ``(R, G, B)`` tuple (applied to all groups)
-        * ``None``: use default palette
-
-        Ignored when *color_on* is set.
+        A callable ``(group_val, sub_df) -> str`` (or 1-arg
+        ``(group_val) -> str``) is invoked per group and its return value
+        is used as the full subplot name.
+    palette : dict, list, tuple or None
+        Color specification.  When *hue* is set, *palette* maps each
+        *hue*-column value to a color (dict ``{value: color}``, list of
+        colors assigned in sorted-value order, or single tuple).  When
+        *hue* is unset, *palette* maps *split_by* group values to per-group
+        colors (same accepted shapes).  ``None`` defaults to white (no hue)
+        or the default palette cycle (with hue).
     alpha_range : tuple[float, float]
-        ``(min_alpha, max_alpha)`` range for normalizing *alpha_col* values.
-    color_on : str or None
+        ``(min_alpha, max_alpha)`` range for normalizing *alpha_by* values.
+    hue : str or None
         Column whose values determine per-event color.  When set, each event
         is colored according to its value in this column rather than by the
-        per-group *colors* setting.
-    color_on_config : dict or None
-        Optional ``{column_value: color}`` mapping driving the *color_on*
-        palette.  Values may be ``(R, G, B)`` tuples or ``"#RRGGBB"`` hex
-        strings.  Unique values not listed here cycle through the default
-        palette (with a warning).  ``None`` assigns the entire palette from
-        the default cycle (no warning).  When *group_col* is also set, this
-        palette is shared across every subplot so the same value always
-        renders as the same color.
+        per-group *palette*.
 
     Returns
     -------
@@ -119,20 +123,20 @@ def dataframe_to_raster_series(
 
     # ---- validate columns ---------------------------------------------------
     missing = []
-    for col in (time_col, y_col):
+    for col in (time_by, y_by):
         if col not in df.columns:
             missing.append(col)
-    if group_col is not None:
-        gcols = [group_col] if isinstance(group_col, str) else list(group_col)
+    if split_by is not None:
+        gcols = [split_by] if isinstance(split_by, str) else list(split_by)
         for gc in gcols:
             if gc not in df.columns:
                 missing.append(gc)
     else:
         gcols = []
-    if alpha_col is not None and alpha_col not in df.columns:
-        missing.append(alpha_col)
-    if color_on is not None and color_on not in df.columns:
-        missing.append(color_on)
+    if alpha_by is not None and alpha_by not in df.columns:
+        missing.append(alpha_by)
+    if hue is not None and hue not in df.columns:
+        missing.append(hue)
     if missing:
         raise ValueError(
             f"DataFrame is missing required column(s): {missing}.  "
@@ -143,58 +147,73 @@ def dataframe_to_raster_series(
         return []
 
     # ---- shared categorical palette (built once across the whole DataFrame) -
-    # When color_on is set we precompute a single value -> category-index map
+    # When hue is set we precompute a single value -> category-index map
     # and the matching RGB palette, then apply it inside each group's loop so
     # the same column value always renders as the same color across subplots.
     value_to_idx: dict[object, int] | None = None
     shared_category_colors: list[tuple[int, int, int]] | None = None
     na_idx: int | None = None
-    if color_on is not None:
+    if hue is not None:
         import polars as pl  # lazy
 
-        non_null = df.filter(pl.col(color_on).is_not_null())
+        non_null = df.filter(pl.col(hue).is_not_null())
         try:
-            global_uniques = sorted(non_null[color_on].unique().to_list())
+            global_uniques = sorted(non_null[hue].unique().to_list())
         except TypeError as exc:
             raise ValueError(
-                f"color_on column {color_on!r} contains values that cannot be "
+                f"hue column {hue!r} contains values that cannot be "
                 f"sorted ({exc}); use a column with a single, comparable dtype."
             ) from exc
 
         if len(global_uniques) > RASTER_MAX_CATEGORIES:
             raise ValueError(
-                f"color_on column {color_on!r} has {len(global_uniques)} unique "
+                f"hue column {hue!r} has {len(global_uniques)} unique "
                 f"values, exceeding RASTER_MAX_CATEGORIES={RASTER_MAX_CATEGORIES}. "
                 f"For high-cardinality columns prefer a colormap-style binning."
             )
 
-        palette: dict[object, tuple[int, int, int]] = {}
+        resolved: dict[object, tuple[int, int, int]] = {}
         unmapped: list[object] = []
-        if color_on_config is not None:
+        if isinstance(palette, dict):
             for v in global_uniques:
-                if v in color_on_config:
-                    palette[v] = _parse_raster_color(color_on_config[v])
+                if v in palette:
+                    resolved[v] = _parse_raster_color(palette[v])
                 else:
                     unmapped.append(v)
+            if unmapped:
+                warnings.warn(
+                    f"palette is missing entries for {unmapped!r}; "
+                    f"falling back to default palette.",
+                    stacklevel=2,
+                )
+        elif isinstance(palette, (list, tuple)) and not (
+            len(palette) == 3 and all(isinstance(x, (int, float)) for x in palette)
+        ):
+            # List of colors — assigned in sorted-uniques order, cycling.
+            pal_list = list(palette)
+            for i, v in enumerate(global_uniques):
+                resolved[v] = _parse_raster_color(pal_list[i % len(pal_list)])
+        elif palette is not None:
+            # Single tuple — apply to all values (collapses every hue value
+            # to the same color, which is a degenerate but legal case).
+            single = _parse_raster_color(palette)
+            for v in global_uniques:
+                resolved[v] = single
         else:
             unmapped = list(global_uniques)
+
+        # Anything still unmapped (dict miss, or None palette) gets default cycle.
         for i, v in enumerate(unmapped):
-            palette[v] = _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)]
-        if color_on_config is not None and unmapped:
-            warnings.warn(
-                f"color_on_config is missing entries for {unmapped!r}; "
-                f"falling back to default palette.",
-                stacklevel=2,
-            )
+            resolved[v] = _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)]
 
         value_to_idx = {v: i for i, v in enumerate(global_uniques)}
-        shared_category_colors = [palette[v] for v in global_uniques]
-        if df[color_on].null_count() > 0:
+        shared_category_colors = [resolved[v] for v in global_uniques]
+        if df[hue].null_count() > 0:
             na_idx = len(global_uniques)
             shared_category_colors = shared_category_colors + [RASTER_NA_COLOR]
             warnings.warn(
-                f"color_on column {color_on!r} contains "
-                f"{df[color_on].null_count()} null values; rendered as gray.",
+                f"hue column {hue!r} contains "
+                f"{df[hue].null_count()} null values; rendered as gray.",
                 stacklevel=2,
             )
 
@@ -208,22 +227,22 @@ def dataframe_to_raster_series(
 
     # ---- resolve color helper -----------------------------------------------
     # Default tick color is white, matching traces.  Per-group palette colors
-    # require explicit opt-in via `colors=...` — group separation comes from
+    # require explicit opt-in via `palette=...` — group separation comes from
     # being in different subplots, not from auto-cycling a palette.
     def _color_for(group_key: tuple, idx: int) -> tuple[int, int, int]:
         key = group_key[0] if len(group_key) == 1 else group_key
-        if colors is None:
+        if palette is None:
             return (255, 255, 255)
-        if isinstance(colors, dict):
-            if key in colors:
-                return colors[key]
-            if group_key in colors:
-                return colors[group_key]
+        if isinstance(palette, dict):
+            if key in palette:
+                return palette[key]
+            if group_key in palette:
+                return palette[group_key]
             return _DEFAULT_COLORS[idx % len(_DEFAULT_COLORS)]
-        if isinstance(colors, list):
-            return colors[idx % len(colors)] if colors else _DEFAULT_COLORS[0]
+        if isinstance(palette, list):
+            return palette[idx % len(palette)] if palette else _DEFAULT_COLORS[0]
         # single tuple
-        return colors  # type: ignore[return-value]
+        return palette  # type: ignore[return-value]
 
     # ---- build RasterSeries per group ---------------------------------------
     result: list = []
@@ -244,18 +263,18 @@ def dataframe_to_raster_series(
             gdf = df
 
         # timestamps
-        timestamps = gdf[time_col].to_numpy().astype(np.float64)
+        timestamps = gdf[time_by].to_numpy().astype(np.float64)
 
         # y-values: map unique sorted values to contiguous 0-based ints
-        unique_y = np.sort(gdf[y_col].unique().to_numpy())
+        unique_y = np.sort(gdf[y_by].unique().to_numpy())
         y_map = {v: i for i, v in enumerate(unique_y)}
-        raw_y = gdf[y_col].to_numpy()
+        raw_y = gdf[y_by].to_numpy()
         yvals = np.array([y_map[v] for v in raw_y], dtype=np.intp)
         n_rows = len(unique_y)
 
         # alphas
-        if alpha_col is not None:
-            raw_alpha = gdf[alpha_col].to_numpy().astype(np.float64)
+        if alpha_by is not None:
+            raw_alpha = gdf[alpha_by].to_numpy().astype(np.float64)
             a_min, a_max = np.nanmin(raw_alpha), np.nanmax(raw_alpha)
             if a_min == a_max:
                 alphas = np.full(len(raw_alpha), alpha_range[1])
@@ -266,9 +285,9 @@ def dataframe_to_raster_series(
         else:
             alphas = np.ones(len(timestamps), dtype=np.float64)
 
-        # per-event category indices (only when color_on is set)
+        # per-event category indices (only when hue is set)
         if value_to_idx is not None:
-            raw_cat = gdf[color_on].to_list()  # list preserves None/null
+            raw_cat = gdf[hue].to_list()  # list preserves None/null
             cat_idx = np.empty(len(raw_cat), dtype=np.int16)
             for i, v in enumerate(raw_cat):
                 if v is None:
@@ -287,7 +306,10 @@ def dataframe_to_raster_series(
         if cat_idx is not None:
             cat_idx = cat_idx[order]
 
-        if gcols:
+        if callable(array_name):
+            group_val = gkey[0] if len(gkey) == 1 else (gkey if gkey else None)
+            series_name = str(_call_with_optional_subdf(array_name, group_val, gdf))
+        elif gcols:
             suffix = "-".join(str(gv) for gv in gkey)
             series_name = f"{array_name}: {suffix}" if array_name else suffix
         else:
@@ -318,7 +340,7 @@ def dataframe_to_raster_series(
 
 def load_dataframe_from_parquet(
     path: str | list[str],
-    time_col: str = "time",
+    time_by: str = "time",
 ) -> "pl.DataFrame":
     """Load one or more parquet files into a single Polars DataFrame.
 
@@ -326,7 +348,7 @@ def load_dataframe_from_parquet(
     ----------
     path : str or list[str]
         Path(s) to parquet file(s).  Multiple paths are concatenated.
-    time_col : str
+    time_by : str
         Expected time column name.  If the file uses ``"t_sec"`` instead,
         it is automatically renamed for backward compatibility.
 
@@ -343,7 +365,7 @@ def load_dataframe_from_parquet(
     df = pl.concat(frames) if len(frames) > 1 else frames[0]
 
     # Backward-compat: older files may use "t_sec"
-    if "t_sec" in df.columns and time_col not in df.columns:
-        df = df.rename({"t_sec": time_col})
+    if "t_sec" in df.columns and time_by not in df.columns:
+        df = df.rename({"t_sec": time_by})
 
     return df

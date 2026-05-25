@@ -1,7 +1,8 @@
-"""Tests for `view(RasterConfig(...))` interaction between `color_on` and
-the legacy `color` / `colors` fields. The precedence rule (color_on wins,
-with a warning if both kinds of color spec are supplied) lives inside
-`view()`, so we have to construct a real LoupeApp to exercise it."""
+"""Tests for `view(RasterConfig(...))` interaction between `hue` and the
+single-color `color` / per-group `palette` fields. The precedence rule
+(hue wins, with a warning if `color` is also supplied; `color` wins over
+`palette` and warns) lives inside `view()`, so we have to construct a real
+LoupeApp to exercise it."""
 
 import os
 
@@ -39,13 +40,13 @@ def _events_df(n: int = 60, seed: int = 0) -> pl.DataFrame:
     })
 
 
-def test_color_on_precedence_over_color():
+def test_hue_precedence_over_color():
     df = _events_df()
-    with pytest.warns(UserWarning, match="color_on takes precedence"):
+    with pytest.warns(UserWarning, match="hue takes precedence"):
         w = view(
             RasterConfig(
                 df,
-                color_on="cell_type",
+                hue="cell_type",
                 color="#ff0000",
             ),
             state_definitions=_EXAMPLE_STATE_DEFS,
@@ -58,23 +59,25 @@ def test_color_on_precedence_over_color():
     w.close()
 
 
-def test_color_on_precedence_over_colors():
+def test_hue_uses_palette_mapping():
     df = _events_df()
-    with pytest.warns(UserWarning, match="color_on takes precedence"):
-        w = view(
-            RasterConfig(
-                df,
-                color_on="cell_type",
-                colors={"pyr": (1, 2, 3)},
-            ),
-            state_definitions=_EXAMPLE_STATE_DEFS,
-        )
+    w = view(
+        RasterConfig(
+            df,
+            hue="cell_type",
+            palette={"pyr": (1, 2, 3), "pv": (10, 20, 30)},
+        ),
+        state_definitions=_EXAMPLE_STATE_DEFS,
+    )
     ms = w.raster_series[0]
     assert ms.category_index is not None
+    # category_colors order matches sorted uniques: ["pv", "pyr"]
+    assert ms.category_colors[0] == (10, 20, 30)
+    assert ms.category_colors[1] == (1, 2, 3)
     w.close()
 
 
-def test_color_alone_still_applied_when_color_on_absent():
+def test_color_alone_still_applied_when_hue_absent():
     df = _events_df()
     # No warning expected; legacy single-color path should still work.
     import warnings
@@ -87,4 +90,16 @@ def test_color_alone_still_applied_when_color_on_absent():
     ms = w.raster_series[0]
     assert ms.color == (160, 32, 240)
     assert ms.category_index is None
+    w.close()
+
+
+def test_color_warns_over_palette():
+    df = _events_df()
+    with pytest.warns(UserWarning, match="color takes precedence over palette"):
+        w = view(
+            RasterConfig(df, color="#a020f0", palette={0: (1, 2, 3)}),
+            state_definitions=_EXAMPLE_STATE_DEFS,
+        )
+    ms = w.raster_series[0]
+    assert ms.color == (160, 32, 240)
     w.close()

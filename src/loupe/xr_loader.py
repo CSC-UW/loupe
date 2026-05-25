@@ -301,7 +301,7 @@ def convert_xarray_inputs_with_order(
     order_by: str | None = None,
     descending: bool = False,
     name_prefix: str = "",
-    color_by: str | None = None,
+    hue: str | None = None,
     reporter=None,
 ) -> tuple[
     list[tuple[str, np.ndarray, np.ndarray]],
@@ -323,7 +323,7 @@ def convert_xarray_inputs_with_order(
         Reverse the ordering.
     name_prefix : str
         Prefix prepended to each trace name.
-    color_by : str or None
+    hue : str or None
         Coordinate name whose (categorical) values determine per-trace
         color.  Extracted in the same order as the returned tuples.
 
@@ -345,8 +345,8 @@ def convert_xarray_inputs_with_order(
     order_values = _trace_order_values(da, order_by)
 
     color_values: np.ndarray | None = None
-    if color_by is not None:
-        color_values = _coord_values_per_trace(da, color_by, non_time_dims)
+    if hue is not None:
+        color_values = _coord_values_per_trace(da, hue, non_time_dims)
 
     sort_idx = _compute_trace_sort_index(
         da, order_by=order_by, descending=descending, n_traces=len(tuples)
@@ -447,9 +447,10 @@ def convert_event_arrays_aligned_with(
 def dataarray_to_heatmaps(
     da: xr.DataArray,
     *,
-    split_on: str | None = None,
-    sort_on: str | None = None,
-    colormap: "str | Colormap | list | dict | Callable[..., Any]" = "magma",
+    split_by: str | None = None,
+    order_by: str | None = None,
+    descending: bool = False,
+    cmap: "str | Colormap | list | dict | Callable[..., Any]" = "magma",
     vmin: float | None = None,
     vmax: float | None = None,
     decim_method: str = "peak",
@@ -462,17 +463,19 @@ def dataarray_to_heatmaps(
     ----------
     da : xr.DataArray
         Must have a ``'time'`` dimension. After optional grouping by
-        ``split_on`` it must have exactly one remaining non-time dim
+        ``split_by`` it must have exactly one remaining non-time dim
         (the row dim).
-    split_on : str or None
+    split_by : str or None
         Coordinate or dim name to group by — produces one ``HeatmapSeries``
         per unique value.  If *None*, the input must already have exactly
         one non-time dim.
-    sort_on : str or None
+    order_by : str or None
         Coordinate name on the row dim controlling y-axis row order
         (sorted ascending).  If *None*, the row dim's coordinate values
         determine order (or simple integer order).
-    colormap : str, Colormap, list, dict, or callable
+    descending : bool
+        Reverse the ordering given by *order_by*.
+    cmap : str, Colormap, list, dict, or callable
         Per-group colormap selection. Accepts:
 
         * A matplotlib colormap name (string, e.g. ``"magma"``).
@@ -521,15 +524,15 @@ def dataarray_to_heatmaps(
         time_vals = time_raw.astype(float)
 
     # Resolve groups: list of (split_value or None, sub_da).
-    if split_on is None:
+    if split_by is None:
         groups: list[tuple[object, xr.DataArray]] = [(None, da)]
     else:
-        if split_on not in da.coords and split_on not in da.dims:
+        if split_by not in da.coords and split_by not in da.dims:
             raise ValueError(
-                f"split_on='{split_on}' not found in DataArray coords or dims. "
+                f"split_by='{split_by}' not found in DataArray coords or dims. "
                 f"Available coords: {list(da.coords)}; dims: {da.dims}"
             )
-        groups = [(val, sub_da) for val, sub_da in da.groupby(split_on)]
+        groups = [(val, sub_da) for val, sub_da in da.groupby(split_by)]
 
     # Resolve colormaps per group. Each entry may be a string name or a
     # matplotlib.colors.Colormap instance — both are accepted downstream.
@@ -543,19 +546,19 @@ def dataarray_to_heatmaps(
     except ImportError:
         _MplColormap = ()  # isinstance check becomes a no-op
     cmap_callable = (
-        callable(colormap)
-        and not isinstance(colormap, type)
-        and not isinstance(colormap, _MplColormap)
+        callable(cmap)
+        and not isinstance(cmap, type)
+        and not isinstance(cmap, _MplColormap)
     )
-    cmap_dict = isinstance(colormap, dict)
+    cmap_dict = isinstance(cmap, dict)
     if cmap_callable or cmap_dict:
         cmaps = ["magma"]  # fallback; the resolver below takes precedence
-    elif isinstance(colormap, (list, tuple)):
-        cmaps = list(colormap)
+    elif isinstance(cmap, (list, tuple)):
+        cmaps = list(cmap)
         if not cmaps:
             cmaps = ["magma"]
     else:
-        cmaps = [colormap]
+        cmaps = [cmap]
 
     if array_name is True:
         if not da.name:
@@ -585,29 +588,34 @@ def dataarray_to_heatmaps(
             raise ValueError(
                 "Heatmap mode requires exactly one non-time dimension per "
                 f"subplot after split. Found dims: {sub_da.dims}. "
-                f"Non-time dims after split: {extras}. Use split_on= to group "
+                f"Non-time dims after split: {extras}. Use split_by= to group "
                 "or pre-select extra dims with .sel()."
             )
         row_dim = non_time_dims[0]
 
-        # Row order via sort_on (or row dim's own coord).
-        if sort_on is not None and sort_on in sub_da.coords:
-            sort_vals = np.asarray(sub_da.coords[sort_on].values)
+        # Row order via order_by (or row dim's own coord).
+        if order_by is not None and order_by in sub_da.coords:
+            sort_vals = np.asarray(sub_da.coords[order_by].values)
             if sort_vals.shape == (sub_da.sizes[row_dim],):
                 try:
                     sort_idx = np.argsort(sort_vals.astype(float))
                 except (ValueError, TypeError):
                     sort_idx = np.argsort(sort_vals)
+                if descending:
+                    sort_idx = sort_idx[::-1]
                 sub_da = sub_da.isel({row_dim: sort_idx})
-                row_labels = sub_da.coords[sort_on].values
+                row_labels = sub_da.coords[order_by].values
             else:
-                # sort_on is not 1-D over the row dim — leave order as-is
+                # order_by is not 1-D over the row dim — leave order as-is
                 row_labels = None
         else:
             try:
                 row_labels = sub_da.coords[row_dim].values
             except KeyError:
                 row_labels = None
+            if descending and row_labels is not None:
+                sub_da = sub_da.isel({row_dim: slice(None, None, -1)})
+                row_labels = row_labels[::-1]
 
         # Materialize as float32 (rows, time).
         Y = sub_da.transpose(row_dim, "time").values.astype(np.float32, copy=False)
@@ -635,9 +643,9 @@ def dataarray_to_heatmaps(
         # Pick a colormap for this group: callable / dict take precedence,
         # else cycle through the list.
         if cmap_callable:
-            cmap_value = _call_with_optional_subda(colormap, split_val, sub_da)
+            cmap_value = _call_with_optional_subda(cmap, split_val, sub_da)
         elif cmap_dict:
-            cmap_value = colormap[split_val]
+            cmap_value = cmap[split_val]
         else:
             cmap_value = cmaps[gi % len(cmaps)]
 
@@ -648,9 +656,9 @@ def dataarray_to_heatmaps(
         elif split_val is None:
             name = name_prefix
         elif name_prefix:
-            name = f"{name_prefix}: {split_on}={split_val}"
+            name = f"{name_prefix}: {split_by}={split_val}"
         else:
-            name = f"{split_on}={split_val}"
+            name = f"{split_by}={split_val}"
 
         # Build mip-map for big arrays (cheap perf insurance).
         mipmap = None
