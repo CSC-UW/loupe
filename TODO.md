@@ -23,7 +23,7 @@
 
 ### TraceConfig
 
-- [ ] It should be possible to control the height of each stacked subplot with a shortcut, e.g. `Cmd + .` / `Cmd + ,`, similar to the current matrix view controls. Perhaps one generic mechanism could apply to all subplot types.
+- [ ] It should be possible to control the height of each stacked subplot with a shortcut, e.g. `Cmd + .` / `Cmd + ,`, similar to the current raster view controls. Perhaps one generic mechanism could apply to all subplot types.
 - [ ] `EventLayer` should be renamed something more descriptive, like `PointLabels` (perhaps what are currently referred to as "labels" could be `IntervalLabels`).
 
 #### Dense mode

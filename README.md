@@ -87,13 +87,13 @@ python -m loupe.app \
   --video2 ./data/video2.mp4 --frame_times2 ./data/frame_times2.npy \
   --video3 ./data/video3.mp4 --frame_times3 ./data/frame_times3.npy
 
-# Matrix/raster plots (e.g., neural spike rasters)
+# Raster plots (e.g., neural spike rasters)
 python -m loupe.app \
   --data_dir ./data \
-  --matrix_timestamps ./data/spikes1_timestamps.npy ./data/spikes2_timestamps.npy \
-  --matrix_yvals ./data/spikes1_yvals.npy ./data/spikes2_yvals.npy \
-  --alpha_vals ./data/spikes1_alphas.npy ./data/spikes2_alphas.npy \
-  --matrix_colors "#FF5500" "#00AAFF"
+  --raster_timestamps ./data/spikes1_timestamps.npy ./data/spikes2_timestamps.npy \
+  --raster_yvals ./data/spikes1_yvals.npy ./data/spikes2_yvals.npy \
+  --raster_alphas ./data/spikes1_alphas.npy ./data/spikes2_alphas.npy \
+  --raster_colors "#FF5500" "#00AAFF"
 
 # xarray data from the command line
 python -m loupe.app \
@@ -231,13 +231,13 @@ Color values may be `[R, G, B]`, `[R, G, B, A]`, or a hex string
 (`"#RRGGBB"` / `"#RRGGBBAA"`). Binding the same key to two different states
 raises `LoupeConfigError` at load time.
 
-#### Matrix/Raster data
-- Matrix plots display discrete events as vertical lines in a raster format (e.g., neural spike rasters).
-- Each matrix subplot requires:
-  - `matrix_timestamps`: 1‑D array of event times (seconds, same timebase as time series)
-  - `matrix_yvals`: 1‑D array of row indices (integers 0 to N-1) specifying which row each event belongs to
-  - `alpha_vals` (optional): 1‑D array of alpha values (0.0 to 1.0) for each event
-  - `matrix_colors`: hex color for each subplot (all events in a subplot share the same color)
+#### Raster data
+- Raster plots display discrete events as vertical lines in a raster format (e.g., neural spike rasters).
+- Each raster subplot requires:
+  - `raster_timestamps`: 1‑D array of event times (seconds, same timebase as time series)
+  - `raster_yvals`: 1‑D array of row indices (integers 0 to N-1) specifying which row each event belongs to
+  - `raster_alphas` (optional): 1‑D array of alpha values (0.0 to 1.0) for each event
+  - `raster_colors`: hex color for each subplot (all events in a subplot share the same color)
 - Events are rendered as vertical lines centered within their row, with configurable height and thickness.
 
 #### Dense view
@@ -317,11 +317,11 @@ Display:
 - `--fixed_scale` — disable Y auto‑scaling; initial per‑trace Y limits are set from robust percentiles (1–99%) with padding.
 - `--low_profile_x` — hide X axis labels/ticks for all but the bottom trace; vertical grid lines are preserved on hidden axes. This is now the default automatically whenever Loupe launches with 3 or more total subplots.
 
-Matrix viewer:
-- `--matrix_timestamps FILE...` — list of .npy files with event timestamps for each matrix subplot.
-- `--matrix_yvals FILE...` — list of .npy files with row indices (0 to N-1) for each event.
-- `--alpha_vals FILE...` — optional list of .npy files with alpha values (0-1) for each event.
-- `--matrix_colors COLOR...` — list of hex colors (#RRGGBB) for each matrix subplot.
+Raster viewer:
+- `--raster_timestamps FILE...` — list of .npy files with event timestamps for each raster subplot.
+- `--raster_yvals FILE...` — list of .npy files with row indices (0 to N-1) for each event.
+- `--raster_alphas FILE...` — optional list of .npy files with alpha values (0-1) for each event.
+- `--raster_colors COLOR...` — list of hex colors (#RRGGBB) for each raster subplot.
 
 xarray:
 - `--xr_path FILE...` — path(s) to zarr or netCDF stores.
@@ -401,7 +401,7 @@ Zoom & axes
 - `h`: toggle hypnogram visibility (frees vertical space for videos).
 
 Subplot management
-- Ctrl+H: open Subplot Control Board (height, visibility, order for all subplots — stacked, dense, and matrix).
+- Ctrl+H: open Subplot Control Board (height, visibility, order for all subplots — stacked, dense, and raster).
 
 Video controls
 - View → Adjust Secondary Videos Size…: one spinbox per visible video (`QFormLayout`) sets each slot's layout weight, with live preview. Cancel restores the previous weights.
@@ -409,23 +409,23 @@ Video controls
   - Ctrl+Shift+N (N = 1..9) toggles the visibility of the Nth video.
 - Videos auto‑scale to their label sizes; resizing the splitter re‑scales the frames.
 
-Matrix viewer controls
-- View → Proportional Matrix Plots (Ctrl+Shift+M): toggle proportional sizing of matrix plots based on their row count. When enabled, a plot with 20 rows will be twice as tall as one with 10 rows.
-- View → Increase Matrix Share (Ctrl+Shift+,): increase the vertical space allocated to matrix plots by ~5%. No upper bound—you can keep increasing as needed.
-- View → Decrease Matrix Share (Ctrl+Shift+.): decrease the vertical space allocated to matrix plots by ~5%. No lower bound—you can keep decreasing as needed.
-- View → Adjust Matrix Brightness…: slider to adjust the brightness/visibility of matrix event lines (0.2–3.0). Default is 1.0; higher values make events more visible.
-- View → Matrix Event Height…: adjust the vertical extent of event lines (0.1–0.5, distance from row center). Default is 0.4 (lines span 80% of row height).
-- View → Matrix Event Thickness…: adjust the pen width of event lines in pixels (1–10). Default is 2.
-- Matrix plots show only min/max Y tick labels and have no horizontal grid lines for a clean raster appearance.
+Raster viewer controls
+- View → Proportional Raster Plots (Ctrl+Shift+R): toggle proportional sizing of raster plots based on their row count. When enabled, a plot with 20 rows will be twice as tall as one with 10 rows.
+- View → Increase Raster Share (Ctrl+Shift+,): increase the vertical space allocated to raster plots by ~5%. No upper bound—you can keep increasing as needed.
+- View → Decrease Raster Share (Ctrl+Shift+.): decrease the vertical space allocated to raster plots by ~5%. No lower bound—you can keep decreasing as needed.
+- View → Adjust Raster Brightness…: slider to adjust the brightness/visibility of raster event lines (0.2–3.0). Default is 1.0; higher values make events more visible.
+- View → Raster Event Height…: adjust the vertical extent of event lines (0.1–0.5, distance from row center). Default is 0.4 (lines span 80% of row height).
+- View → Raster Event Thickness…: adjust the pen width of event lines in pixels (1–10). Default is 2.
+- Raster plots show only min/max Y tick labels and have no horizontal grid lines for a clean raster appearance.
 
 Subplot Control Board
-- View → Subplot Control Board… (Ctrl+H): opens a comprehensive dialog to control all subplots (time series and matrix).
+- View → Subplot Control Board… (Ctrl+H): opens a comprehensive dialog to control all subplots (time series and raster).
   - **Height sliders**: Adjust individual plot heights from 0.01× to 20.0× the default. When one plot is made taller, the others proportionally shrink. For very small plots (below 0.2×), axis labels are automatically hidden to save space.
   - **Hide checkbox**: Check "Hide" to hide a subplot entirely from the view. Hidden subplots disappear completely and remaining plots expand to fill the space.
-  - **Drag to reorder**: Drag subplot rows up/down to change their display order. Matrix plots can be moved above time series plots, and vice versa.
+  - **Drag to reorder**: Drag subplot rows up/down to change their display order. Raster plots can be moved above time series plots, and vice versa.
   - **Reset Heights**: Restore all height factors to 1.0×.
   - **Show All**: Unhide all subplots.
-  - **Reset Order**: Restore the default order (all time series first, then all matrix plots).
+  - **Reset Order**: Restore the default order (all time series first, then all raster plots).
 
 Import/Export labels
 - File → Load Labels… reads `.csv`, `.htsv`, `.parquet`, or Visbrain `.txt`.
@@ -500,19 +500,19 @@ Layout and sizing
 - `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels. If you do not pass the flag, Loupe now turns this on automatically when 3 or more total subplots are loaded at launch.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Each `VideoSlot` carries its own stretch (default 3 for the first slot, 2 for the rest), reallocated via View → Adjust Secondary Videos Size… without fighting other controls.
 - Traces are placed in a `GraphicsLayoutWidget` wrapped in a `QScrollArea` (for stacked-subplot vertical paging). Dense plots add a `QScrollBar` to the right of the plot area for vertical trace navigation.
-- Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Three plot types are supported: `"ts"` (stacked subplots), `"dense"`, and `"matrix"`. Each has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically.
-- Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing dense, matrix, and stacked-subplot plots in any order.
+- Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Three plot types are supported: `"ts"` (stacked subplots), `"dense"`, and `"raster"`. Each has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically.
+- Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing dense, raster, and stacked-subplot plots in any order.
 
-Matrix viewer rendering
-- Matrix/raster plots display discrete events as vertical line segments.
+Raster viewer rendering
+- Raster/raster plots display discrete events as vertical line segments.
 - Each event is drawn as a vertical line at its timestamp, spanning from `(row + 0.5 - height)` to `(row + 0.5 + height)` where height is the configurable event height.
 - Alpha values from the data are multiplied by a brightness factor (default 1.0, adjustable 0.2–3.0) before rendering.
 - For performance, events are grouped by quantized alpha levels (11 levels) and rendered as batched line segments using `PlotDataItem` with `connect='pairs'`.
 - Only events within the current time window are rendered, using binary search on sorted timestamps.
 - Downsampling is applied if too many events are visible (>10,000) to maintain responsiveness.
-- Matrix plots are X‑linked with time series plots and share the same cursor, selection, and labeling system.
-- Proportional sizing mode adjusts row heights based on matrix row counts; the matrix share boost adjusts the relative space between time series and matrix plots (no bounds, allowing extreme customization).
-- Individual plot heights can be further customized via the Subplot Control Board, which interacts with matrix proportional sizing when enabled.
+- Raster plots are X‑linked with time series plots and share the same cursor, selection, and labeling system.
+- Proportional sizing mode adjusts row heights based on raster row counts; the raster share boost adjusts the relative space between time series and raster plots (no bounds, allowing extreme customization).
+- Individual plot heights can be further customized via the Subplot Control Board, which interacts with raster proportional sizing when enabled.
 
 Performance notes
 - OpenGL is enabled in pyqtgraph config when available; antialiasing is off for speed.

@@ -9,9 +9,9 @@ from PySide6 import QtCore, QtWidgets
 
 import loupe.app as loupe_app
 from loupe.app import (
-    MATRIX_ALPHA_LEVEL_COUNT,
+    RASTER_ALPHA_LEVEL_COUNT,
     LoupeApp,
-    MatrixSeries,
+    RasterSeries,
     Series,
 )
 from loupe.state_config import load_state_config
@@ -47,8 +47,8 @@ def loupe_factory(monkeypatch, qapp):
     def _make_window(
         *,
         n_series: int = 3,
-        include_matrix: bool = False,
-        categorical_matrix: bool = False,
+        include_raster: bool = False,
+        categorical_raster: bool = False,
     ) -> LoupeApp:
         series = [
             Series(
@@ -58,17 +58,17 @@ def loupe_factory(monkeypatch, qapp):
             )
             for i in range(n_series)
         ]
-        matrix_series_list = None
-        if include_matrix:
+        raster_series_list = None
+        if include_raster:
             timestamps = np.linspace(0.0, 60.0, 240, dtype=float)
             yvals = (np.arange(240) % 6).astype(int)
             alphas = np.linspace(0.1, 1.0, 240, dtype=float)
-            if categorical_matrix:
+            if categorical_raster:
                 # 3 categories, interleaved so every window slice sees a mix.
                 category_index = (np.arange(240) % 3).astype(np.int16)
                 category_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
-                matrix_series_list = [
-                    MatrixSeries(
+                raster_series_list = [
+                    RasterSeries(
                         name="events",
                         timestamps=timestamps,
                         yvals=yvals,
@@ -80,8 +80,8 @@ def loupe_factory(monkeypatch, qapp):
                     )
                 ]
             else:
-                matrix_series_list = [
-                    MatrixSeries(
+                raster_series_list = [
+                    RasterSeries(
                         name="events",
                         timestamps=timestamps,
                         yvals=yvals,
@@ -94,7 +94,7 @@ def loupe_factory(monkeypatch, qapp):
         window = LoupeApp(
             xr_series=series,
             fixed_scale=True,
-            matrix_series_list=matrix_series_list,
+            raster_series_list=raster_series_list,
             state_config=_test_state_config(),
         )
         qapp.processEvents()
@@ -186,7 +186,7 @@ def test_segment_for_window_matches_reference():
 
 
 def test_refresh_curves_skips_hidden_traces(loupe_factory, monkeypatch, qapp):
-    window = loupe_factory(n_series=4, include_matrix=False)
+    window = loupe_factory(n_series=4, include_raster=False)
     window.trace_visible = [True, False, True, False]
     window._apply_trace_visibility()
     qapp.processEvents()
@@ -209,49 +209,49 @@ def test_refresh_curves_skips_hidden_traces(loupe_factory, monkeypatch, qapp):
     assert sorted(updated_indices) == [0, 2]
 
 
-def test_matrix_refresh_reuses_items_and_skips_hidden(loupe_factory, monkeypatch, qapp):
-    window = loupe_factory(n_series=1, include_matrix=True)
-    assert len(window._matrix_line_items) == 1
+def test_raster_refresh_reuses_items_and_skips_hidden(loupe_factory, monkeypatch, qapp):
+    window = loupe_factory(n_series=1, include_raster=True)
+    assert len(window._raster_line_items) == 1
     # Non-categorical raster: outer list has length 1 (single synthetic
-    # category) and the inner list holds MATRIX_ALPHA_LEVEL_COUNT items.
-    assert len(window._matrix_line_items[0]) == 1
-    assert len(window._matrix_line_items[0][0]) == MATRIX_ALPHA_LEVEL_COUNT
+    # category) and the inner list holds RASTER_ALPHA_LEVEL_COUNT items.
+    assert len(window._raster_line_items[0]) == 1
+    assert len(window._raster_line_items[0][0]) == RASTER_ALPHA_LEVEL_COUNT
 
-    initial_line_items = list(window._matrix_line_items[0])
+    initial_line_items = list(window._raster_line_items[0])
     window.window_start = 20.0
-    window._refresh_matrix_plots()
+    window._refresh_raster_plots()
     qapp.processEvents()
 
-    assert window._matrix_line_items[0] == initial_line_items
+    assert window._raster_line_items[0] == initial_line_items
 
     calls = []
-    original = window._matrix_segment_for_window
+    original = window._raster_segment_for_window
 
     def counting_segment(*args, **kwargs):
         calls.append(1)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(window, "_matrix_segment_for_window", counting_segment)
-    window.matrix_visible = [False]
-    window._refresh_matrix_plots()
+    monkeypatch.setattr(window, "_raster_segment_for_window", counting_segment)
+    window.raster_visible = [False]
+    window._refresh_raster_plots()
     qapp.processEvents()
 
     assert calls == []
 
 
-def test_refresh_matrix_plots_categorical(loupe_factory, qapp):
+def test_refresh_raster_plots_categorical(loupe_factory, qapp):
     """Categorical raster: line items are nested by [category][alpha_level],
-    `_refresh_matrix_plots` runs without crashing, and per-event events land
+    `_refresh_raster_plots` runs without crashing, and per-event events land
     in the correct (category, alpha) bucket.
     """
-    window = loupe_factory(n_series=1, include_matrix=True, categorical_matrix=True)
-    grid = window._matrix_line_items[0]
+    window = loupe_factory(n_series=1, include_raster=True, categorical_raster=True)
+    grid = window._raster_line_items[0]
     assert len(grid) == 3  # 3 categories
-    assert all(len(cat_items) == MATRIX_ALPHA_LEVEL_COUNT for cat_items in grid)
+    assert all(len(cat_items) == RASTER_ALPHA_LEVEL_COUNT for cat_items in grid)
 
     window.window_start = 0.0
     window.window_len = 60.0
-    window._refresh_matrix_plots()
+    window._refresh_raster_plots()
     qapp.processEvents()
 
     # Each category should have populated at least one alpha bucket with data
@@ -271,7 +271,7 @@ def test_request_video_frame_suppresses_duplicate_nearest_indices(
 ):
     from loupe.app import VideoSlot, VideoWorker
 
-    window = loupe_factory(n_series=1, include_matrix=False)
+    window = loupe_factory(n_series=1, include_raster=False)
     # Test fixture creates LoupeApps with no video_configs, so attach a
     # synthetic slot just for this test.
     thread = QtCore.QThread(window)
@@ -309,7 +309,7 @@ def test_request_video_frame_suppresses_duplicate_nearest_indices(
 
 
 def test_window_label_visuals_only_materialize_current_window(loupe_factory, qapp):
-    window = loupe_factory(n_series=2, include_matrix=True)
+    window = loupe_factory(n_series=2, include_raster=True)
     window.window_len = 10.0
     window.window_start = 0.0
     wake_id = window.label_set.add(0.0, 5.0, "Wake")
@@ -325,7 +325,7 @@ def test_window_label_visuals_only_materialize_current_window(loupe_factory, qap
 def test_paging_swaps_window_label_visuals_without_rebuilding_hypnogram(
     loupe_factory, qapp
 ):
-    window = loupe_factory(n_series=1, include_matrix=False)
+    window = loupe_factory(n_series=1, include_raster=False)
     window.window_len = 10.0
     window.window_start = 0.0
     wake_id = window.label_set.add(0.0, 5.0, "Wake")
@@ -348,7 +348,7 @@ def test_paging_swaps_window_label_visuals_without_rebuilding_hypnogram(
 
 
 def test_visibility_changes_rebuild_window_label_visuals(loupe_factory, qapp):
-    window = loupe_factory(n_series=1, include_matrix=True)
+    window = loupe_factory(n_series=1, include_raster=True)
     window.window_len = 10.0
     window.window_start = 0.0
     wake_id = window.label_set.add(0.0, 5.0, "Wake")
@@ -357,7 +357,7 @@ def test_visibility_changes_rebuild_window_label_visuals(loupe_factory, qapp):
 
     bundle = window._label_visuals[wake_id]
     assert len(bundle.plot_regions) == 1
-    assert len(bundle.matrix_regions) == 1
+    assert len(bundle.raster_regions) == 1
 
     window.trace_visible = [False]
     window._apply_trace_visibility()
@@ -365,9 +365,9 @@ def test_visibility_changes_rebuild_window_label_visuals(loupe_factory, qapp):
 
     bundle = window._label_visuals[wake_id]
     assert len(bundle.plot_regions) == 0
-    assert len(bundle.matrix_regions) == 1
+    assert len(bundle.raster_regions) == 1
 
-    window.matrix_visible = [False]
+    window.raster_visible = [False]
     window._apply_trace_visibility()
     qapp.processEvents()
 
@@ -375,10 +375,10 @@ def test_visibility_changes_rebuild_window_label_visuals(loupe_factory, qapp):
     assert wake_id in window._hypnogram_label_visuals
 
     window.trace_visible = [True]
-    window.matrix_visible = [True]
+    window.raster_visible = [True]
     window._apply_trace_visibility()
     qapp.processEvents()
 
     bundle = window._label_visuals[wake_id]
     assert len(bundle.plot_regions) == 1
-    assert len(bundle.matrix_regions) == 1
+    assert len(bundle.raster_regions) == 1

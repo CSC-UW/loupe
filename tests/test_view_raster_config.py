@@ -50,7 +50,7 @@ def test_color_on_precedence_over_color():
             ),
             state_definitions=_EXAMPLE_STATE_DEFS,
         )
-    ms = w.matrix_series[0]
+    ms = w.raster_series[0]
     # Per-event coloring populated; the legacy single-color override was
     # NOT applied (otherwise ms.color would be red AND category_colors None).
     assert ms.category_index is not None
@@ -69,7 +69,7 @@ def test_color_on_precedence_over_colors():
             ),
             state_definitions=_EXAMPLE_STATE_DEFS,
         )
-    ms = w.matrix_series[0]
+    ms = w.raster_series[0]
     assert ms.category_index is not None
     w.close()
 
@@ -84,7 +84,7 @@ def test_color_alone_still_applied_when_color_on_absent():
             RasterConfig(df, color="#a020f0"),
             state_definitions=_EXAMPLE_STATE_DEFS,
         )
-    ms = w.matrix_series[0]
+    ms = w.raster_series[0]
     assert ms.color == (160, 32, 240)
     assert ms.category_index is None
     w.close()

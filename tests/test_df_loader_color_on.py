@@ -1,5 +1,5 @@
 """Tests for the `color_on` / `color_on_config` features of
-`dataframe_to_matrix_series`. These exercise the categorical-coloring data
+`dataframe_to_raster_series`. These exercise the categorical-coloring data
 plumbing without touching the renderer."""
 
 import os
@@ -12,8 +12,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from loupe.app import MATRIX_MAX_CATEGORIES, MATRIX_NA_COLOR
-from loupe.df_loader import _DEFAULT_COLORS, dataframe_to_matrix_series
+from loupe.app import RASTER_MAX_CATEGORIES, RASTER_NA_COLOR
+from loupe.df_loader import _DEFAULT_COLORS, dataframe_to_raster_series
 
 
 def _basic_df(n: int = 30, seed: int = 0) -> pl.DataFrame:
@@ -28,7 +28,7 @@ def _basic_df(n: int = 30, seed: int = 0) -> pl.DataFrame:
 
 def test_color_on_basic():
     df = _basic_df()
-    out = dataframe_to_matrix_series(
+    out = dataframe_to_raster_series(
         df,
         color_on="cat",
         color_on_config={
@@ -52,7 +52,7 @@ def test_color_on_missing_config_no_warning():
     df = _basic_df()
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # Any warning becomes a test failure.
-        out = dataframe_to_matrix_series(df, color_on="cat")
+        out = dataframe_to_raster_series(df, color_on="cat")
     ms = out[0]
     # 3 sorted unique values → first 3 entries from the default palette.
     assert ms.category_colors == list(_DEFAULT_COLORS[:3])
@@ -61,7 +61,7 @@ def test_color_on_missing_config_no_warning():
 def test_color_on_partial_config_warns():
     df = _basic_df()
     with pytest.warns(UserWarning, match="missing entries"):
-        out = dataframe_to_matrix_series(
+        out = dataframe_to_raster_series(
             df,
             color_on="cat",
             color_on_config={"a": (123, 45, 67)},
@@ -89,7 +89,7 @@ def test_color_on_with_alpha_col_preserves_parallel_order():
     # post-sort category_index matches.
     df = df.with_columns(pl.arange(0, n).alias("orig_idx"))
 
-    out = dataframe_to_matrix_series(
+    out = dataframe_to_raster_series(
         df, color_on="cat", alpha_col="snr",
     )
     ms = out[0]
@@ -111,14 +111,14 @@ def test_color_on_with_alpha_col_preserves_parallel_order():
 def test_color_on_with_group_col_shared_palette():
     # Two DMD groups; cat=c appears in both but cat=a only in group 1 and
     # cat=b only in group 2. The shared palette must still emit identical
-    # category_colors across the two MatrixSeries and stable indices.
+    # category_colors across the two RasterSeries and stable indices.
     df = pl.DataFrame({
         "time":      [0.1, 0.2, 0.3, 1.1, 1.2, 1.3],
         "source_id": [0,   1,   0,   0,   1,   0],
         "dmd":       [1,   1,   1,   2,   2,   2],
         "cat":       ["a", "c", "a", "b", "c", "c"],
     })
-    out = dataframe_to_matrix_series(
+    out = dataframe_to_raster_series(
         df,
         group_col="dmd",
         color_on="cat",
@@ -144,35 +144,35 @@ def test_color_on_with_nulls_appends_na_category():
         "cat":       ["a", None, "b", None],
     })
     with pytest.warns(UserWarning, match="null values"):
-        out = dataframe_to_matrix_series(df, color_on="cat")
+        out = dataframe_to_raster_series(df, color_on="cat")
     ms = out[0]
     # 2 real categories (a, b) + 1 NA category appended at the end.
     assert len(ms.category_colors) == 3
-    assert ms.category_colors[-1] == MATRIX_NA_COLOR
+    assert ms.category_colors[-1] == RASTER_NA_COLOR
     # Null events get category_index == 2 (NA position).
     assert list(ms.category_index) == [0, 2, 1, 2]
 
 
 def test_color_on_too_many_categories_raises():
-    n = MATRIX_MAX_CATEGORIES + 1
+    n = RASTER_MAX_CATEGORIES + 1
     df = pl.DataFrame({
         "time": np.linspace(0.0, 1.0, n),
         "source_id": np.arange(n),
         "cat": [f"cat_{i}" for i in range(n)],
     })
-    with pytest.raises(ValueError, match="MATRIX_MAX_CATEGORIES"):
-        dataframe_to_matrix_series(df, color_on="cat")
+    with pytest.raises(ValueError, match="RASTER_MAX_CATEGORIES"):
+        dataframe_to_raster_series(df, color_on="cat")
 
 
 def test_color_on_missing_column_raises():
     df = _basic_df()
     with pytest.raises(ValueError, match="missing required column"):
-        dataframe_to_matrix_series(df, color_on="not_a_real_column")
+        dataframe_to_raster_series(df, color_on="not_a_real_column")
 
 
 def test_color_on_hex_strings_in_config():
     df = _basic_df()
-    out = dataframe_to_matrix_series(
+    out = dataframe_to_raster_series(
         df,
         color_on="cat",
         color_on_config={"a": "#ff8000", "b": "#00ff80", "c": "#8000ff"},
@@ -183,7 +183,7 @@ def test_color_on_hex_strings_in_config():
 
 def test_color_on_none_preserves_legacy_behavior():
     df = _basic_df()
-    out = dataframe_to_matrix_series(df)  # no color_on
+    out = dataframe_to_raster_series(df)  # no color_on
     ms = out[0]
     assert ms.category_index is None
     assert ms.category_colors is None

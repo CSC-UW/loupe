@@ -216,7 +216,7 @@ class RasterConfig:
     time_col : str
         Column containing event timestamps in seconds (default ``"time"``).
     y_col : str
-        Column whose values identify the matrix row for each event
+        Column whose values identify the raster row for each event
         (default ``"source_id"``).
     group_col : str, list[str] or None
         Column(s) used to split this DataFrame into separate raster
@@ -396,7 +396,7 @@ class Zip:
 def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
     """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
 
-    Raster rendering (``MatrixSeries.color``) expects exactly 3 channels —
+    Raster rendering (``RasterSeries.color``) expects exactly 3 channels —
     the alpha is supplied separately per event via ``alpha_col``.
     """
     if isinstance(c, str):
@@ -520,7 +520,7 @@ def view(
         LoupeApp,
         Series,
     )
-    from loupe.df_loader import dataframe_to_matrix_series
+    from loupe.df_loader import dataframe_to_raster_series
     from loupe.xr_loader import (
         convert_event_arrays_aligned_with,
         convert_xarray_inputs_overlay,
@@ -600,7 +600,7 @@ def view(
     any_stacked_color = False
     dense_list: list[DenseGroup] = []
     array_list: list[ArraySeries] = []
-    matrix_list = []
+    raster_list = []
     overlay_groups = None
     overlay_colors: list | None = None
     order_acc: list[tuple[str, int]] = []
@@ -627,7 +627,7 @@ def view(
             overlay_groups = convert_xarray_inputs_overlay(das, item.on)
             overlay_colors = item.colors
         elif isinstance(item, RasterConfig):
-            new_ms = dataframe_to_matrix_series(
+            new_ms = dataframe_to_raster_series(
                 item.data,
                 time_col=item.time_col,
                 y_col=item.y_col,
@@ -651,10 +651,10 @@ def view(
                 resolved = _parse_raster_color(item.color)
                 for ms in new_ms:
                     ms.color = resolved
-            base = len(matrix_list)
-            matrix_list.extend(new_ms)
+            base = len(raster_list)
+            raster_list.extend(new_ms)
             for j in range(len(new_ms)):
-                order_acc.append(("matrix", base + j))
+                order_acc.append(("raster", base + j))
         elif isinstance(item, HeatmapConfig):
             prefix = _prefix_for(item, i)
             new_arrays = dataarray_to_arrays(
@@ -748,12 +748,12 @@ def view(
                 )
 
     # Compute subplot_order, forwarded only if it deviates from the default
-    # (ts → dense → matrix → array) — matches the default ordering inside
+    # (ts → dense → raster → array) — matches the default ordering inside
     # LoupeApp so callers without mixed input never carry a no-op list.
     default_order = (
         [("ts", k) for k in range(len(xr_series))]
         + [("dense", k) for k in range(len(dense_list))]
-        + [("matrix", k) for k in range(len(matrix_list))]
+        + [("raster", k) for k in range(len(raster_list))]
         + [("array", k) for k in range(len(array_list))]
     )
     config_subplot_order = order_acc if order_acc != default_order else None
@@ -762,7 +762,7 @@ def view(
     stacked_colors = stacked_colors_acc if any_stacked_color else None
     dense_groups = dense_list or None
     array_series = array_list or None
-    matrix_series_list = matrix_list or None
+    raster_series_list = raster_list or None
 
     # ---- Qt event loop ----------------------------------------------------
     app = QtWidgets.QApplication.instance()
@@ -823,7 +823,7 @@ def view(
 
     w = LoupeApp(
         xr_series=xr_series_out,
-        matrix_series_list=matrix_series_list,
+        raster_series_list=raster_series_list,
         overlay_groups=overlay_groups,
         overlay_colors=overlay_colors,
         dense_groups=dense_groups,

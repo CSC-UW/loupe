@@ -1,4 +1,4 @@
-"""Convert Polars DataFrames to MatrixSeries for the Loupe viewer.
+"""Convert Polars DataFrames to RasterSeries for the Loupe viewer.
 
 This module has no Qt dependencies.  Polars imports are lazy so the rest of
 the application works without polars installed.
@@ -35,7 +35,7 @@ _DEFAULT_COLORS: list[tuple[int, int, int]] = [
 # ---------------------------------------------------------------------------
 
 
-def dataframe_to_matrix_series(
+def dataframe_to_raster_series(
     df: pl.DataFrame,
     *,
     time_col: str = "time",
@@ -53,7 +53,7 @@ def dataframe_to_matrix_series(
     color_on: str | None = None,
     color_on_config: dict | None = None,
 ) -> list:
-    """Convert a Polars DataFrame into one or more MatrixSeries for raster display.
+    """Convert a Polars DataFrame into one or more RasterSeries for raster display.
 
     Parameters
     ----------
@@ -62,18 +62,18 @@ def dataframe_to_matrix_series(
     time_col : str
         Column containing event timestamps in seconds.
     y_col : str
-        Column whose values identify the matrix row for each event (e.g.
+        Column whose values identify the raster row for each event (e.g.
         ``"source_id"``).  Unique values are mapped to contiguous 0-based
         integer indices within each group.
     group_col : str or list[str] or None
-        Column(s) used to split the DataFrame into separate MatrixSeries
+        Column(s) used to split the DataFrame into separate RasterSeries
         subplots.  Each unique combination of group_col values becomes one
         subplot.  ``None`` means all events share a single subplot.
     alpha_col : str or None
         Column for per-event opacity.  Values are normalized to
         *alpha_range*.  ``None`` gives every event alpha = 1.0.
     name : str
-        Base name for the MatrixSeries.  Group values are appended when
+        Base name for the RasterSeries.  Group values are appended when
         *group_col* is provided (e.g. ``"events: dmd=1"``).
     colors : dict, list, tuple or None
         Color specification per group:
@@ -101,13 +101,13 @@ def dataframe_to_matrix_series(
 
     Returns
     -------
-    list[MatrixSeries]
+    list[RasterSeries]
         One per group (or one total if no grouping).
     """
     from loupe.app import (  # lazy to stay Qt-free at import time
-        MATRIX_MAX_CATEGORIES,
-        MATRIX_NA_COLOR,
-        MatrixSeries,
+        RASTER_MAX_CATEGORIES,
+        RASTER_NA_COLOR,
+        RasterSeries,
     )
     # Lazy import for the color parser to avoid a circular import at module load.
     from loupe import _parse_raster_color
@@ -156,10 +156,10 @@ def dataframe_to_matrix_series(
                 f"sorted ({exc}); use a column with a single, comparable dtype."
             ) from exc
 
-        if len(global_uniques) > MATRIX_MAX_CATEGORIES:
+        if len(global_uniques) > RASTER_MAX_CATEGORIES:
             raise ValueError(
                 f"color_on column {color_on!r} has {len(global_uniques)} unique "
-                f"values, exceeding MATRIX_MAX_CATEGORIES={MATRIX_MAX_CATEGORIES}. "
+                f"values, exceeding RASTER_MAX_CATEGORIES={RASTER_MAX_CATEGORIES}. "
                 f"For high-cardinality columns prefer a colormap-style binning."
             )
 
@@ -186,7 +186,7 @@ def dataframe_to_matrix_series(
         shared_category_colors = [palette[v] for v in global_uniques]
         if df[color_on].null_count() > 0:
             na_idx = len(global_uniques)
-            shared_category_colors = shared_category_colors + [MATRIX_NA_COLOR]
+            shared_category_colors = shared_category_colors + [RASTER_NA_COLOR]
             warnings.warn(
                 f"color_on column {color_on!r} contains "
                 f"{df[color_on].null_count()} null values; rendered as gray.",
@@ -220,7 +220,7 @@ def dataframe_to_matrix_series(
         # single tuple
         return colors  # type: ignore[return-value]
 
-    # ---- build MatrixSeries per group ---------------------------------------
+    # ---- build RasterSeries per group ---------------------------------------
     result: list = []
     for idx, gkey in enumerate(groups):
         # filter to group
@@ -269,7 +269,7 @@ def dataframe_to_matrix_series(
         else:
             cat_idx = None
 
-        # sort by time (required by _matrix_segment_for_window). All per-event
+        # sort by time (required by _raster_segment_for_window). All per-event
         # arrays must be reordered together — including the category index.
         order = np.argsort(timestamps)
         timestamps = timestamps[order]
@@ -288,7 +288,7 @@ def dataframe_to_matrix_series(
         color = _color_for(gkey, idx)
 
         result.append(
-            MatrixSeries(
+            RasterSeries(
                 name=series_name,
                 timestamps=timestamps,
                 yvals=yvals,

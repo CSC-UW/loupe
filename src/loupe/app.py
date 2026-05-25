@@ -66,8 +66,8 @@ class EventLayer:
 
 
 @dataclass
-class MatrixSeries:
-    """Holds data for a matrix/raster subplot."""
+class RasterSeries:
+    """Holds data for a raster subplot."""
 
     name: str
     timestamps: np.ndarray  # 1D array of event times (seconds)
@@ -116,24 +116,24 @@ class LabelVisualBundle:
     """Graphics items used to display a single labelled interval in plot scenes."""
 
     plot_regions: list[tuple[int, pg.LinearRegionItem]]
-    matrix_regions: list[tuple[int, pg.LinearRegionItem]]
+    raster_regions: list[tuple[int, pg.LinearRegionItem]]
     dense_regions: list[tuple[int, pg.LinearRegionItem]]
     hypnogram_region: pg.LinearRegionItem | None
     array_regions: list[tuple[int, pg.LinearRegionItem]] = field(default_factory=list)
 
 
-MATRIX_ALPHA_LEVEL_COUNT = 11
+RASTER_ALPHA_LEVEL_COUNT = 11
 
 # Maximum number of distinct categorical color values supported by `color_on=`.
 # Beyond this, the user almost certainly wants colormap-style binning rather
 # than per-value colors, so we fail loudly. 32 categories × 11 alpha buckets
 # = 352 PlotDataItems per raster subplot — a reasonable upper bound.
-MATRIX_MAX_CATEGORIES = 32
+RASTER_MAX_CATEGORIES = 32
 
 # Color used for events whose `color_on` value is null/None/NaN. Matches the
 # dense plot's _CATEGORY_NA_COLOR gray (sans the alpha channel — raster alpha
 # is per-event, not part of the base color).
-MATRIX_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
+RASTER_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
 
 
 @dataclass
@@ -1440,15 +1440,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         fixed_scale=True,
         low_profile_x: bool | None = None,
         window_len: float = 10.0,
-        # Matrix viewer arguments
-        matrix_timestamps=None,
-        matrix_yvals=None,
-        alpha_vals=None,
-        matrix_colors=None,
+        # Raster viewer arguments
+        raster_timestamps=None,
+        raster_yvals=None,
+        raster_alphas=None,
+        raster_colors=None,
         # xarray series (pre-converted list[Series])
         xr_series=None,
-        # Pre-converted MatrixSeries from df_loader
-        matrix_series_list=None,
+        # Pre-converted RasterSeries from df_loader
+        raster_series_list=None,
         # Overlay mode
         overlay_groups=None,
         overlay_colors=None,
@@ -1456,10 +1456,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         dense_groups=None,
         # Array (heatmap) mode
         array_series=None,
-        # Initial layout order — list of ("ts"|"dense"|"matrix"|"array", idx)
+        # Initial layout order — list of ("ts"|"dense"|"raster"|"array", idx)
         # tuples that specifies the visual subplot order top-to-bottom.
         # When None, falls back to the type-segregated default
-        # (ts → dense → matrix → array). User can still rearrange interactively
+        # (ts → dense → raster → array). User can still rearrange interactively
         # via the Plot Order dialog after launch.
         subplot_order=None,
         # Bool-event marker overlays for stacked-subplots traces.
@@ -1515,26 +1515,26 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_vscroll_proxies: list[QtWidgets.QGraphicsProxyWidget] = []
         self._dense_vscroll_inverted: list[bool] = []
 
-        # Matrix viewer data and plots
-        self.matrix_series: list[MatrixSeries] = []
-        self.matrix_plots: list[pg.PlotItem] = []
-        self.matrix_items: list[pg.ScatterPlotItem | None] = []
-        self.matrix_cur_lines: list[pg.InfiniteLine] = []
-        self.matrix_sel_regions: list[pg.LinearRegionItem] = []
-        # Shape: [matrix_idx][category_idx][alpha_level] -> PlotDataItem / QPen.
+        # Raster viewer data and plots
+        self.raster_series: list[RasterSeries] = []
+        self.raster_plots: list[pg.PlotItem] = []
+        self.raster_items: list[pg.ScatterPlotItem | None] = []
+        self.raster_cur_lines: list[pg.InfiniteLine] = []
+        self.raster_sel_regions: list[pg.LinearRegionItem] = []
+        # Shape: [raster_idx][category_idx][alpha_level] -> PlotDataItem / QPen.
         # For non-categorical raster series the outer category dim is length 1.
-        self._matrix_line_items: list[list[list[pg.PlotDataItem]]] = []
-        self._matrix_pens: list[list[list[QtGui.QPen]]] = []
-        # Matrix rendering settings
-        self.matrix_event_height = (
+        self._raster_line_items: list[list[list[pg.PlotDataItem]]] = []
+        self._raster_pens: list[list[list[QtGui.QPen]]] = []
+        # Raster rendering settings
+        self.raster_event_height = (
             0.1  # distance from center in each direction (0.1-0.5)
         )
-        self.matrix_event_thickness = 1  # pen width in pixels
-        self.scale_matrix_proportionally = False  # toggled via View menu
-        self.matrix_share_boost = (
-            0  # adjustment to matrix share (each unit = 5%, no bounds)
+        self.raster_event_thickness = 1  # pen width in pixels
+        self.scale_raster_proportionally = False  # toggled via View menu
+        self.raster_share_boost = (
+            0  # adjustment to raster share (each unit = 5%, no bounds)
         )
-        self.matrix_brightness = (
+        self.raster_brightness = (
             1.0  # brightness multiplier for alpha values (0.2 to 3.0)
         )
         # alpha multiplier for label overlay regions (0.0 to 1.0)
@@ -1554,9 +1554,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.label_alpha_multiplier = float(label_alpha)
         # Custom height factors for individual plot height control (1.0 = default)
         self.plot_height_factors: list[float] = []  # one per time series plot
-        self.matrix_height_factors: list[float] = []  # one per matrix plot
-        # Visibility flags for matrix plots (similar to trace_visible for time series)
-        self.matrix_visible: list[bool] = []
+        self.raster_height_factors: list[float] = []  # one per raster plot
+        # Visibility flags for raster plots (similar to trace_visible for time series)
+        self.raster_visible: list[bool] = []
 
         # Array (heatmap) plots
         self.array_series: list[ArraySeries] = []
@@ -1566,7 +1566,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.array_sel_regions: list[pg.LinearRegionItem] = []
         self.array_height_factors: list[float] = []
         self.array_visible: list[bool] = []
-        # Proportional sizing (mirror matrix-plot behaviour). On by default
+        # Proportional sizing (mirror raster-plot behaviour). On by default
         # because most users prefer per-row weighting for heatmaps.
         self.scale_array_proportionally = True
         self.array_share_boost = 0  # each unit = 5%, no bounds
@@ -1579,8 +1579,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._array_cache_keys: list[tuple | None] = []
         # Cache uint8 RGBA LUTs by colormap name (built once per name)
         self._lut_cache: dict[str, np.ndarray] = {}
-        # Plot order: list of (type, index) tuples, e.g., [("ts", 0), ("ts", 1), ("matrix", 0)]
-        # None means use default order (all ts first, then all matrix)
+        # Plot order: list of (type, index) tuples, e.g., [("ts", 0), ("ts", 1), ("raster", 0)]
+        # None means use default order (all ts first, then all raster)
         self.subplot_order: list[tuple] | None = None
 
         # Rendering budget (per plot)
@@ -1771,33 +1771,33 @@ class LoupeApp(QtWidgets.QMainWindow):
             if slot.video_path and slot.frame_times_path:
                 self._load_video_data(slot, slot.video_path, slot.frame_times_path)
 
-        # Load matrix viewer data if provided
-        if matrix_timestamps and matrix_yvals:
-            self._load_matrix_data(
-                matrix_timestamps, matrix_yvals, alpha_vals, matrix_colors
+        # Load raster viewer data if provided
+        if raster_timestamps and raster_yvals:
+            self._load_raster_data(
+                raster_timestamps, raster_yvals, raster_alphas, raster_colors
             )
 
-        # Load pre-converted MatrixSeries (from df_loader)
-        if matrix_series_list:
-            self.matrix_series = matrix_series_list
+        # Load pre-converted RasterSeries (from df_loader)
+        if raster_series_list:
+            self.raster_series = raster_series_list
             self._refresh_low_profile_x()
-            self.matrix_height_factors = [1.0] * len(matrix_series_list)
-            self.matrix_visible = [True] * len(matrix_series_list)
+            self.raster_height_factors = [1.0] * len(raster_series_list)
+            self.raster_visible = [True] * len(raster_series_list)
             self.subplot_order = None
             self._update_status(
-                f"Loaded {len(matrix_series_list)} matrix series from DataFrame."
+                f"Loaded {len(raster_series_list)} raster series from DataFrame."
             )
             if self.series:
                 self._rebuild_all_plots()
             else:
-                self._update_time_range_from_matrix()
-                self._create_matrix_only_plots()
+                self._update_time_range_from_raster()
+                self._create_raster_only_plots()
 
     def _refresh_low_profile_x(self) -> None:
         """Update low-profile X mode from explicit preference or subplot count."""
         total_subplots = (
             len(self.series)
-            + len(self.matrix_series)
+            + len(self.raster_series)
             + len(self.dense_groups)
             + len(self.array_series)
         )
@@ -1971,8 +1971,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         b = QtGui.QAction("Load &Video && Frame Times…", self)
         b.triggered.connect(self._on_load_video)
         mfile.addAction(b)
-        m = QtGui.QAction("Load &Matrix Data…", self)
-        m.triggered.connect(self._on_load_matrix_data)
+        m = QtGui.QAction("Load &Raster Data…", self)
+        m.triggered.connect(self._on_load_raster_data)
         mfile.addAction(m)
         mfile.addSeparator()
 
@@ -2062,30 +2062,30 @@ class LoupeApp(QtWidgets.QMainWindow):
         playback_speed_action.triggered.connect(self._adjust_playback_speed)
         mview.addAction(playback_speed_action)
 
-        # Matrix viewer settings
+        # Raster viewer settings
         mview.addSeparator()
-        self.action_proportional_matrix = QtGui.QAction(
-            "Proportional Matrix Plots", self
+        self.action_proportional_raster = QtGui.QAction(
+            "Proportional Raster Plots", self
         )
-        self.action_proportional_matrix.setCheckable(True)
-        self.action_proportional_matrix.setChecked(self.scale_matrix_proportionally)
-        self.action_proportional_matrix.setShortcut(QtGui.QKeySequence("Ctrl+Shift+M"))
-        self.action_proportional_matrix.toggled.connect(
-            self._toggle_proportional_matrix
+        self.action_proportional_raster.setCheckable(True)
+        self.action_proportional_raster.setChecked(self.scale_raster_proportionally)
+        self.action_proportional_raster.setShortcut(QtGui.QKeySequence("Ctrl+Shift+R"))
+        self.action_proportional_raster.toggled.connect(
+            self._toggle_proportional_raster
         )
-        mview.addAction(self.action_proportional_matrix)
+        mview.addAction(self.action_proportional_raster)
 
-        increase_matrix_share_action = QtGui.QAction("Increase Matrix Share", self)
-        increase_matrix_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+,"))
-        increase_matrix_share_action.triggered.connect(self._increase_matrix_share)
-        mview.addAction(increase_matrix_share_action)
+        increase_raster_share_action = QtGui.QAction("Increase Raster Share", self)
+        increase_raster_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+,"))
+        increase_raster_share_action.triggered.connect(self._increase_raster_share)
+        mview.addAction(increase_raster_share_action)
 
-        decrease_matrix_share_action = QtGui.QAction("Decrease Matrix Share", self)
-        decrease_matrix_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+."))
-        decrease_matrix_share_action.triggered.connect(self._decrease_matrix_share)
-        mview.addAction(decrease_matrix_share_action)
+        decrease_raster_share_action = QtGui.QAction("Decrease Raster Share", self)
+        decrease_raster_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+."))
+        decrease_raster_share_action.triggered.connect(self._decrease_raster_share)
+        mview.addAction(decrease_raster_share_action)
 
-        # Array (heatmap) sizing — mirror the matrix triplet
+        # Array (heatmap) sizing — mirror the raster triplet
         self.action_proportional_array = QtGui.QAction(
             "Proportional Array Plots", self
         )
@@ -2117,22 +2117,22 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         mview.addAction(self.action_compact_arrays_to_fit)
 
-        matrix_brightness_action = QtGui.QAction("Adjust Matrix Brightness...", self)
-        matrix_brightness_action.triggered.connect(self._adjust_matrix_brightness)
-        mview.addAction(matrix_brightness_action)
+        raster_brightness_action = QtGui.QAction("Adjust Raster Brightness...", self)
+        raster_brightness_action.triggered.connect(self._adjust_raster_brightness)
+        mview.addAction(raster_brightness_action)
 
         label_alpha_action = QtGui.QAction("Adjust Label Alpha...", self)
         label_alpha_action.triggered.connect(self._adjust_label_alpha)
         mview.addAction(label_alpha_action)
 
         mview.addSeparator()
-        matrix_height_action = QtGui.QAction("Matrix Event Height...", self)
-        matrix_height_action.triggered.connect(self._adjust_matrix_event_height)
-        mview.addAction(matrix_height_action)
+        raster_height_action = QtGui.QAction("Raster Event Height...", self)
+        raster_height_action.triggered.connect(self._adjust_raster_event_height)
+        mview.addAction(raster_height_action)
 
-        matrix_thickness_action = QtGui.QAction("Matrix Event Thickness...", self)
-        matrix_thickness_action.triggered.connect(self._adjust_matrix_event_thickness)
-        mview.addAction(matrix_thickness_action)
+        raster_thickness_action = QtGui.QAction("Raster Event Thickness...", self)
+        raster_thickness_action.triggered.connect(self._adjust_raster_event_thickness)
+        mview.addAction(raster_thickness_action)
 
         mview.addSeparator()
         array_ctrl_action = QtGui.QAction("Array Plot Controls...", self)
@@ -2200,63 +2200,63 @@ class LoupeApp(QtWidgets.QMainWindow):
             q = round(float(val) / 0.25) * 0.25
             self.playback_speed = float(max(0.25, min(4.0, q)))
 
-    def _adjust_matrix_event_height(self):
-        """Adjust the height of matrix event lines (distance from center in each direction)."""
+    def _adjust_raster_event_height(self):
+        """Adjust the height of raster event lines (distance from center in each direction)."""
         try:
             val, ok = QtWidgets.QInputDialog.getDouble(
                 self,
-                "Matrix Event Height",
+                "Raster Event Height",
                 "Event height (0.1 - 0.5, distance from row center):",
-                float(self.matrix_event_height),
+                float(self.raster_event_height),
                 0.1,
                 0.5,
                 2,
             )
         except Exception:
-            val, ok = (self.matrix_event_height, False)
+            val, ok = (self.raster_event_height, False)
         if ok:
-            self.matrix_event_height = float(max(0.1, min(0.5, val)))
-            self._refresh_matrix_plots()
+            self.raster_event_height = float(max(0.1, min(0.5, val)))
+            self._refresh_raster_plots()
 
-    def _adjust_matrix_event_thickness(self):
-        """Adjust the pen width of matrix event lines (in pixels)."""
+    def _adjust_raster_event_thickness(self):
+        """Adjust the pen width of raster event lines (in pixels)."""
         try:
             val, ok = QtWidgets.QInputDialog.getInt(
                 self,
-                "Matrix Event Thickness",
+                "Raster Event Thickness",
                 "Event line thickness (pixels, 1-10):",
-                int(self.matrix_event_thickness),
+                int(self.raster_event_thickness),
                 1,
                 10,
                 1,
             )
         except Exception:
-            val, ok = (self.matrix_event_thickness, False)
+            val, ok = (self.raster_event_thickness, False)
         if ok:
-            self.matrix_event_thickness = int(max(1, min(10, val)))
-            self._refresh_matrix_pen_cache()
-            self._refresh_matrix_plots()
+            self.raster_event_thickness = int(max(1, min(10, val)))
+            self._refresh_raster_pen_cache()
+            self._refresh_raster_plots()
 
-    def _toggle_proportional_matrix(self, checked: bool):
-        """Toggle proportional matrix plot sizing on/off."""
-        self.scale_matrix_proportionally = checked
+    def _toggle_proportional_raster(self, checked: bool):
+        """Toggle proportional raster plot sizing on/off."""
+        self.scale_raster_proportionally = checked
         self._apply_trace_visibility()  # Rebuilds layout with new sizing
 
-    def _increase_matrix_share(self):
-        """Increase the vertical space share for matrix plots by ~5%."""
-        if not self.matrix_series:
+    def _increase_raster_share(self):
+        """Increase the vertical space share for raster plots by ~5%."""
+        if not self.raster_series:
             return
-        self.matrix_share_boost += 1
+        self.raster_share_boost += 1
         self._apply_trace_visibility()
-        self._update_status(f"Matrix share boost: {self.matrix_share_boost * 5:+d}%")
+        self._update_status(f"Raster share boost: {self.raster_share_boost * 5:+d}%")
 
-    def _decrease_matrix_share(self):
-        """Decrease the vertical space share for matrix plots by ~5%."""
-        if not self.matrix_series:
+    def _decrease_raster_share(self):
+        """Decrease the vertical space share for raster plots by ~5%."""
+        if not self.raster_series:
             return
-        self.matrix_share_boost -= 1
+        self.raster_share_boost -= 1
         self._apply_trace_visibility()
-        self._update_status(f"Matrix share boost: {self.matrix_share_boost * 5:+d}%")
+        self._update_status(f"Raster share boost: {self.raster_share_boost * 5:+d}%")
 
     def _toggle_proportional_array(self, checked: bool):
         """Toggle proportional array plot sizing on/off."""
@@ -2279,37 +2279,37 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_trace_visibility()
         self._update_status(f"Array share boost: {self.array_share_boost * 5:+d}%")
 
-    def _adjust_matrix_brightness(self):
-        """Show a dialog to adjust matrix event brightness."""
-        if not self.matrix_series:
+    def _adjust_raster_brightness(self):
+        """Show a dialog to adjust raster event brightness."""
+        if not self.raster_series:
             QtWidgets.QMessageBox.information(
-                self, "Matrix Brightness", "No matrix plots loaded."
+                self, "Raster Brightness", "No raster plots loaded."
             )
             return
 
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Adjust Matrix Brightness")
+        dlg.setWindowTitle("Adjust Raster Brightness")
         lay = QtWidgets.QVBoxLayout(dlg)
 
         label = QtWidgets.QLabel(
-            "Adjust brightness multiplier for matrix events.\n"
+            "Adjust brightness multiplier for raster events.\n"
             "1.0 = default, <1.0 = dimmer, >1.0 = brighter"
         )
         lay.addWidget(label)
 
         slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         slider.setRange(20, 300)  # 0.2 to 3.0
-        slider.setValue(int(self.matrix_brightness * 100))
+        slider.setValue(int(self.raster_brightness * 100))
         lay.addWidget(slider)
 
-        val_label = QtWidgets.QLabel(f"{self.matrix_brightness:.2f}")
+        val_label = QtWidgets.QLabel(f"{self.raster_brightness:.2f}")
         lay.addWidget(val_label)
 
         def on_change(val):
             brightness = val / 100.0
             val_label.setText(f"{brightness:.2f}")
-            self.matrix_brightness = brightness
-            self._refresh_matrix_plots()
+            self.raster_brightness = brightness
+            self._refresh_raster_plots()
 
         slider.valueChanged.connect(on_change)
 
@@ -2446,7 +2446,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 reg.setBrush(brush)
                 for line in reg.lines:
                     line.setPen(pen)
-            for _i, reg in bundle.matrix_regions:
+            for _i, reg in bundle.raster_regions:
                 reg.setBrush(brush)
                 for line in reg.lines:
                     line.setPen(pen)
@@ -2758,7 +2758,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         total_subplots = (
             n_ts_plots
             + len(self.dense_groups)
-            + len(self.matrix_series)
+            + len(self.raster_series)
             + len(self.array_series)
         )
         if total_subplots == 0:
@@ -2770,16 +2770,16 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Ensure all control lists are properly sized
         while len(self.plot_height_factors) < n_ts_plots:
             self.plot_height_factors.append(1.0)
-        while len(self.matrix_height_factors) < len(self.matrix_series):
-            self.matrix_height_factors.append(1.0)
+        while len(self.raster_height_factors) < len(self.raster_series):
+            self.raster_height_factors.append(1.0)
         while len(self.dense_height_factors) < len(self.dense_groups):
             self.dense_height_factors.append(1.0)
         while len(self.array_height_factors) < len(self.array_series):
             self.array_height_factors.append(1.0)
         if not hasattr(self, "trace_visible") or len(self.trace_visible) != n_ts_plots:
             self.trace_visible = [True] * n_ts_plots
-        while len(self.matrix_visible) < len(self.matrix_series):
-            self.matrix_visible.append(True)
+        while len(self.raster_visible) < len(self.raster_series):
+            self.raster_visible.append(True)
         while len(self.dense_visible) < len(self.dense_groups):
             self.dense_visible.append(True)
         while len(self.array_visible) < len(self.array_series):
@@ -2792,8 +2792,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self.subplot_order.append(("ts", i))
             for i in range(len(self.dense_groups)):
                 self.subplot_order.append(("dense", i))
-            for i in range(len(self.matrix_series)):
-                self.subplot_order.append(("matrix", i))
+            for i in range(len(self.raster_series)):
+                self.subplot_order.append(("raster", i))
             for i in range(len(self.array_series)):
                 self.subplot_order.append(("array", i))
 
@@ -2849,10 +2849,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                 n = asx.Y.shape[0]
                 display_name = f"[Array/{n}] {name}"
             else:
-                name = self.matrix_series[idx].name
-                factor = self.matrix_height_factors[idx]
-                visible = self.matrix_visible[idx]
-                display_name = f"[Matrix] {name}"
+                name = self.raster_series[idx].name
+                factor = self.raster_height_factors[idx]
+                visible = self.raster_visible[idx]
+                display_name = f"[Raster] {name}"
 
             widget = QtWidgets.QWidget()
             layout = QtWidgets.QHBoxLayout(widget)
@@ -2897,7 +2897,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 elif plot_type == "array":
                     self.array_height_factors[idx] = new_factor
                 else:
-                    self.matrix_height_factors[idx] = new_factor
+                    self.raster_height_factors[idx] = new_factor
                 val_label.setText(f"{new_factor:.2f}x")
                 self._apply_trace_visibility()
 
@@ -2913,7 +2913,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 elif plot_type == "array":
                     self.array_visible[idx] = is_visible
                 else:
-                    self.matrix_visible[idx] = is_visible
+                    self.raster_visible[idx] = is_visible
                 self._apply_trace_visibility()
 
             hide_check.stateChanged.connect(on_hide_changed)
@@ -2935,7 +2935,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 valid = True
             elif plot_type == "dense" and idx < len(self.dense_groups):
                 valid = True
-            elif plot_type == "matrix" and idx < len(self.matrix_series):
+            elif plot_type == "raster" and idx < len(self.raster_series):
                 valid = True
             elif plot_type == "array" and idx < len(self.array_series):
                 valid = True
@@ -2979,7 +2979,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 elif rw["type"] == "array":
                     self.array_height_factors[rw["idx"]] = 1.0
                 else:
-                    self.matrix_height_factors[rw["idx"]] = 1.0
+                    self.raster_height_factors[rw["idx"]] = 1.0
                 rw["slider"].blockSignals(False)
             self._apply_trace_visibility()
 
@@ -2999,7 +2999,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 elif rw["type"] == "array":
                     self.array_visible[rw["idx"]] = True
                 else:
-                    self.matrix_visible[rw["idx"]] = True
+                    self.raster_visible[rw["idx"]] = True
                 rw["hide_check"].blockSignals(False)
             self._apply_trace_visibility()
 
@@ -3020,8 +3020,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self.subplot_order.append(("ts", i))
             for i in range(len(self.dense_groups)):
                 self.subplot_order.append(("dense", i))
-            for i in range(len(self.matrix_series)):
-                self.subplot_order.append(("matrix", i))
+            for i in range(len(self.raster_series)):
+                self.subplot_order.append(("raster", i))
             for i in range(len(self.array_series)):
                 self.subplot_order.append(("array", i))
             # Close and reopen dialog to refresh
@@ -3047,7 +3047,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         first, then — when ``compact_arrays_to_fit`` is on and the natural
         total exceeds the plot-area viewport — scale every array row's
         preferred height down by a single uniform ratio so the visible total
-        matches the viewport (no scrollbar).  Lines and matrix rows keep
+        matches the viewport (no scrollbar).  Lines and raster rows keep
         their natural heights so the shrink is borne entirely by the heatmaps.
         """
         try:
@@ -3108,7 +3108,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                     )
 
                     if self.scale_array_proportionally and asx is not None:
-                        # Mirror matrix proportional sizing: weight by row count.
+                        # Mirror raster proportional sizing: weight by row count.
                         boost_factor = 1.0 + (self.array_share_boost * 0.05)
                         BASE_HEIGHT_PER_ROW = 12 * boost_factor
                         n_rows = max(1, asx.Y.shape[0])
@@ -3122,24 +3122,24 @@ class LoupeApp(QtWidgets.QMainWindow):
                         preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor * 2))
                         stretch = max(1, int(factor * 200))
 
-                else:  # matrix
+                else:  # raster
                     factor = (
-                        self.matrix_height_factors[idx]
-                        if idx < len(self.matrix_height_factors)
+                        self.raster_height_factors[idx]
+                        if idx < len(self.raster_height_factors)
                         else 1.0
                     )
                     plt = (
-                        self.matrix_plots[idx] if idx < len(self.matrix_plots) else None
+                        self.raster_plots[idx] if idx < len(self.raster_plots) else None
                     )
                     ms = (
-                        self.matrix_series[idx]
-                        if idx < len(self.matrix_series)
+                        self.raster_series[idx]
+                        if idx < len(self.raster_series)
                         else None
                     )
 
-                    if self.scale_matrix_proportionally and ms:
+                    if self.scale_raster_proportionally and ms:
                         # Combine proportional scaling with custom factor
-                        boost_factor = 1.0 + (self.matrix_share_boost * 0.05)
+                        boost_factor = 1.0 + (self.raster_share_boost * 0.05)
                         BASE_HEIGHT_PER_ROW = 12 * boost_factor
                         preferred = max(
                             MIN_HEIGHT, int(ms.n_rows * BASE_HEIGHT_PER_ROW * factor)
@@ -3173,9 +3173,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             # ---- Pass 2: apply to layout + per-plot axis tweaks -------------
             for row, (plot_type, idx, plt, factor, preferred, stretch) in enumerate(specs):
                 if plt:
-                    is_matrix_label = (plot_type == "matrix")
+                    is_raster_label = (plot_type == "raster")
                     self._configure_plot_for_height(
-                        plt, factor, is_matrix=is_matrix_label
+                        plt, factor, is_raster=is_raster_label
                     )
                 layout.setRowPreferredHeight(row, preferred)
                 layout.setRowMinimumHeight(row, MIN_HEIGHT)
@@ -3200,7 +3200,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.compact_arrays_to_fit = bool(checked)
         self._apply_custom_plot_heights()
 
-    def _configure_plot_for_height(self, plt, factor, is_matrix=False):
+    def _configure_plot_for_height(self, plt, factor, is_raster=False):
         """Configure plot axis visibility based on height factor."""
         try:
             # For very small plots (below 0.2x), hide axis labels to save space
@@ -3225,8 +3225,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         if not hasattr(self, "trace_visible") or len(self.trace_visible) != n_ts:
             self.trace_visible = [True] * n_ts
-        while len(self.matrix_visible) < len(self.matrix_series):
-            self.matrix_visible.append(True)
+        while len(self.raster_visible) < len(self.raster_series):
+            self.raster_visible.append(True)
         while len(self.dense_visible) < len(self.dense_groups):
             self.dense_visible.append(True)
         while len(self.array_visible) < len(self.array_series):
@@ -3238,7 +3238,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             order = [("ts", i) for i in range(n_ts)]
             order += [("dense", i) for i in range(len(self.dense_groups))]
-            order += [("matrix", i) for i in range(len(self.matrix_series))]
+            order += [("raster", i) for i in range(len(self.raster_series))]
             order += [("array", i) for i in range(len(self.array_series))]
 
         # Filter to only visible plots
@@ -3253,8 +3253,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             elif plot_type == "array":
                 if idx < len(self.array_visible) and self.array_visible[idx]:
                     visible.append((plot_type, idx))
-            else:  # matrix
-                if idx < len(self.matrix_visible) and self.matrix_visible[idx]:
+            else:  # raster
+                if idx < len(self.raster_visible) and self.raster_visible[idx]:
                     visible.append((plot_type, idx))
         return visible
 
@@ -3286,8 +3286,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         if series:
             self.set_series(series)
 
-    def _load_matrix_from_dir(self, folder):
-        """Load matrix series from a directory with *_t.npy, *_y.npy, and optional *_a.npy files."""
+    def _load_raster_from_dir(self, folder):
+        """Load raster series from a directory with *_t.npy, *_y.npy, and optional *_a.npy files."""
         pairs = []
         for tpath in sorted(glob.glob(os.path.join(folder, "*_t.npy"))):
             base = os.path.basename(tpath)[:-6]  # strip "_t.npy"
@@ -3300,7 +3300,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not pairs:
             QtWidgets.QMessageBox.warning(
                 self,
-                "No matrix data",
+                "No raster data",
                 "No *_t.npy / *_y.npy pairs found in the selected directory.",
             )
             return
@@ -3308,14 +3308,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         ts_paths = [p[0] for p in pairs]
         yv_paths = [p[1] for p in pairs]
         al_paths = [p[2] for p in pairs]
-        self._load_matrix_data(ts_paths, yv_paths, al_paths, colors=None)
+        self._load_raster_data(ts_paths, yv_paths, al_paths, colors=None)
 
-    def _on_load_matrix_data(self):
+    def _on_load_raster_data(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select folder with matrix *_t.npy and *_y.npy files"
+            self, "Select folder with raster *_t.npy and *_y.npy files"
         )
         if folder:
-            self._load_matrix_from_dir(folder)
+            self._load_raster_from_dir(folder)
 
     def _load_series_from_files(self, files, colors=None):
         """Load series from an explicit ordered list of *_t.npy / *_y.npy files.
@@ -3494,12 +3494,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_vscrollbars.clear()
         self.dense_vscroll_proxies.clear()
         self._dense_vscroll_inverted.clear()
-        self.matrix_plots.clear()
-        self.matrix_items.clear()
-        self.matrix_cur_lines.clear()
-        self.matrix_sel_regions.clear()
-        self._matrix_line_items.clear()
-        self._matrix_pens.clear()
+        self.raster_plots.clear()
+        self.raster_items.clear()
+        self.raster_cur_lines.clear()
+        self.raster_sel_regions.clear()
+        self._raster_line_items.clear()
+        self._raster_pens.clear()
         self.array_plots.clear()
         self.array_image_items.clear()
         self.array_cur_lines.clear()
@@ -3511,12 +3511,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Reset subplot order when loading new data
         self.subplot_order = None
 
-        # Calculate time range from time series, dense groups, matrix, and array data
+        # Calculate time range from time series, dense groups, raster, and array data
         t_arrays = [s.t for s in self.series]
         for g in self.dense_groups:
             for s in g.series:
                 t_arrays.append(s.t)
-        for ms in self.matrix_series:
+        for ms in self.raster_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
         for asx in self.array_series:
@@ -3526,7 +3526,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.window_start = self.t_global_min
         self.cursor_time = self.window_start
 
-        # Create all plots (time series, dense, matrix, and array)
+        # Create all plots (time series, dense, raster, and array)
         self._create_all_plots()
 
         self._apply_x_range()
@@ -3643,12 +3643,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._plot_to_curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
-        self.matrix_plots.clear()
-        self.matrix_items.clear()
-        self.matrix_cur_lines.clear()
-        self.matrix_sel_regions.clear()
-        self._matrix_line_items.clear()
-        self._matrix_pens.clear()
+        self.raster_plots.clear()
+        self.raster_items.clear()
+        self.raster_cur_lines.clear()
+        self.raster_sel_regions.clear()
+        self._raster_line_items.clear()
+        self._raster_pens.clear()
 
         # Height factors and visibility are per-plot (per overlay group)
         self.plot_height_factors = [1.0] * len(overlay_groups)
@@ -3657,7 +3657,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Calculate time range
         t_arrays = [s.t for s in self.series]
-        for ms in self.matrix_series:
+        for ms in self.raster_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
         self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
@@ -3703,7 +3703,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         tuples = convert_xarray_inputs(data)
         self.set_series([Series(n, t, y) for n, t, y in tuples])
 
-    def set_matrix_df(
+    def set_raster_df(
         self,
         data,
         *,
@@ -3715,7 +3715,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         colors=None,
         alpha_range: tuple[float, float] = (0.3, 1.0),
     ):
-        """Load a Polars DataFrame as matrix/raster plots.
+        """Load a Polars DataFrame as raster plots.
 
         Parameters
         ----------
@@ -3724,20 +3724,20 @@ class LoupeApp(QtWidgets.QMainWindow):
         time_col : str
             Column with event timestamps (seconds).
         y_col : str
-            Column for matrix row assignment.
+            Column for raster row assignment.
         group_col : str or list[str] or None
             Column(s) to split into separate subplots.
         alpha_col : str or None
             Column for per-event opacity.
         name : str
-            Base name for the matrix subplots.
+            Base name for the raster subplots.
         colors : dict, list, tuple or None
             Color specification per group.
         alpha_range : tuple[float, float]
             ``(min_alpha, max_alpha)`` for normalizing *alpha_col*.
         """
         from loupe.df_loader import (
-            dataframe_to_matrix_series,
+            dataframe_to_raster_series,
             load_dataframe_from_parquet,
         )
 
@@ -3747,11 +3747,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not isinstance(data, list):
             data = [data]
 
-        all_ms: list[MatrixSeries] = []
+        all_ms: list[RasterSeries] = []
         for i, mdf in enumerate(data):
             prefix = name if len(data) == 1 else f"{name}_{i}"
             all_ms.extend(
-                dataframe_to_matrix_series(
+                dataframe_to_raster_series(
                     mdf,
                     time_col=time_col,
                     y_col=y_col,
@@ -3766,23 +3766,23 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not all_ms:
             return
 
-        self.matrix_series = all_ms
+        self.raster_series = all_ms
         self._refresh_low_profile_x()
-        self.matrix_height_factors = [1.0] * len(all_ms)
-        self.matrix_visible = [True] * len(all_ms)
+        self.raster_height_factors = [1.0] * len(all_ms)
+        self.raster_visible = [True] * len(all_ms)
         self.subplot_order = None
         if self.series:
             self._rebuild_all_plots()
         else:
-            self._update_time_range_from_matrix()
-            self._create_matrix_only_plots()
+            self._update_time_range_from_raster()
+            self._create_raster_only_plots()
         self._update_status(
-            f"Loaded {len(all_ms)} matrix series from DataFrame."
+            f"Loaded {len(all_ms)} raster series from DataFrame."
         )
 
-    # ---------- Matrix Viewer ----------
-    def _load_matrix_data(self, timestamps_paths, yvals_paths, alpha_paths, colors):
-        """Load matrix/raster data from provided file paths."""
+    # ---------- Raster Viewer ----------
+    def _load_raster_data(self, timestamps_paths, yvals_paths, alpha_paths, colors):
+        """Load raster data from provided file paths."""
 
         def _normalize_list(raw_list):
             if not raw_list:
@@ -3810,8 +3810,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         if len(ts_paths) != len(yv_paths):
             QtWidgets.QMessageBox.warning(
                 self,
-                "Matrix Data",
-                f"matrix_timestamps ({len(ts_paths)}) and matrix_yvals ({len(yv_paths)}) must have same length.",
+                "Raster Data",
+                f"raster_timestamps ({len(ts_paths)}) and raster_yvals ({len(yv_paths)}) must have same length.",
             )
             return
 
@@ -3839,16 +3839,16 @@ class LoupeApp(QtWidgets.QMainWindow):
                 pass
             return None
 
-        matrix_series = []
+        raster_series = []
         for i, (ts_path, yv_path) in enumerate(zip(ts_paths, yv_paths)):
             if not os.path.exists(ts_path):
                 QtWidgets.QMessageBox.warning(
-                    self, "Matrix Data", f"Timestamps file not found: {ts_path}"
+                    self, "Raster Data", f"Timestamps file not found: {ts_path}"
                 )
                 continue
             if not os.path.exists(yv_path):
                 QtWidgets.QMessageBox.warning(
-                    self, "Matrix Data", f"Yvals file not found: {yv_path}"
+                    self, "Raster Data", f"Yvals file not found: {yv_path}"
                 )
                 continue
 
@@ -3893,8 +3893,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                         _bn = _bn[: -len(_suf)]
                         break
                 name = _bn
-                matrix_series.append(
-                    MatrixSeries(
+                raster_series.append(
+                    RasterSeries(
                         name=name,
                         timestamps=timestamps,
                         yvals=yvals,
@@ -3905,41 +3905,41 @@ class LoupeApp(QtWidgets.QMainWindow):
                 )
             except Exception as e:
                 QtWidgets.QMessageBox.warning(
-                    self, "Matrix Load Error", f"Error loading matrix {i}: {e}"
+                    self, "Raster Load Error", f"Error loading raster {i}: {e}"
                 )
                 continue
 
-        if matrix_series:
-            self.matrix_series = matrix_series
+        if raster_series:
+            self.raster_series = raster_series
             self._refresh_low_profile_x()
-            # Initialize height factors and visibility for matrix plots
-            self.matrix_height_factors = [1.0] * len(matrix_series)
-            self.matrix_visible = [True] * len(matrix_series)
-            # Reset subplot order to include new matrix plots
+            # Initialize height factors and visibility for raster plots
+            self.raster_height_factors = [1.0] * len(raster_series)
+            self.raster_visible = [True] * len(raster_series)
+            # Reset subplot order to include new raster plots
             self.subplot_order = None
-            self._update_status(f"Loaded {len(matrix_series)} matrix series.")
-            # Rebuild plots to include matrix series
+            self._update_status(f"Loaded {len(raster_series)} raster series.")
+            # Rebuild plots to include raster series
             if self.series:
                 self._rebuild_all_plots()
             else:
-                # Update time range and create matrix plots if no time series
-                self._update_time_range_from_matrix()
-                self._create_matrix_only_plots()
+                # Update time range and create raster plots if no time series
+                self._update_time_range_from_raster()
+                self._create_raster_only_plots()
 
-    def _update_time_range_from_matrix(self):
-        """Update global time range to include matrix timestamps."""
-        if not self.matrix_series:
+    def _update_time_range_from_raster(self):
+        """Update global time range to include raster timestamps."""
+        if not self.raster_series:
             return
-        for ms in self.matrix_series:
+        for ms in self.raster_series:
             if len(ms.timestamps) > 0:
                 t_min = float(np.min(ms.timestamps))
                 t_max = float(np.max(ms.timestamps))
                 self.t_global_min = min(self.t_global_min, t_min)
                 self.t_global_max = max(self.t_global_max, t_max)
 
-    def _create_matrix_only_plots(self):
-        """Create matrix plots when there are no time series."""
-        if not self.matrix_series:
+    def _create_raster_only_plots(self):
+        """Create raster plots when there are no time series."""
+        if not self.raster_series:
             return
 
         self._refresh_low_profile_x()
@@ -3949,17 +3949,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Clear any existing plots
         self._clear_all_label_visuals()
         self.plot_area.clear()
-        self.matrix_plots.clear()
-        self.matrix_items.clear()
-        self.matrix_cur_lines.clear()
-        self.matrix_sel_regions.clear()
-        self._matrix_line_items.clear()
-        self._matrix_pens.clear()
+        self.raster_plots.clear()
+        self.raster_items.clear()
+        self.raster_cur_lines.clear()
+        self.raster_sel_regions.clear()
+        self._raster_line_items.clear()
+        self._raster_pens.clear()
 
         master_plot = None
-        total_plots = len(self.matrix_series)
+        total_plots = len(self.raster_series)
 
-        for idx, ms in enumerate(self.matrix_series):
+        for idx, ms in enumerate(self.raster_series):
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
@@ -3997,7 +3997,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
-            line_items, pens = self._create_matrix_render_items(plt, ms)
+            line_items, pens = self._create_raster_render_items(plt, ms)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -4012,12 +4012,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(sel_region)
             sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
 
-            self.matrix_plots.append(plt)
-            self.matrix_items.append(None)
-            self.matrix_cur_lines.append(cur_line)
-            self.matrix_sel_regions.append(sel_region)
-            self._matrix_line_items.append(line_items)
-            self._matrix_pens.append(pens)
+            self.raster_plots.append(plt)
+            self.raster_items.append(None)
+            self.raster_cur_lines.append(cur_line)
+            self.raster_sel_regions.append(sel_region)
+            self._raster_line_items.append(line_items)
+            self._raster_pens.append(pens)
 
             if master_plot is None:
                 master_plot = plt
@@ -4037,7 +4037,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _rebuild_all_plots(self):
-        """Rebuild plots including both time series and matrix plots."""
+        """Rebuild plots including both time series and raster plots."""
         # Store current state
         old_window_start = self.window_start
         old_cursor = self.cursor_time
@@ -4058,12 +4058,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_vscrollbars.clear()
         self.dense_vscroll_proxies.clear()
         self._dense_vscroll_inverted.clear()
-        self.matrix_plots.clear()
-        self.matrix_items.clear()
-        self.matrix_cur_lines.clear()
-        self.matrix_sel_regions.clear()
-        self._matrix_line_items.clear()
-        self._matrix_pens.clear()
+        self.raster_plots.clear()
+        self.raster_items.clear()
+        self.raster_cur_lines.clear()
+        self.raster_sel_regions.clear()
+        self._raster_line_items.clear()
+        self._raster_pens.clear()
         self.array_plots.clear()
         self.array_image_items.clear()
         self.array_cur_lines.clear()
@@ -4074,7 +4074,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for g in self.dense_groups:
             for s in g.series:
                 t_arrays.append(s.t)
-        for ms in self.matrix_series:
+        for ms in self.raster_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
         for asx in self.array_series:
@@ -4100,7 +4100,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _create_all_plots(self):
-        """Create time series, dense, matrix, and array plots in the layout."""
+        """Create time series, dense, raster, and array plots in the layout."""
         if self.overlay_mode:
             self._create_overlay_plots()
             return
@@ -4108,14 +4108,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         total_plots = (
             len(self.series)
             + len(self.dense_groups)
-            + len(self.matrix_series)
+            + len(self.raster_series)
             + len(self.array_series)
         )
 
         # Build a (kind, idx) → display-row lookup. Each entry of
         # subplot_order maps to a sequential row, top-to-bottom. When
         # subplot_order is unset, fall back to the legacy segregated order
-        # (ts → dense → matrix → array). Each plot builds in type-segregated
+        # (ts → dense → raster → array). Each plot builds in type-segregated
         # order regardless, then looks up its row from this map — so the
         # visual layout is decoupled from build order.
         if self.subplot_order:
@@ -4124,7 +4124,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             order = (
                 [("ts", i) for i in range(len(self.series))]
                 + [("dense", i) for i in range(len(self.dense_groups))]
-                + [("matrix", i) for i in range(len(self.matrix_series))]
+                + [("raster", i) for i in range(len(self.raster_series))]
                 + [("array", i) for i in range(len(self.array_series))]
             )
         row_for = {entry: row for row, entry in enumerate(order)}
@@ -4253,9 +4253,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             if master_plot is None:
                 master_plot = plt
 
-        # Create matrix plots
-        for idx, ms in enumerate(self.matrix_series):
-            row_idx = _row("matrix", idx)
+        # Create raster plots
+        for idx, ms in enumerate(self.raster_series):
+            row_idx = _row("raster", idx)
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
@@ -4269,7 +4269,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             is_last = row_idx == last_row
             plt.setLabel("bottom", "Time", units="s" if is_last else None)
 
-            # Matrix plots: no horizontal grid, minimal y-axis
+            # Raster plots: no horizontal grid, minimal y-axis
             plt.showGrid(x=True, y=False, alpha=0.15)
             plt.enableAutoRange("x", False)
             plt.enableAutoRange("y", False)
@@ -4297,7 +4297,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
-            line_items, pens = self._create_matrix_render_items(plt, ms)
+            line_items, pens = self._create_raster_render_items(plt, ms)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -4312,12 +4312,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(sel_region)
             sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
 
-            self.matrix_plots.append(plt)
-            self.matrix_items.append(None)
-            self.matrix_cur_lines.append(cur_line)
-            self.matrix_sel_regions.append(sel_region)
-            self._matrix_line_items.append(line_items)
-            self._matrix_pens.append(pens)
+            self.raster_plots.append(plt)
+            self.raster_items.append(None)
+            self.raster_cur_lines.append(cur_line)
+            self.raster_sel_regions.append(sel_region)
+            self._raster_line_items.append(line_items)
+            self._raster_pens.append(pens)
 
             if master_plot is None:
                 master_plot = plt
@@ -4336,7 +4336,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if master_plot is None:
                 master_plot = plt
 
-        # Apply custom plot heights (includes matrix row heights logic)
+        # Apply custom plot heights (includes raster row heights logic)
         self._apply_custom_plot_heights()
         self._setup_dense_vscrollbars()
         self._constrain_scrollbar_column()
@@ -4436,7 +4436,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         """Create plots for overlay mode: multiple curves per subplot."""
         master_plot = None
         row_idx = 0
-        total_plots = len(self.overlay_groups) + len(self.matrix_series)
+        total_plots = len(self.overlay_groups) + len(self.raster_series)
         self._plot_to_curves = []
 
         for grp_idx, group in enumerate(self.overlay_groups):
@@ -4537,8 +4537,8 @@ class LoupeApp(QtWidgets.QMainWindow):
 
             row_idx += 1
 
-        # Create matrix plots (same as _create_all_plots)
-        for idx, ms in enumerate(self.matrix_series):
+        # Create raster plots (same as _create_all_plots)
+        for idx, ms in enumerate(self.raster_series):
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
@@ -4561,7 +4561,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 y_max = float(unique_y[-1]) + 0.5
                 plt.setYRange(y_min, y_max, padding=0)
 
-            line_items, pens = self._create_matrix_render_items(plt, ms)
+            line_items, pens = self._create_raster_render_items(plt, ms)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -4576,12 +4576,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(sel_region)
             sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
 
-            self.matrix_plots.append(plt)
-            self.matrix_items.append(None)
-            self.matrix_cur_lines.append(cur_line)
-            self.matrix_sel_regions.append(sel_region)
-            self._matrix_line_items.append(line_items)
-            self._matrix_pens.append(pens)
+            self.raster_plots.append(plt)
+            self.raster_items.append(None)
+            self.raster_cur_lines.append(cur_line)
+            self.raster_sel_regions.append(sel_region)
+            self._raster_line_items.append(line_items)
+            self._raster_pens.append(pens)
 
             if master_plot is None:
                 master_plot = plt
@@ -4596,10 +4596,10 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._apply_custom_plot_heights()
 
-    def _build_matrix_pens(self, ms: MatrixSeries) -> list[list[QtGui.QPen]]:
+    def _build_raster_pens(self, ms: RasterSeries) -> list[list[QtGui.QPen]]:
         """Build one row of 11 alpha-graded pens per category color.
 
-        Returns a nested list shaped ``[n_categories][MATRIX_ALPHA_LEVEL_COUNT]``.
+        Returns a nested list shaped ``[n_categories][RASTER_ALPHA_LEVEL_COUNT]``.
         For non-categorical series ``ms.category_colors`` is ``None`` and the
         outer dimension is length 1, reproducing the single-color fast path.
         """
@@ -4614,19 +4614,19 @@ class LoupeApp(QtWidgets.QMainWindow):
                         r,
                         g,
                         b,
-                        int((alevel / (MATRIX_ALPHA_LEVEL_COUNT - 1)) * 255),
+                        int((alevel / (RASTER_ALPHA_LEVEL_COUNT - 1)) * 255),
                     ),
-                    width=self.matrix_event_thickness,
+                    width=self.raster_event_thickness,
                 )
-                for alevel in range(MATRIX_ALPHA_LEVEL_COUNT)
+                for alevel in range(RASTER_ALPHA_LEVEL_COUNT)
             ]
             for (r, g, b) in base_colors
         ]
 
-    def _create_matrix_render_items(
-        self, plt: pg.PlotItem, ms: MatrixSeries
+    def _create_raster_render_items(
+        self, plt: pg.PlotItem, ms: RasterSeries
     ) -> tuple[list[list[pg.PlotDataItem]], list[list[QtGui.QPen]]]:
-        pens_grid = self._build_matrix_pens(ms)
+        pens_grid = self._build_raster_pens(ms)
         line_items_grid: list[list[pg.PlotDataItem]] = []
         for cat_pens in pens_grid:
             cat_items: list[pg.PlotDataItem] = []
@@ -4639,16 +4639,16 @@ class LoupeApp(QtWidgets.QMainWindow):
             line_items_grid.append(cat_items)
         return line_items_grid, pens_grid
 
-    def _refresh_matrix_pen_cache(self) -> None:
-        for midx, ms in enumerate(self.matrix_series):
-            if midx >= len(self._matrix_line_items):
+    def _refresh_raster_pen_cache(self) -> None:
+        for midx, ms in enumerate(self.raster_series):
+            if midx >= len(self._raster_line_items):
                 break
-            pens_grid = self._build_matrix_pens(ms)
-            if midx < len(self._matrix_pens):
-                self._matrix_pens[midx] = pens_grid
+            pens_grid = self._build_raster_pens(ms)
+            if midx < len(self._raster_pens):
+                self._raster_pens[midx] = pens_grid
             else:
-                self._matrix_pens.append(pens_grid)
-            for cat_items, cat_pens in zip(self._matrix_line_items[midx], pens_grid):
+                self._raster_pens.append(pens_grid)
+            for cat_items, cat_pens in zip(self._raster_line_items[midx], pens_grid):
                 for line_item, pen in zip(cat_items, cat_pens):
                     line_item.setPen(pen)
 
@@ -4659,17 +4659,17 @@ class LoupeApp(QtWidgets.QMainWindow):
             or self.trace_visible[plot_idx]
         )
 
-    def _is_matrix_plot_visible(self, plot_idx: int) -> bool:
-        return plot_idx >= len(self.matrix_visible) or self.matrix_visible[plot_idx]
+    def _is_raster_plot_visible(self, plot_idx: int) -> bool:
+        return plot_idx >= len(self.raster_visible) or self.raster_visible[plot_idx]
 
-    def _matrix_segment_for_window(
-        self, ms: MatrixSeries, t0: float, t1: float, max_events: int = 10000
+    def _raster_segment_for_window(
+        self, ms: RasterSeries, t0: float, t1: float, max_events: int = 10000
     ):
         """
         Return event data for the [t0, t1] window, limited to max_events for
         performance. Returns ``(timestamps, yvals, alphas, cats)`` where
         ``cats`` is the per-event category index (or ``None`` when the
-        MatrixSeries has no categorical coloring).
+        RasterSeries has no categorical coloring).
         """
         if t1 <= t0 or len(ms.timestamps) == 0:
             empty_cats = None if ms.category_index is None else np.empty(0, dtype=np.int16)
@@ -5143,24 +5143,24 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._refresh_dense_curves()
         self._update_status(f"Dense gain: {self.dense_groups[0].gain:.2f}x")
 
-    def _refresh_matrix_plots(self):
-        """Update matrix raster plots for current window."""
-        if not self.matrix_series:
+    def _refresh_raster_plots(self):
+        """Update raster raster plots for current window."""
+        if not self.raster_series:
             return
 
         t0 = self.window_start
         t1 = self.window_start + self.window_len
-        height = self.matrix_event_height
+        height = self.raster_event_height
 
-        for midx, (ms, plt) in enumerate(zip(self.matrix_series, self.matrix_plots)):
-            if not self._is_matrix_plot_visible(midx):
+        for midx, (ms, plt) in enumerate(zip(self.raster_series, self.raster_plots)):
+            if not self._is_raster_plot_visible(midx):
                 continue
 
-            if midx >= len(self._matrix_line_items):
+            if midx >= len(self._raster_line_items):
                 continue
 
-            ts, ys, als, cats = self._matrix_segment_for_window(ms, t0, t1)
-            line_items_grid = self._matrix_line_items[midx]
+            ts, ys, als, cats = self._raster_segment_for_window(ms, t0, t1)
+            line_items_grid = self._raster_line_items[midx]
             if not line_items_grid:
                 continue
 
@@ -5176,11 +5176,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             y_tops = y_centers + height
 
             # Apply brightness multiplier to alphas (clamped to 0-1)
-            brightness = getattr(self, "matrix_brightness", 1.0)
+            brightness = getattr(self, "raster_brightness", 1.0)
             adjusted_als = np.clip(als * brightness, 0.0, 1.0)
 
             # Group by alpha levels (quantize to 11 levels 0-10) for efficiency
-            alpha_levels = np.round(adjusted_als * (MATRIX_ALPHA_LEVEL_COUNT - 1)).astype(
+            alpha_levels = np.round(adjusted_als * (RASTER_ALPHA_LEVEL_COUNT - 1)).astype(
                 int
             )
 
@@ -5631,8 +5631,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         if self.plot_sel_regions:
             a, b = self.plot_sel_regions[0].getRegion()
             self._select_start, self._select_end = float(a), float(b)
-        elif self.matrix_sel_regions:
-            a, b = self.matrix_sel_regions[0].getRegion()
+        elif self.raster_sel_regions:
+            a, b = self.raster_sel_regions[0].getRegion()
             self._select_start, self._select_end = float(a), float(b)
         elif self.array_sel_regions:
             a, b = self.array_sel_regions[0].getRegion()
@@ -5644,7 +5644,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 r.hide()
             for r in self.dense_sel_regions:
                 r.hide()
-            for r in self.matrix_sel_regions:
+            for r in self.raster_sel_regions:
                 r.hide()
             for r in self.array_sel_regions:
                 r.hide()
@@ -5657,7 +5657,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for r in self.dense_sel_regions:
             r.setRegion((a, b))
             r.show()
-        for r in self.matrix_sel_regions:
+        for r in self.raster_sel_regions:
             r.setRegion((a, b))
             r.show()
         for r in self.array_sel_regions:
@@ -5671,7 +5671,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             r.hide()
         for r in self.dense_sel_regions:
             r.hide()
-        for r in self.matrix_sel_regions:
+        for r in self.raster_sel_regions:
             r.hide()
         for r in self.array_sel_regions:
             r.hide()
@@ -5703,7 +5703,7 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _has_visible_window_label_targets(self) -> bool:
         return (
             any(self._is_trace_plot_visible(idx) for idx in range(len(self.plots)))
-            or any(self._is_matrix_plot_visible(idx) for idx in range(len(self.matrix_plots)))
+            or any(self._is_raster_plot_visible(idx) for idx in range(len(self.raster_plots)))
             or any(self._is_array_plot_visible(idx) for idx in range(len(self.array_plots)))
             or len(self.dense_plots) > 0
         )
@@ -5723,7 +5723,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         a, b, name = float(row.start), float(row.end), str(row.label)
         color = self._label_brush_color(name)
         plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
-        matrix_regions: list[tuple[int, pg.LinearRegionItem]] = []
+        raster_regions: list[tuple[int, pg.LinearRegionItem]] = []
         dense_regions: list[tuple[int, pg.LinearRegionItem]] = []
         array_regions: list[tuple[int, pg.LinearRegionItem]] = []
 
@@ -5751,8 +5751,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(reg)
             dense_regions.append((i, reg))
 
-        for i, plt in enumerate(self.matrix_plots):
-            if not self._is_matrix_plot_visible(i):
+        for i, plt in enumerate(self.raster_plots):
+            if not self._is_raster_plot_visible(i):
                 continue
             reg = pg.LinearRegionItem(
                 values=(a, b),
@@ -5762,7 +5762,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             )
             reg.setZValue(-20)
             plt.addItem(reg)
-            matrix_regions.append((i, reg))
+            raster_regions.append((i, reg))
 
         for i, plt in enumerate(self.array_plots):
             if not self._is_array_plot_visible(i):
@@ -5779,12 +5779,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(reg)
             array_regions.append((i, reg))
 
-        if not (plot_regions or matrix_regions or dense_regions or array_regions):
+        if not (plot_regions or raster_regions or dense_regions or array_regions):
             return
 
         self._label_visuals[key] = LabelVisualBundle(
             plot_regions=plot_regions,
-            matrix_regions=matrix_regions,
+            raster_regions=raster_regions,
             dense_regions=dense_regions,
             hypnogram_region=None,
             array_regions=array_regions,
@@ -5801,7 +5801,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for _i, item in bundle.dense_regions:
             self._remove_graphics_item(item)
 
-        for _i, item in bundle.matrix_regions:
+        for _i, item in bundle.raster_regions:
             self._remove_graphics_item(item)
 
         for _i, item in bundle.array_regions:
@@ -6390,8 +6390,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.enableAutoRange("x", False)
             plt.setXRange(*xr, padding=0.0)
 
-        # Also apply to matrix plots
-        for plt in self.matrix_plots:
+        # Also apply to raster plots
+        for plt in self.raster_plots:
             plt.enableAutoRange("x", False)
             plt.setXRange(*xr, padding=0.0)
 
@@ -6432,7 +6432,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             ln.setPos(self.cursor_time)
         for ln in self.dense_cur_lines:
             ln.setPos(self.cursor_time)
-        for ln in self.matrix_cur_lines:
+        for ln in self.raster_cur_lines:
             ln.setPos(self.cursor_time)
         for ln in self.array_cur_lines:
             ln.setPos(self.cursor_time)
@@ -6512,9 +6512,9 @@ class LoupeApp(QtWidgets.QMainWindow):
                             x=t_slice[mask], y=y_slice[mask], _callSync="off"
                         )
 
-        # Also refresh dense, matrix, and array plots
+        # Also refresh dense, raster, and array plots
         self._refresh_dense_curves()
-        self._refresh_matrix_plots()
+        self._refresh_raster_plots()
         self._refresh_array_plots()
 
     def _apply_event_layer_style(self, layer_idx: int) -> None:
@@ -6549,7 +6549,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _align_left_axes(self):
         try:
-            all_plots = list(self.plots) + list(self.dense_plots) + list(self.matrix_plots)
+            all_plots = list(self.plots) + list(self.dense_plots) + list(self.raster_plots)
             if not all_plots:
                 return
             widths = []
@@ -6748,10 +6748,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                         except Exception:
                             pass
 
-                else:  # matrix
-                    if idx >= len(self.matrix_plots):
+                else:  # raster
+                    if idx >= len(self.raster_plots):
                         continue
-                    plt = self.matrix_plots[idx]
+                    plt = self.raster_plots[idx]
                     plt.setVisible(True)
                     self.plot_area.addItem(plt, row=row, col=0)
 
@@ -6798,10 +6798,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                     else False
                 ):
                     plt.setVisible(False)
-            for idx, plt in enumerate(self.matrix_plots):
+            for idx, plt in enumerate(self.raster_plots):
                 if (
-                    not self.matrix_visible[idx]
-                    if idx < len(self.matrix_visible)
+                    not self.raster_visible[idx]
+                    if idx < len(self.raster_visible)
                     else False
                 ):
                     plt.setVisible(False)
@@ -6984,30 +6984,30 @@ def main():
             "When omitted, this is enabled automatically for 3+ total subplots."
         ),
     )
-    # Matrix viewer arguments
+    # Raster viewer arguments
     parser.add_argument(
-        "--matrix_timestamps",
+        "--raster_timestamps",
         nargs="+",
         type=str,
-        help="List of paths to .npy files containing event timestamps for matrix/raster plots.",
+        help="List of paths to .npy files containing event timestamps for raster plots.",
     )
     parser.add_argument(
-        "--matrix_yvals",
+        "--raster_yvals",
         nargs="+",
         type=str,
         help="List of paths to .npy files containing row indices (0 to N-1) for each event.",
     )
     parser.add_argument(
-        "--alpha_vals",
+        "--raster_alphas",
         nargs="+",
         type=str,
         help="List of paths to .npy files containing alpha values (0-1) for each event.",
     )
     parser.add_argument(
-        "--matrix_colors",
+        "--raster_colors",
         nargs="+",
         type=str,
-        help="List of hex colors (#RRGGBB) for each matrix subplot.",
+        help="List of hex colors (#RRGGBB) for each raster subplot.",
     )
     # xarray arguments
     parser.add_argument(
@@ -7117,11 +7117,11 @@ def main():
         video_configs=video_configs,
         fixed_scale=not args.auto_scale,
         low_profile_x=args.low_profile_x,
-        # Matrix viewer arguments
-        matrix_timestamps=args.matrix_timestamps,
-        matrix_yvals=args.matrix_yvals,
-        alpha_vals=args.alpha_vals,
-        matrix_colors=args.matrix_colors,
+        # Raster viewer arguments
+        raster_timestamps=args.raster_timestamps,
+        raster_yvals=args.raster_yvals,
+        raster_alphas=args.raster_alphas,
+        raster_colors=args.raster_colors,
         # xarray series
         xr_series=xr_series,
         state_config=state_config,
