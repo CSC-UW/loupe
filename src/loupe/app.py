@@ -1812,6 +1812,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         leftl = QtWidgets.QVBoxLayout(left)
         leftl.setContentsMargins(0, 0, 0, 0)
         self.plot_area = pg.GraphicsLayoutWidget()
+        self.plot_area.ci.layout.setVerticalSpacing(2)
         self.plot_scroll_area = QtWidgets.QScrollArea()
         self.plot_scroll_area.setWidgetResizable(True)
         self.plot_scroll_area.setWidget(self.plot_area)
@@ -3992,10 +3993,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not is_last:
                 try:
                     plt.setLabel("bottom", "")
-                    bax = plt.getAxis("bottom")
-                    bax.setStyle(showValues=True, tickLength=0)
-                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                    bax.setHeight(12)
+                    plt.showAxis("bottom", False)
                 except Exception:
                     pass
 
@@ -4156,10 +4154,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not is_last:
                 try:
                     plt.setLabel("bottom", "")
-                    bax = plt.getAxis("bottom")
-                    bax.setStyle(showValues=True, tickLength=0)
-                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                    bax.setHeight(12)
+                    plt.showAxis("bottom", False)
                 except Exception:
                     pass
 
@@ -4245,10 +4240,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not is_last:
                 try:
                     plt.setLabel("bottom", "")
-                    bax = plt.getAxis("bottom")
-                    bax.setStyle(showValues=True, tickLength=0)
-                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                    bax.setHeight(12)
+                    plt.showAxis("bottom", False)
                 except Exception:
                     pass
             if master_plot is None:
@@ -4291,10 +4283,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not is_last:
                 try:
                     plt.setLabel("bottom", "")
-                    bax = plt.getAxis("bottom")
-                    bax.setStyle(showValues=True, tickLength=0)
-                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                    bax.setHeight(12)
+                    plt.showAxis("bottom", False)
                 except Exception:
                     pass
 
@@ -4390,10 +4379,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not is_last:
             try:
                 plt.setLabel("bottom", "")
-                bax = plt.getAxis("bottom")
-                bax.setStyle(showValues=True, tickLength=0)
-                bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                bax.setHeight(12)
+                plt.showAxis("bottom", False)
             except Exception:
                 pass
 
@@ -4460,10 +4446,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not is_last:
                 try:
                     plt.setLabel("bottom", "")
-                    bax = plt.getAxis("bottom")
-                    bax.setStyle(showValues=True, tickLength=0)
-                    bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                    bax.setHeight(12)
+                    plt.showAxis("bottom", False)
                 except Exception:
                     pass
 
@@ -6671,20 +6654,17 @@ class LoupeApp(QtWidgets.QMainWindow):
                     if not is_last:
                         try:
                             plt.setLabel("bottom", "")
-                            bax = plt.getAxis("bottom")
-                            bax.setStyle(showValues=True, tickLength=0)
-                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                            bax.setHeight(12)
+                            plt.showAxis("bottom", False)
                         except Exception:
                             pass
                     else:
                         try:
+                            plt.showAxis("bottom", True)
                             plt.setLabel(
                                 "bottom", "Time", units="s" if is_last else None
                             )
                             bax = plt.getAxis("bottom")
                             bax.setStyle(showValues=True, tickLength=-5)
-                            bax.setTextPen(pg.mkPen("w"))
                             bax.setHeight(None)
                         except Exception:
                             pass
@@ -6703,20 +6683,17 @@ class LoupeApp(QtWidgets.QMainWindow):
                     if not is_last:
                         try:
                             plt.setLabel("bottom", "")
-                            bax = plt.getAxis("bottom")
-                            bax.setStyle(showValues=True, tickLength=0)
-                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                            bax.setHeight(12)
+                            plt.showAxis("bottom", False)
                         except Exception:
                             pass
                     else:
                         try:
+                            plt.showAxis("bottom", True)
                             plt.setLabel(
                                 "bottom", "Time", units="s" if is_last else None
                             )
                             bax = plt.getAxis("bottom")
                             bax.setStyle(showValues=True, tickLength=-5)
-                            bax.setTextPen(pg.mkPen("w"))
                             bax.setHeight(None)
                         except Exception:
                             pass
@@ -6731,20 +6708,17 @@ class LoupeApp(QtWidgets.QMainWindow):
                     if not is_last:
                         try:
                             plt.setLabel("bottom", "")
-                            bax = plt.getAxis("bottom")
-                            bax.setStyle(showValues=True, tickLength=0)
-                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                            bax.setHeight(12)
+                            plt.showAxis("bottom", False)
                         except Exception:
                             pass
                     else:
                         try:
+                            plt.showAxis("bottom", True)
                             plt.setLabel(
                                 "bottom", "Time", units="s" if is_last else None
                             )
                             bax = plt.getAxis("bottom")
                             bax.setStyle(showValues=True, tickLength=-5)
-                            bax.setTextPen(pg.mkPen("w"))
                             bax.setHeight(None)
                         except Exception:
                             pass
@@ -6760,20 +6734,17 @@ class LoupeApp(QtWidgets.QMainWindow):
                     if not is_last:
                         try:
                             plt.setLabel("bottom", "")
-                            bax = plt.getAxis("bottom")
-                            bax.setStyle(showValues=True, tickLength=0)
-                            bax.setTextPen(pg.mkPen(0, 0, 0, 0))
-                            bax.setHeight(12)
+                            plt.showAxis("bottom", False)
                         except Exception:
                             pass
                     else:
                         try:
+                            plt.showAxis("bottom", True)
                             plt.setLabel(
                                 "bottom", "Time", units="s" if is_last else None
                             )
                             bax = plt.getAxis("bottom")
                             bax.setStyle(showValues=True, tickLength=-5)
-                            bax.setTextPen(pg.mkPen("w"))
                             bax.setHeight(None)
                         except Exception:
                             pass
