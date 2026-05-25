@@ -308,54 +308,54 @@ def test_request_video_frame_suppresses_duplicate_nearest_indices(
     assert calls == [0, 1]
 
 
-def test_window_label_visuals_only_materialize_current_window(loupe_factory, qapp):
+def test_window_interval_label_visuals_only_materialize_current_window(loupe_factory, qapp):
     window = loupe_factory(n_series=2, include_raster=True)
     window.window_len = 10.0
     window.window_start = 0.0
-    wake_id = window.label_set.add(0.0, 5.0, "Wake")
-    nrem_id = window.label_set.add(10.0, 15.0, "NREM")
-    rem_id = window.label_set.add(40.0, 50.0, "REM")
-    window._finalize_label_change(force_rebuild=True, refresh_summary=False)
+    wake_id = window.interval_label_set.add(0.0, 5.0, "Wake")
+    nrem_id = window.interval_label_set.add(10.0, 15.0, "NREM")
+    rem_id = window.interval_label_set.add(40.0, 50.0, "REM")
+    window._finalize_interval_label_change(force_rebuild=True, refresh_summary=False)
     qapp.processEvents()
 
-    assert set(window._hypnogram_label_visuals) == {wake_id, nrem_id, rem_id}
-    assert set(window._label_visuals) == {wake_id}
+    assert set(window._hypnogram_interval_label_visuals) == {wake_id, nrem_id, rem_id}
+    assert set(window._interval_label_visuals) == {wake_id}
 
 
-def test_paging_swaps_window_label_visuals_without_rebuilding_hypnogram(
+def test_paging_swaps_window_interval_label_visuals_without_rebuilding_hypnogram(
     loupe_factory, qapp
 ):
     window = loupe_factory(n_series=1, include_raster=False)
     window.window_len = 10.0
     window.window_start = 0.0
-    wake_id = window.label_set.add(0.0, 5.0, "Wake")
-    nrem_id = window.label_set.add(12.0, 18.0, "NREM")
-    window.label_set.add(24.0, 30.0, "REM")
-    window._finalize_label_change(force_rebuild=True, refresh_summary=False)
+    wake_id = window.interval_label_set.add(0.0, 5.0, "Wake")
+    nrem_id = window.interval_label_set.add(12.0, 18.0, "NREM")
+    window.interval_label_set.add(24.0, 30.0, "REM")
+    window._finalize_interval_label_change(force_rebuild=True, refresh_summary=False)
     qapp.processEvents()
 
-    previous_hypnogram_visuals = dict(window._hypnogram_label_visuals)
+    previous_hypnogram_visuals = dict(window._hypnogram_interval_label_visuals)
 
-    assert set(window._label_visuals) == {wake_id}
+    assert set(window._interval_label_visuals) == {wake_id}
 
     window._page(1)
     qapp.processEvents()
 
-    assert set(window._label_visuals) == {nrem_id}
-    assert set(window._hypnogram_label_visuals) == set(previous_hypnogram_visuals)
+    assert set(window._interval_label_visuals) == {nrem_id}
+    assert set(window._hypnogram_interval_label_visuals) == set(previous_hypnogram_visuals)
     for key, old_region in previous_hypnogram_visuals.items():
-        assert window._hypnogram_label_visuals[key] is old_region
+        assert window._hypnogram_interval_label_visuals[key] is old_region
 
 
-def test_visibility_changes_rebuild_window_label_visuals(loupe_factory, qapp):
+def test_visibility_changes_rebuild_window_interval_label_visuals(loupe_factory, qapp):
     window = loupe_factory(n_series=1, include_raster=True)
     window.window_len = 10.0
     window.window_start = 0.0
-    wake_id = window.label_set.add(0.0, 5.0, "Wake")
-    window._finalize_label_change(force_rebuild=True, refresh_summary=False)
+    wake_id = window.interval_label_set.add(0.0, 5.0, "Wake")
+    window._finalize_interval_label_change(force_rebuild=True, refresh_summary=False)
     qapp.processEvents()
 
-    bundle = window._label_visuals[wake_id]
+    bundle = window._interval_label_visuals[wake_id]
     assert len(bundle.plot_regions) == 1
     assert len(bundle.raster_regions) == 1
 
@@ -363,7 +363,7 @@ def test_visibility_changes_rebuild_window_label_visuals(loupe_factory, qapp):
     window._apply_trace_visibility()
     qapp.processEvents()
 
-    bundle = window._label_visuals[wake_id]
+    bundle = window._interval_label_visuals[wake_id]
     assert len(bundle.plot_regions) == 0
     assert len(bundle.raster_regions) == 1
 
@@ -371,14 +371,14 @@ def test_visibility_changes_rebuild_window_label_visuals(loupe_factory, qapp):
     window._apply_trace_visibility()
     qapp.processEvents()
 
-    assert window._label_visuals == {}
-    assert wake_id in window._hypnogram_label_visuals
+    assert window._interval_label_visuals == {}
+    assert wake_id in window._hypnogram_interval_label_visuals
 
     window.trace_visible = [True]
     window.raster_visible = [True]
     window._apply_trace_visibility()
     qapp.processEvents()
 
-    bundle = window._label_visuals[wake_id]
+    bundle = window._interval_label_visuals[wake_id]
     assert len(bundle.plot_regions) == 1
     assert len(bundle.raster_regions) == 1

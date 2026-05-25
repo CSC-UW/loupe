@@ -23,11 +23,11 @@ from PySide6 import QtCore, QtGui, QtWidgets
 if TYPE_CHECKING:
     from matplotlib.colors import Colormap
 
-from loupe.labels import (
-    LabelIOError,
-    LabelSchema,
-    LabelSchemaError,
-    LabelSet,
+from loupe.interval_labels import (
+    IntervalLabelIOError,
+    IntervalLabelSchema,
+    IntervalLabelSchemaError,
+    IntervalLabelSet,
 )
 from loupe.state_config import StateConfig, load_state_config
 
@@ -48,8 +48,8 @@ class Series:
 
 
 @dataclass
-class EventLayer:
-    """Bool-array layer drawn as point markers on top of stacked-subplot traces.
+class SampleMarkers:
+    """Marker symbols stamped onto specific samples of stacked-subplot traces.
 
     ``bool_per_series`` has one 1-D bool array per :class:`Series`, in the
     same order as :attr:`LoupeApp.series`. ``True`` at sample i means a
@@ -105,12 +105,12 @@ ARRAY_MIPMAP_THRESHOLD = 5_000_000
 ARRAY_MIPMAP_TARGET_MIN_COLS = 1500
 
 
-# A row_id from LabelSet uniquely identifies a label across edits/merges.
-LabelKey = int
+# A row_id from IntervalLabelSet uniquely identifies a label across edits/merges.
+IntervalLabelKey = int
 
 
 @dataclass
-class LabelVisualBundle:
+class IntervalLabelVisualBundle:
     """Graphics items used to display a single labelled interval in plot scenes."""
 
     plot_regions: list[tuple[int, pg.LinearRegionItem]]
@@ -182,18 +182,18 @@ def next_pow_two(n: int) -> int:
     return 1 << (n - 1).bit_length()
 
 
-def _scatter_kwargs_for_layer(layer: "EventLayer") -> dict:
-    """Map an :class:`EventLayer`'s style fields to ``pg.ScatterPlotItem`` kwargs.
+def _scatter_kwargs_for_marker(marker: "SampleMarkers") -> dict:
+    """Map a :class:`SampleMarkers`'s style fields to ``pg.ScatterPlotItem`` kwargs.
 
     'o' renders a filled circle (no pen) with alpha applied to the fill.
     'x' and other pyqtgraph symbols render as outlined strokes with alpha
     applied to the pen.
     """
-    base = pg.mkColor(layer.color)
+    base = pg.mkColor(marker.color)
     tinted = pg.mkColor(base)
-    tinted.setAlpha(int(max(0, min(255, layer.alpha))))
-    size = float(layer.size)
-    if layer.marker == "o":
+    tinted.setAlpha(int(max(0, min(255, marker.alpha))))
+    size = float(marker.size)
+    if marker.marker == "o":
         return {
             "symbol": "o",
             "pen": None,
@@ -201,7 +201,7 @@ def _scatter_kwargs_for_layer(layer: "EventLayer") -> dict:
             "size": size,
         }
     return {
-        "symbol": layer.marker,
+        "symbol": marker.marker,
         "pen": pg.mkPen(tinted, width=1.5),
         "brush": None,
         "size": size,
@@ -614,7 +614,7 @@ class StateComboDelegate(QtWidgets.QStyledItemDelegate):
         model.setData(index, editor.currentText(), QtCore.Qt.ItemDataRole.EditRole)
 
 
-class LabelSummaryBarWidget(QtWidgets.QWidget):
+class IntervalLabelSummaryBarWidget(QtWidgets.QWidget):
     """Horizontal stacked color bar showing per-state labeling fractions."""
 
     def __init__(self, parent=None):
@@ -655,8 +655,8 @@ class LabelSummaryBarWidget(QtWidgets.QWidget):
             painter.end()
 
 
-class LabelSummaryWidget(QtWidgets.QWidget):
-    """Inline panel showing an editable table of all scored labels with summary stats."""
+class IntervalLabelSummaryWidget(QtWidgets.QWidget):
+    """Inline panel showing an editable table of all scored interval labels with summary stats."""
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -671,7 +671,7 @@ class LabelSummaryWidget(QtWidgets.QWidget):
         layout.setSpacing(4)
 
         # Table; columns are reset dynamically in refresh() based on the
-        # active LabelSchema (so any number of extra columns can be shown).
+        # active IntervalLabelSchema (so any number of extra columns can be shown).
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Start", "End", "Duration", "State"])
@@ -708,17 +708,17 @@ class LabelSummaryWidget(QtWidgets.QWidget):
         layout.addWidget(bar_header)
 
         # Color bar
-        self.bar_widget = LabelSummaryBarWidget()
+        self.bar_widget = IntervalLabelSummaryBarWidget()
         layout.addWidget(self.bar_widget)
 
     def refresh(self):
-        """Repopulate table and summary from main_window.label_set."""
+        """Repopulate table and summary from main_window.interval_label_set."""
         if self._refreshing:
             return
         self._refreshing = True
         try:
             self.table.blockSignals(True)
-            ls = self.main_window.label_set
+            ls = self.main_window.interval_label_set
             schema = ls.schema
             note_col = schema.note_col
             extra_cols = list(schema.extra_cols)
@@ -772,7 +772,7 @@ class LabelSummaryWidget(QtWidgets.QWidget):
             self.bar_widget.set_data([])
             return
 
-        ls = self.main_window.label_set
+        ls = self.main_window.interval_label_set
         total_labelled = float(np.sum(ls.ends - ls.starts)) if len(ls) else 0.0
         pct = (total_labelled / total_recording) * 100.0
         self.summary_label.setText(
@@ -794,10 +794,10 @@ class LabelSummaryWidget(QtWidgets.QWidget):
         self.bar_widget.set_data(segments)
 
     def _on_cell_changed(self, row: int, col: int):
-        """Handle inline cell edits — validate and propagate to LabelSet."""
+        """Handle inline cell edits — validate and propagate to IntervalLabelSet."""
         if self._refreshing:
             return
-        ls = self.main_window.label_set
+        ls = self.main_window.interval_label_set
         if row < 0 or row >= len(ls):
             return
 
@@ -862,13 +862,13 @@ class LabelSummaryWidget(QtWidgets.QWidget):
                     ls.update_cell(row_id, col_name, new_text or None)
                 return
 
-        except (ValueError, LabelSchemaError) as e:
+        except (ValueError, IntervalLabelSchemaError) as e:
             QtWidgets.QMessageBox.warning(self, "Invalid edit", str(e))
             self.refresh()
             return
 
         # Re-sort, merge, and sync visuals (which also triggers refresh)
-        self.main_window._finalize_label_change()
+        self.main_window._finalize_interval_label_change()
 
 
 class YAxisControlsDialog(QtWidgets.QDialog):
@@ -1414,7 +1414,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     @property
     def labels_writeback_allowed(self) -> bool:
-        return self.label_set.writeback_allowed
+        return self.interval_label_set.writeback_allowed
 
     def __init__(
         self,
@@ -1446,14 +1446,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         # (ts → dense → raster → heatmap). User can still rearrange interactively
         # via the Plot Order dialog after launch.
         subplot_order=None,
-        # Bool-event marker overlays for stacked-subplots traces.
-        event_layers: list[EventLayer] | None = None,
+        # Sample-aligned marker overlays for stacked-subplots traces.
+        sample_markers: list[SampleMarkers] | None = None,
         # State definitions (keymap + label colors)
         state_config: StateConfig | None = None,
-        # Label data
-        label_set: LabelSet | None = None,
-        # Initial label-overlay alpha multiplier (0.0 – 1.0). None → 1.0.
-        label_alpha: float | None = None,
+        # Interval-label data
+        interval_label_set: IntervalLabelSet | None = None,
+        # Initial interval-label-overlay alpha multiplier (0.0 – 1.0). None → 1.0.
+        interval_label_alpha: float | None = None,
         # Optional ProgressReporter for launch-time progress.
         reporter=None,
     ):
@@ -1480,10 +1480,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_sel_regions: list[pg.LinearRegionItem] = []
         self.hovered_plot = None  # *** FIX 2: Track which plot is hovered ***
 
-        # Bool-event marker overlays — outer index = series index,
-        # inner index = layer index (matches self.event_layers order).
-        self.event_layers: list[EventLayer] = list(event_layers) if event_layers else []
-        self.event_scatters: list[list[pg.ScatterPlotItem]] = []
+        # Sample-aligned marker overlays — outer index = series index,
+        # inner index = marker-set index (matches self.sample_markers order).
+        self.sample_markers: list[SampleMarkers] = list(sample_markers) if sample_markers else []
+        self.sample_marker_scatters: list[list[pg.ScatterPlotItem]] = []
 
         # Overlay mode
         self.overlay_mode: bool = False
@@ -1498,7 +1498,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_curves: list[list[pg.PlotDataItem]] = []
         self.dense_cur_lines: list[pg.InfiniteLine] = []
         self.dense_sel_regions: list[pg.LinearRegionItem] = []
-        self.dense_label_regions: list[list[pg.LinearRegionItem]] = []
+        self.dense_interval_label_regions: list[list[pg.LinearRegionItem]] = []
         self.dense_height_factors: list[float] = []
         self.dense_visible: list[bool] = []
         self._dense_means: list[list[float]] = []
@@ -1525,21 +1525,21 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_brightness = (
             1.0  # brightness multiplier for alpha values (0.2 to 3.0)
         )
-        # alpha multiplier for label overlay regions (0.0 to 1.0)
-        if label_alpha is None:
-            self.label_alpha_multiplier = 1.0
+        # alpha multiplier for interval-label overlay regions (0.0 to 1.0)
+        if interval_label_alpha is None:
+            self.interval_label_alpha_multiplier = 1.0
         else:
             if (
-                not isinstance(label_alpha, (int, float))
-                or isinstance(label_alpha, bool)
-                or math.isnan(float(label_alpha))
-                or not (0.0 <= float(label_alpha) <= 1.0)
+                not isinstance(interval_label_alpha, (int, float))
+                or isinstance(interval_label_alpha, bool)
+                or math.isnan(float(interval_label_alpha))
+                or not (0.0 <= float(interval_label_alpha) <= 1.0)
             ):
                 raise ValueError(
-                    f"label_alpha must be a float in [0.0, 1.0], "
-                    f"got {label_alpha!r}"
+                    f"interval_label_alpha must be a float in [0.0, 1.0], "
+                    f"got {interval_label_alpha!r}"
                 )
-            self.label_alpha_multiplier = float(label_alpha)
+            self.interval_label_alpha_multiplier = float(interval_label_alpha)
         # Custom height factors for individual plot height control (1.0 = default)
         self.plot_height_factors: list[float] = []  # one per time series plot
         self.raster_height_factors: list[float] = []  # one per raster plot
@@ -1588,21 +1588,21 @@ class LoupeApp(QtWidgets.QMainWindow):
             state_config = load_state_config()
         self.state_config: StateConfig = state_config
 
-        # Label data (DataFrame-backed). Defaults to an empty legacy schema.
-        if label_set is None:
-            label_set = LabelSet.empty()
-        self.label_set: LabelSet = label_set
+        # Interval-label data (DataFrame-backed). Defaults to an empty legacy schema.
+        if interval_label_set is None:
+            interval_label_set = IntervalLabelSet.empty()
+        self.interval_label_set: IntervalLabelSet = interval_label_set
 
         # Visual bookkeeping keyed by row_id (stable across edits/merges).
-        self._label_visuals: dict[LabelKey, LabelVisualBundle] = {}
-        self._hypnogram_label_visuals: dict[LabelKey, pg.LinearRegionItem] = {}
-        # Mirror the LabelSet's row_ids/starts/ends so visual sync code can
-        # index into them before the GUI runs its first _finalize_label_change.
-        self._label_keys_in_order: list[LabelKey] = [
-            int(rid) for rid in self.label_set.row_ids
+        self._interval_label_visuals: dict[IntervalLabelKey, IntervalLabelVisualBundle] = {}
+        self._hypnogram_interval_label_visuals: dict[IntervalLabelKey, pg.LinearRegionItem] = {}
+        # Mirror the IntervalLabelSet's row_ids/starts/ends so visual sync code can
+        # index into them before the GUI runs its first _finalize_interval_label_change.
+        self._interval_label_keys_in_order: list[IntervalLabelKey] = [
+            int(rid) for rid in self.interval_label_set.row_ids
         ]
-        self._label_starts = np.asarray(self.label_set.starts, dtype=float)
-        self._label_ends = np.asarray(self.label_set.ends, dtype=float)
+        self._interval_label_starts = np.asarray(self.interval_label_set.starts, dtype=float)
+        self._interval_label_ends = np.asarray(self.interval_label_set.ends, dtype=float)
         self._select_start = None
         self._select_end = None
         self._is_zoom_drag = False
@@ -1894,8 +1894,8 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Label Summary panel (replaces former static image; hidden when
         # any non-primary video opens — see _on_video_opened).
-        self.label_summary_panel = LabelSummaryWidget(main_window=self)
-        rl.addWidget(self.label_summary_panel, 2)
+        self.interval_label_summary_panel = IntervalLabelSummaryWidget(main_window=self)
+        rl.addWidget(self.interval_label_summary_panel, 2)
 
         # Hypnogram overview plot (full-recording labels with moving window box)
         self.hypnogram_widget = pg.PlotWidget()
@@ -1956,19 +1956,19 @@ class LoupeApp(QtWidgets.QMainWindow):
         mfile.addAction(m)
         mfile.addSeparator()
 
-        c = QtGui.QAction("Load &Labels…", self)
-        c.triggered.connect(self._on_load_labels)
+        c = QtGui.QAction("Load Interval &Labels…", self)
+        c.triggered.connect(self._on_load_interval_labels)
         mfile.addAction(c)
 
-        d = QtGui.QAction("&Export Labels As…", self)
-        d.triggered.connect(self._on_export_labels)
+        d = QtGui.QAction("&Export Interval Labels As…", self)
+        d.triggered.connect(self._on_export_interval_labels)
         mfile.addAction(d)
 
-        save_action = QtGui.QAction("&Save Labels (overwrite source)", self)
+        save_action = QtGui.QAction("&Save Interval Labels (overwrite source)", self)
         save_action.setShortcut(QtGui.QKeySequence("Ctrl+S"))
         save_action.triggered.connect(self._on_save_to_source)
-        # Disabled unless the user opted in via labels_writeback=True.
-        save_action.setEnabled(self.label_set.writeback_allowed)
+        # Disabled unless the user opted in via interval_labels_writeback=True.
+        save_action.setEnabled(self.interval_label_set.writeback_allowed)
         self._save_to_source_action = save_action
         mfile.addAction(save_action)
         mfile.addSeparator()
@@ -2088,9 +2088,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         dense_ctrl_action.triggered.connect(self._show_dense_controls_dialog)
         mview.addAction(dense_ctrl_action)
 
-        label_alpha_action = QtGui.QAction("Adjust Label Alpha...", self)
-        label_alpha_action.triggered.connect(self._adjust_label_alpha)
-        mview.addAction(label_alpha_action)
+        interval_label_alpha_action = QtGui.QAction("Adjust Interval Label Alpha...", self)
+        interval_label_alpha_action.triggered.connect(self._adjust_interval_label_alpha)
+        mview.addAction(interval_label_alpha_action)
 
         # ----- Group 4: Raster plots -----
         mview.addSeparator()
@@ -2118,13 +2118,13 @@ class LoupeApp(QtWidgets.QMainWindow):
         raster_thickness_action.triggered.connect(self._adjust_raster_event_thickness)
         mview.addAction(raster_thickness_action)
 
-        adjust_event_markers_action = QtGui.QAction(
-            "Adjust Event Marker Properties...", self
+        adjust_sample_markers_action = QtGui.QAction(
+            "Adjust Sample Marker Properties...", self
         )
-        adjust_event_markers_action.triggered.connect(
-            self._adjust_event_marker_properties
+        adjust_sample_markers_action.triggered.connect(
+            self._adjust_sample_marker_properties
         )
-        mview.addAction(adjust_event_markers_action)
+        mview.addAction(adjust_sample_markers_action)
 
         # ----- Group 5: Heatmap plots -----
         mview.addSeparator()
@@ -2402,19 +2402,19 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         dlg.exec()
 
-    def _adjust_event_marker_properties(self):
-        """View-menu handler: live-edit color, size, and opacity per event layer."""
-        if not self.event_layers:
+    def _adjust_sample_marker_properties(self):
+        """View-menu handler: live-edit color, size, and opacity per sample-marker set."""
+        if not self.sample_markers:
             QtWidgets.QMessageBox.information(
                 self,
-                "Event Marker Properties",
-                "No event marker layers loaded.\n\n"
+                "Sample Marker Properties",
+                "No sample markers loaded.\n\n"
                 "Pass bool_event_arrays= to view() to add markers.",
             )
             return
 
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Adjust Event Marker Properties")
+        dlg.setWindowTitle("Adjust Sample Marker Properties")
         outer = QtWidgets.QVBoxLayout(dlg)
 
         intro = QtWidgets.QLabel(
@@ -2429,39 +2429,39 @@ class LoupeApp(QtWidgets.QMainWindow):
             lbl.setStyleSheet("font-weight: bold;")
             grid.addWidget(lbl, 0, col)
 
-        def _make_color_button(layer_idx: int) -> QtWidgets.QPushButton:
-            layer = self.event_layers[layer_idx]
+        def _make_color_button(marker_idx: int) -> QtWidgets.QPushButton:
+            marker = self.sample_markers[marker_idx]
             btn = QtWidgets.QPushButton()
             btn.setFixedWidth(60)
 
             def _refresh_swatch():
-                qc = pg.mkColor(self.event_layers[layer_idx].color)
+                qc = pg.mkColor(self.sample_markers[marker_idx].color)
                 btn.setStyleSheet(
                     f"background-color: {qc.name()}; border: 1px solid #888;"
                 )
 
             def _on_click():
-                cur = pg.mkColor(self.event_layers[layer_idx].color)
+                cur = pg.mkColor(self.sample_markers[marker_idx].color)
                 qc0 = QtGui.QColor(cur.red(), cur.green(), cur.blue())
                 picked = QtWidgets.QColorDialog.getColor(
-                    qc0, dlg, f"Layer {layer_idx} Color"
+                    qc0, dlg, f"Marker {marker_idx} Color"
                 )
                 if picked.isValid():
-                    self.event_layers[layer_idx].color = (
+                    self.sample_markers[marker_idx].color = (
                         picked.red(), picked.green(), picked.blue()
                     )
                     _refresh_swatch()
-                    self._apply_event_layer_style(layer_idx)
+                    self._apply_sample_marker_style(marker_idx)
 
             btn.clicked.connect(_on_click)
             _refresh_swatch()
             return btn
 
-        for li, layer in enumerate(self.event_layers):
+        for li, marker in enumerate(self.sample_markers):
             row = li + 1
             grid.addWidget(QtWidgets.QLabel(str(li)), row, 0)
 
-            symbol_lbl = QtWidgets.QLabel(layer.marker)
+            symbol_lbl = QtWidgets.QLabel(marker.marker)
             symbol_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             grid.addWidget(symbol_lbl, row, 1)
 
@@ -2471,11 +2471,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             size_spin.setRange(2.0, 40.0)
             size_spin.setSingleStep(0.5)
             size_spin.setDecimals(1)
-            size_spin.setValue(float(layer.size))
+            size_spin.setValue(float(marker.size))
             size_spin.valueChanged.connect(
                 lambda v, idx=li: (
-                    setattr(self.event_layers[idx], "size", float(v)),
-                    self._apply_event_layer_style(idx),
+                    setattr(self.sample_markers[idx], "size", float(v)),
+                    self._apply_sample_marker_style(idx),
                 )
             )
             grid.addWidget(size_spin, row, 3)
@@ -2483,14 +2483,14 @@ class LoupeApp(QtWidgets.QMainWindow):
             alpha_row = QtWidgets.QHBoxLayout()
             alpha_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
             alpha_slider.setRange(0, 255)
-            alpha_slider.setValue(int(layer.alpha))
-            alpha_lbl = QtWidgets.QLabel(f"{int(layer.alpha)}")
+            alpha_slider.setValue(int(marker.alpha))
+            alpha_lbl = QtWidgets.QLabel(f"{int(marker.alpha)}")
             alpha_lbl.setFixedWidth(32)
             alpha_slider.valueChanged.connect(
                 lambda v, idx=li, lbl=alpha_lbl: (
-                    setattr(self.event_layers[idx], "alpha", int(v)),
+                    setattr(self.sample_markers[idx], "alpha", int(v)),
                     lbl.setText(str(int(v))),
-                    self._apply_event_layer_style(idx),
+                    self._apply_sample_marker_style(idx),
                 )
             )
             alpha_row.addWidget(alpha_slider)
@@ -2508,17 +2508,17 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         dlg.exec()
 
-    def _label_brush_color(self, name: str) -> tuple[int, int, int, int]:
-        """Return the effective RGBA for a label, scaled by label_alpha_multiplier."""
+    def _interval_label_brush_color(self, name: str) -> tuple[int, int, int, int]:
+        """Return the effective RGBA for a label, scaled by interval_label_alpha_multiplier."""
         r, g, b, a = self.label_colors.get(name, (150, 150, 150, 80))
-        a_scaled = int(round(a * float(self.label_alpha_multiplier)))
+        a_scaled = int(round(a * float(self.interval_label_alpha_multiplier)))
         a_scaled = max(0, min(255, a_scaled))
         return (r, g, b, a_scaled)
 
-    def _refresh_label_alpha(self) -> None:
-        """Re-apply current label_alpha_multiplier to all existing label regions."""
-        for (_a, _b, name), bundle in self._label_visuals.items():
-            color = self._label_brush_color(name)
+    def _refresh_interval_label_alpha(self) -> None:
+        """Re-apply current interval_label_alpha_multiplier to all existing label regions."""
+        for (_a, _b, name), bundle in self._interval_label_visuals.items():
+            color = self._interval_label_brush_color(name)
             brush = pg.mkBrush(*color)
             pen = pg.mkPen(*color)
             for _i, reg in bundle.plot_regions:
@@ -2537,16 +2537,16 @@ class LoupeApp(QtWidgets.QMainWindow):
                 reg.setBrush(brush)
                 for line in reg.lines:
                     line.setPen(pen)
-        for (_a, _b, name), region in self._hypnogram_label_visuals.items():
-            color = self._label_brush_color(name)
+        for (_a, _b, name), region in self._hypnogram_interval_label_visuals.items():
+            color = self._interval_label_brush_color(name)
             region.setBrush(pg.mkBrush(*color))
             for line in region.lines:
                 line.setPen(pg.mkPen(*color))
 
-    def _adjust_label_alpha(self):
+    def _adjust_interval_label_alpha(self):
         """Show a dialog to adjust label overlay alpha (transparency)."""
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Adjust Label Alpha")
+        dlg.setWindowTitle("Adjust Interval Label Alpha")
         lay = QtWidgets.QVBoxLayout(dlg)
 
         label = QtWidgets.QLabel(
@@ -2557,17 +2557,17 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         slider.setRange(0, 100)  # 0.00 to 1.00
-        slider.setValue(int(round(self.label_alpha_multiplier * 100)))
+        slider.setValue(int(round(self.interval_label_alpha_multiplier * 100)))
         lay.addWidget(slider)
 
-        val_label = QtWidgets.QLabel(f"{self.label_alpha_multiplier:.2f}")
+        val_label = QtWidgets.QLabel(f"{self.interval_label_alpha_multiplier:.2f}")
         lay.addWidget(val_label)
 
         def on_change(val):
             mult = val / 100.0
             val_label.setText(f"{mult:.2f}")
-            self.label_alpha_multiplier = mult
-            self._refresh_label_alpha()
+            self.interval_label_alpha_multiplier = mult
+            self._refresh_interval_label_alpha()
 
         slider.valueChanged.connect(on_change)
 
@@ -2579,7 +2579,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _edit_epoch_note(self):
         """Edit the note (and any extra columns) for the current epoch."""
-        if len(self.label_set) == 0:
+        if len(self.interval_label_set) == 0:
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Epochs",
@@ -2588,28 +2588,28 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         # Find the epoch at cursor position
-        target_row = self.label_set.at_time(self.cursor_time)
+        target_row = self.interval_label_set.at_time(self.cursor_time)
 
         # Otherwise, the most recently created surviving epoch.
-        if target_row is None and self.label_set.history:
-            for rid in reversed(self.label_set.history):
-                row = self.label_set.row_for_id(rid)
+        if target_row is None and self.interval_label_set.history:
+            for rid in reversed(self.interval_label_set.history):
+                row = self.interval_label_set.row_for_id(rid)
                 if row is not None:
                     target_row = row
                     break
 
         if target_row is None:
-            target_row = self.label_set.row_at_index(len(self.label_set) - 1)
+            target_row = self.interval_label_set.row_at_index(len(self.interval_label_set) - 1)
 
         editable_cols: list[str] = []
-        if self.label_set.schema.note_col:
-            editable_cols.append(self.label_set.schema.note_col)
-        editable_cols.extend(self.label_set.schema.extra_cols)
+        if self.interval_label_set.schema.note_col:
+            editable_cols.append(self.interval_label_set.schema.note_col)
+        editable_cols.extend(self.interval_label_set.schema.extra_cols)
         if not editable_cols:
             QtWidgets.QMessageBox.information(
                 self,
                 "No editable metadata",
-                "This LabelSchema declares no note column or extra columns.",
+                "This IntervalLabelSchema declares no note column or extra columns.",
             )
             return
 
@@ -2629,7 +2629,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for col in editable_cols:
             row_label = QtWidgets.QLabel(col)
             layout.addWidget(row_label)
-            if col == self.label_set.schema.note_col:
+            if col == self.interval_label_set.schema.note_col:
                 editor = QtWidgets.QPlainTextEdit()
                 value = target_row.note
                 editor.setPlainText(value)
@@ -2654,24 +2654,24 @@ class LoupeApp(QtWidgets.QMainWindow):
                     text = editor.toPlainText().strip()
                 else:
                     text = editor.text().strip()
-                if col == self.label_set.schema.note_col:
-                    self.label_set.set_note(target_row.row_id, text)
+                if col == self.interval_label_set.schema.note_col:
+                    self.interval_label_set.set_note(target_row.row_id, text)
                 else:
-                    self.label_set.update_cell(
+                    self.interval_label_set.update_cell(
                         target_row.row_id, col, text or None
                     )
             self._update_status()
-            self._refresh_label_summary()
+            self._refresh_interval_label_summary()
 
     def _show_jump_to_epochs_dialog(self):
         """Show a table of all epochs for navigation and filtering."""
-        if len(self.label_set) == 0:
+        if len(self.interval_label_set) == 0:
             QtWidgets.QMessageBox.information(
                 self, "Jump to Epochs", "No scored epochs to display."
             )
             return
 
-        schema = self.label_set.schema
+        schema = self.interval_label_set.schema
         # Columns: Start (s), End (s), State [hotkeys], (Note?), then extras
         column_specs: list[tuple[str, str]] = [
             ("Start (s)", "__start"),
@@ -2693,7 +2693,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         filter_layout.addWidget(QtWidgets.QLabel("Filter by State:"))
         state_filter = QtWidgets.QComboBox()
         state_filter.addItem("(All)")
-        unique_states = sorted({row.label for row in self.label_set})
+        unique_states = sorted({row.label for row in self.interval_label_set})
         for state in unique_states:
             state_filter.addItem(state)
         filter_layout.addWidget(state_filter)
@@ -2736,7 +2736,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
             table.setRowCount(0)
             r = 0
-            for row in self.label_set:
+            for row in self.interval_label_set:
                 if state_val != "(All)" and row.label != state_val:
                     continue
                 # Build all cell texts so we can filter against any of them
@@ -2763,7 +2763,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             if not item:
                 return
             row_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
-            row = self.label_set.row_for_id(int(row_id)) if row_id is not None else None
+            row = self.interval_label_set.row_for_id(int(row_id)) if row_id is not None else None
             if row is None:
                 return
             center = (row.start + row.end) / 2.0
@@ -2792,14 +2792,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         Centers the view on the epoch without changing window size,
         using the same logic as the Jump to Epochs dialog.
         """
-        if len(self.label_set) == 0:
+        if len(self.interval_label_set) == 0:
             return
 
         cursor = self.cursor_time
 
         if direction > 0:
             # Find first epoch whose center is strictly after cursor
-            for row in self.label_set:
+            for row in self.interval_label_set:
                 center = (row.start + row.end) / 2.0
                 if center > cursor:
                     break
@@ -2808,7 +2808,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             # Find last epoch whose center is strictly before cursor
             found = None
-            for r in self.label_set:
+            for r in self.interval_label_set:
                 center = (r.start + r.end) / 2.0
                 if center < cursor:
                     found = r
@@ -3558,18 +3558,18 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             self.series_colors = [(255, 255, 255, 255)] * len(series_list)
 
-        self._clear_all_label_visuals()
+        self._clear_all_interval_label_visuals()
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
-        self.event_scatters.clear()
+        self.sample_marker_scatters.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
         self.dense_curves.clear()
         self.dense_cur_lines.clear()
         self.dense_sel_regions.clear()
-        self.dense_label_regions.clear()
+        self.dense_interval_label_regions.clear()
         self.dense_vscrollbars.clear()
         self.dense_vscroll_proxies.clear()
         self._dense_vscroll_inverted.clear()
@@ -3630,8 +3630,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         ):
             self.trace_visible = [True] * len(self.series)
         self._apply_trace_visibility()
-        if len(self.label_set) > 0:
-            self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
+        if len(self.interval_label_set) > 0:
+            self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
 
     # Default overlay color palette
     _DEFAULT_OVERLAY_COLORS = [
@@ -3715,11 +3715,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._plot_to_series.append(indices)
 
         # Clear existing plots
-        self._clear_all_label_visuals()
+        self._clear_all_interval_label_visuals()
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
-        self.event_scatters.clear()
+        self.sample_marker_scatters.clear()
         self._plot_to_curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
@@ -3757,8 +3757,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._align_left_axes)
         QtCore.QTimer.singleShot(100, self._align_left_axes)
         self._apply_trace_visibility()
-        if len(self.label_set) > 0:
-            self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
+        if len(self.interval_label_set) > 0:
+            self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
 
     def set_xarray(self, data, filter_dict=None):
         """Load xarray DataArray(s) into the viewer.
@@ -4025,7 +4025,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.cursor_time = self.window_start
 
         # Clear any existing plots
-        self._clear_all_label_visuals()
+        self._clear_all_interval_label_visuals()
         self.plot_area.clear()
         self.raster_plots.clear()
         self.raster_items.clear()
@@ -4107,8 +4107,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_x_range()
         self._update_nav_slider_from_window()
         self._update_hypnogram_extents()
-        if len(self.label_set) > 0:
-            self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
+        if len(self.interval_label_set) > 0:
+            self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _rebuild_all_plots(self):
@@ -4118,18 +4118,18 @@ class LoupeApp(QtWidgets.QMainWindow):
         old_cursor = self.cursor_time
 
         # Clear and rebuild
-        self._clear_all_label_visuals()
+        self._clear_all_interval_label_visuals()
         self.plot_area.clear()
         self.plots.clear()
         self.curves.clear()
-        self.event_scatters.clear()
+        self.sample_marker_scatters.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
         self.dense_curves.clear()
         self.dense_cur_lines.clear()
         self.dense_sel_regions.clear()
-        self.dense_label_regions.clear()
+        self.dense_interval_label_regions.clear()
         self.dense_vscrollbars.clear()
         self.dense_vscroll_proxies.clear()
         self._dense_vscroll_inverted.clear()
@@ -4170,7 +4170,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._apply_x_range()
         self._update_nav_slider_from_window()
-        self._sync_label_visuals(force_rebuild=True, refresh_summary=False)
+        self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _create_all_plots(self):
@@ -4259,13 +4259,13 @@ class LoupeApp(QtWidgets.QMainWindow):
             curve.setClipToView(True)
 
             scatters_for_series: list[pg.ScatterPlotItem] = []
-            for layer in self.event_layers:
-                sk = _scatter_kwargs_for_layer(layer)
+            for marker in self.sample_markers:
+                sk = _scatter_kwargs_for_marker(marker)
                 scatter = pg.ScatterPlotItem(**sk, pxMode=True, antialias=False)
                 scatter.setZValue(10)
                 plt.addItem(scatter)
                 scatters_for_series.append(scatter)
-            self.event_scatters.append(scatters_for_series)
+            self.sample_marker_scatters.append(scatters_for_series)
 
             cur_line = pg.InfiniteLine(
                 angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -4935,7 +4935,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_curves.append(curves)
         self.dense_cur_lines.append(cur_line)
         self.dense_sel_regions.append(sel_region)
-        self.dense_label_regions.append([])
+        self.dense_interval_label_regions.append([])
 
         # Per-group vertical scrollbar as a proxy widget for the graphics layout.
         # An explicit stylesheet is required: QScrollBar inside a QGraphicsProxyWidget
@@ -5545,8 +5545,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             slot.label.show()
         # Hide the label-summary panel once any non-primary video opens
         # (matches the historical "make room for a second video" behavior).
-        if slot.index != 0 and self.label_summary_panel is not None:
-            self.label_summary_panel.hide()
+        if slot.index != 0 and self.interval_label_summary_panel is not None:
+            self.interval_label_summary_panel.hide()
         self._request_initial_frame()
 
     def _request_initial_frame(self):
@@ -5753,31 +5753,31 @@ class LoupeApp(QtWidgets.QMainWindow):
         for r in self.heatmap_sel_regions:
             r.hide()
 
-    def _label_key(self, row) -> LabelKey:
+    def _interval_label_key(self, row) -> IntervalLabelKey:
         """Stable visual key for a label row (its row_id)."""
         return int(row.row_id)
 
-    def _rebuild_label_index(self) -> None:
-        ls = self.label_set
-        self._label_keys_in_order = list(int(rid) for rid in ls.row_ids)
-        self._label_starts = np.asarray(ls.starts, dtype=float)
-        self._label_ends = np.asarray(ls.ends, dtype=float)
+    def _rebuild_interval_label_index(self) -> None:
+        ls = self.interval_label_set
+        self._interval_label_keys_in_order = list(int(rid) for rid in ls.row_ids)
+        self._interval_label_starts = np.asarray(ls.starts, dtype=float)
+        self._interval_label_ends = np.asarray(ls.ends, dtype=float)
 
-    def _visible_label_index_range(self) -> tuple[int, int]:
-        if len(self.label_set) == 0 or self.window_len <= 0:
+    def _visible_interval_label_index_range(self) -> tuple[int, int]:
+        if len(self.interval_label_set) == 0 or self.window_len <= 0:
             return (0, 0)
         t0 = float(self.window_start)
         t1 = float(self.window_start + self.window_len)
-        return self.label_set.visible_index_range(t0, t1)
+        return self.interval_label_set.visible_index_range(t0, t1)
 
-    def _visible_label_entries(self) -> list[tuple[LabelKey, "object"]]:
-        start_idx, end_idx = self._visible_label_index_range()
+    def _visible_interval_label_entries(self) -> list[tuple[IntervalLabelKey, "object"]]:
+        start_idx, end_idx = self._visible_interval_label_index_range()
         return [
-            (self._label_keys_in_order[idx], self.label_set.row_at_index(idx))
+            (self._interval_label_keys_in_order[idx], self.interval_label_set.row_at_index(idx))
             for idx in range(start_idx, end_idx)
         ]
 
-    def _has_visible_window_label_targets(self) -> bool:
+    def _has_visible_window_interval_label_targets(self) -> bool:
         return (
             any(self._is_trace_plot_visible(idx) for idx in range(len(self.plots)))
             or any(self._is_raster_plot_visible(idx) for idx in range(len(self.raster_plots)))
@@ -5792,13 +5792,13 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _add_window_label_visual(self, row) -> None:
-        key = self._label_key(row)
-        if key in self._label_visuals:
+    def _add_window_interval_label_visual(self, row) -> None:
+        key = self._interval_label_key(row)
+        if key in self._interval_label_visuals:
             return
 
         a, b, name = float(row.start), float(row.end), str(row.label)
-        color = self._label_brush_color(name)
+        color = self._interval_label_brush_color(name)
         plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
         raster_regions: list[tuple[int, pg.LinearRegionItem]] = []
         dense_regions: list[tuple[int, pg.LinearRegionItem]] = []
@@ -5859,7 +5859,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not (plot_regions or raster_regions or dense_regions or heatmap_regions):
             return
 
-        self._label_visuals[key] = LabelVisualBundle(
+        self._interval_label_visuals[key] = IntervalLabelVisualBundle(
             plot_regions=plot_regions,
             raster_regions=raster_regions,
             dense_regions=dense_regions,
@@ -5867,8 +5867,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             heatmap_regions=heatmap_regions,
         )
 
-    def _remove_window_label_visual(self, key: LabelKey) -> None:
-        bundle = self._label_visuals.pop(key, None)
+    def _remove_window_interval_label_visual(self, key: IntervalLabelKey) -> None:
+        bundle = self._interval_label_visuals.pop(key, None)
         if bundle is None:
             return
 
@@ -5884,13 +5884,13 @@ class LoupeApp(QtWidgets.QMainWindow):
         for _i, item in bundle.heatmap_regions:
             self._remove_graphics_item(item)
 
-    def _add_hypnogram_label_visual(self, row) -> None:
-        key = self._label_key(row)
-        if key in self._hypnogram_label_visuals or self.hypnogram_plot is None:
+    def _add_hypnogram_interval_label_visual(self, row) -> None:
+        key = self._interval_label_key(row)
+        if key in self._hypnogram_interval_label_visuals or self.hypnogram_plot is None:
             return
 
         a, b, name = float(row.start), float(row.end), str(row.label)
-        color = self._label_brush_color(name)
+        color = self._interval_label_brush_color(name)
         region = pg.LinearRegionItem(
             values=(a, b),
             brush=pg.mkBrush(*color),
@@ -5899,109 +5899,109 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         region.setZValue(-10)
         self.hypnogram_plot.addItem(region)
-        self._hypnogram_label_visuals[key] = region
+        self._hypnogram_interval_label_visuals[key] = region
 
-    def _remove_hypnogram_label_visual(self, key: LabelKey) -> None:
-        region = self._hypnogram_label_visuals.pop(key, None)
+    def _remove_hypnogram_interval_label_visual(self, key: IntervalLabelKey) -> None:
+        region = self._hypnogram_interval_label_visuals.pop(key, None)
         if region is None:
             return
         self._remove_graphics_item(region)
 
-    def _clear_window_label_visuals(self) -> None:
-        for key in list(self._label_visuals):
-            self._remove_window_label_visual(key)
+    def _clear_window_interval_label_visuals(self) -> None:
+        for key in list(self._interval_label_visuals):
+            self._remove_window_interval_label_visual(key)
 
-    def _clear_hypnogram_label_visuals(self) -> None:
-        for key in list(self._hypnogram_label_visuals):
-            self._remove_hypnogram_label_visual(key)
+    def _clear_hypnogram_interval_label_visuals(self) -> None:
+        for key in list(self._hypnogram_interval_label_visuals):
+            self._remove_hypnogram_interval_label_visual(key)
 
-    def _clear_all_label_visuals(self) -> None:
-        self._clear_window_label_visuals()
-        self._clear_hypnogram_label_visuals()
+    def _clear_all_interval_label_visuals(self) -> None:
+        self._clear_window_interval_label_visuals()
+        self._clear_hypnogram_interval_label_visuals()
 
-    def _refresh_label_summary(self, force: bool = False) -> None:
-        panel = getattr(self, "label_summary_panel", None)
+    def _refresh_interval_label_summary(self, force: bool = False) -> None:
+        panel = getattr(self, "interval_label_summary_panel", None)
         if panel is None:
             return
         if force or not panel.isHidden():
             panel.refresh()
 
-    def _sync_hypnogram_label_visuals(self, *, force_rebuild: bool = False) -> None:
+    def _sync_hypnogram_interval_label_visuals(self, *, force_rebuild: bool = False) -> None:
         if force_rebuild:
-            self._clear_hypnogram_label_visuals()
+            self._clear_hypnogram_interval_label_visuals()
         else:
-            new_key_set = set(self._label_keys_in_order)
-            for key in list(self._hypnogram_label_visuals):
+            new_key_set = set(self._interval_label_keys_in_order)
+            for key in list(self._hypnogram_interval_label_visuals):
                 if key not in new_key_set:
-                    self._remove_hypnogram_label_visual(key)
+                    self._remove_hypnogram_interval_label_visual(key)
 
-        for row in self.label_set:
-            if self._label_key(row) not in self._hypnogram_label_visuals:
-                self._add_hypnogram_label_visual(row)
+        for row in self.interval_label_set:
+            if self._interval_label_key(row) not in self._hypnogram_interval_label_visuals:
+                self._add_hypnogram_interval_label_visual(row)
 
-    def _sync_window_label_visuals(self, *, force_rebuild: bool = False) -> None:
-        if force_rebuild or not self._has_visible_window_label_targets():
-            self._clear_window_label_visuals()
-            if not self._has_visible_window_label_targets():
+    def _sync_window_interval_label_visuals(self, *, force_rebuild: bool = False) -> None:
+        if force_rebuild or not self._has_visible_window_interval_label_targets():
+            self._clear_window_interval_label_visuals()
+            if not self._has_visible_window_interval_label_targets():
                 return
 
-        visible_entries = self._visible_label_entries()
+        visible_entries = self._visible_interval_label_entries()
         new_key_set = {key for key, _ in visible_entries}
-        for key in list(self._label_visuals):
+        for key in list(self._interval_label_visuals):
             if key not in new_key_set:
-                self._remove_window_label_visual(key)
+                self._remove_window_interval_label_visual(key)
 
         for key, row in visible_entries:
-            if key not in self._label_visuals:
-                self._add_window_label_visual(row)
+            if key not in self._interval_label_visuals:
+                self._add_window_interval_label_visual(row)
 
-    def _sync_label_visuals(
+    def _sync_interval_label_visuals(
         self,
         *,
         force_rebuild: bool = False,
         refresh_summary: bool = True,
         force_rebuild_window: bool = False,
     ) -> None:
-        self._sync_hypnogram_label_visuals(force_rebuild=force_rebuild)
-        self._sync_window_label_visuals(
+        self._sync_hypnogram_interval_label_visuals(force_rebuild=force_rebuild)
+        self._sync_window_interval_label_visuals(
             force_rebuild=force_rebuild or force_rebuild_window
         )
 
         if refresh_summary:
-            self._refresh_label_summary()
+            self._refresh_interval_label_summary()
 
-    def _finalize_label_change(
+    def _finalize_interval_label_change(
         self, *, force_rebuild: bool = False, refresh_summary: bool = True
     ) -> None:
-        self._merge_adjacent_same_labels()
-        self._rebuild_label_index()
-        self._sync_label_visuals(
+        self._merge_adjacent_same_interval_labels()
+        self._rebuild_interval_label_index()
+        self._sync_interval_label_visuals(
             force_rebuild=force_rebuild, refresh_summary=refresh_summary
         )
 
-    def _add_new_label(self, start, end, label):
+    def _add_new_interval_label(self, start, end, label):
         """Adds new label, overwriting/modifying existing ones in the range."""
         try:
-            self.label_set.add(float(start), float(end), str(label))
+            self.interval_label_set.add(float(start), float(end), str(label))
         except ValueError:
             return
-        self._finalize_label_change()
+        self._finalize_interval_label_change()
 
-    def _clear_labels_in_range(self, start: float, end: float):
+    def _clear_interval_labels_in_range(self, start: float, end: float):
         """Remove any labels overlapping [start, end). Preserve non-overlapping parts.
 
         If an existing labeled epoch partially overlaps the range, it is split
         and only the overlapping part is removed.
         """
-        self.label_set.clear_range(float(start), float(end))
-        self._finalize_label_change()
+        self.interval_label_set.clear_range(float(start), float(end))
+        self._finalize_interval_label_change()
 
-    def _merge_adjacent_same_labels(self, adjacency_eps: float = 1e-9):
-        self.label_set.merge_adjacent(eps=adjacency_eps)
+    def _merge_adjacent_same_interval_labels(self, adjacency_eps: float = 1e-9):
+        self.interval_label_set.merge_adjacent(eps=adjacency_eps)
 
-    def _redraw_all_labels(self):
+    def _redraw_all_interval_labels(self):
         """Force a full rebuild of all visual label regions."""
-        self._sync_label_visuals(force_rebuild=True)
+        self._sync_interval_label_visuals(force_rebuild=True)
 
     def _set_hypnogram_window_marker(self, a: float, b: float) -> None:
         lines = self._hypnogram_window_marker_lines
@@ -6029,17 +6029,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
 
     def _delete_last_label(self):
-        if len(self.label_set) == 0:
+        if len(self.interval_label_set) == 0:
             return
         # Match the legacy "latest by end time" semantic: pick the row whose
         # end is greatest, regardless of creation order.
-        ends = self.label_set.ends
+        ends = self.interval_label_set.ends
         if len(ends) == 0:
             return
         idx = int(np.argmax(ends))
-        row = self.label_set.row_at_index(idx)
-        self.label_set.delete_row(row.row_id)
-        self._finalize_label_change()
+        row = self.interval_label_set.row_at_index(idx)
+        self.interval_label_set.delete_row(row.row_id)
+        self._finalize_interval_label_change()
         self._update_status(
             f"Deleted label: {row.label} [{row.start:.3f}, {row.end:.3f}]"
         )
@@ -6079,7 +6079,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             a = float(min(self._select_start, self._select_end))
             b = float(max(self._select_start, self._select_end))
             if b > a:
-                self._add_new_label(a, b, label)
+                self._add_new_interval_label(a, b, label)
                 self._update_status(f"Labeled {label}: [{a:.3f}, {b:.3f}]")
                 self._clear_selection()
                 return
@@ -6093,8 +6093,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             a = float(min(self._select_start, self._select_end))
             b = float(max(self._select_start, self._select_end))
             if b > a:
-                self._clear_labels_in_range(a, b)
-                self._update_status(f"Cleared labels in [{a:.3f}, {b:.3f}]")
+                self._clear_interval_labels_in_range(a, b)
+                self._update_status(f"Cleared interval labels in [{a:.3f}, {b:.3f}]")
                 self._clear_selection()
                 return
 
@@ -6155,105 +6155,105 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     # ---------- Export / Import ----------
 
-    _LABEL_LOAD_FILTER = (
+    _INTERVAL_LABEL_LOAD_FILTER = (
         "Label files (*.csv *.htsv *.parquet *.txt);;"
         "CSV (*.csv);;HTSV (*.htsv);;Parquet (*.parquet);;Visbrain (*.txt)"
     )
-    _LABEL_SAVE_FILTER = (
+    _INTERVAL_LABEL_SAVE_FILTER = (
         "CSV (*.csv);;HTSV (*.htsv);;Parquet (*.parquet)"
     )
 
-    def load_labels(
+    def load_interval_labels(
         self,
         path: str,
         *,
-        schema: LabelSchema | None = None,
+        schema: IntervalLabelSchema | None = None,
         writeback_allowed: bool | None = None,
     ) -> None:
-        """Load labels from a CSV/HTSV/Parquet/Visbrain file.
+        """Load interval labels from a CSV/HTSV/Parquet/Visbrain file.
 
         Parameters
         ----------
         path
             Path to the file.
         schema
-            Optional :class:`LabelSchema`. If omitted, inferred for ``.csv``
+            Optional :class:`IntervalLabelSchema`. If omitted, inferred for ``.csv``
             and ``.txt``; required for ``.htsv``/``.parquet``.
         writeback_allowed
-            If given, override the new LabelSet's writeback flag. If omitted,
-            preserves whatever the previous LabelSet had.
+            If given, override the new IntervalLabelSet's writeback flag. If omitted,
+            preserves whatever the previous IntervalLabelSet had.
         """
         wb = (
-            self.label_set.writeback_allowed
+            self.interval_label_set.writeback_allowed
             if writeback_allowed is None
             else bool(writeback_allowed)
         )
-        new_set = LabelSet.from_path(path, schema=schema, writeback_allowed=wb)
-        self.label_set = new_set
-        self._finalize_label_change(force_rebuild=True)
+        new_set = IntervalLabelSet.from_path(path, schema=schema, writeback_allowed=wb)
+        self.interval_label_set = new_set
+        self._finalize_interval_label_change(force_rebuild=True)
         self._update_status(
-            f"Loaded {len(self.label_set)} labels from {os.path.basename(path)}"
+            f"Loaded {len(self.interval_label_set)} interval labels from {os.path.basename(path)}"
         )
 
-    def _on_load_labels(self):
+    def _on_load_interval_labels(self):
         self._stop_playback_if_playing()
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Load labels", filter=self._LABEL_LOAD_FILTER
+            self, "Load interval labels", filter=self._INTERVAL_LABEL_LOAD_FILTER
         )
         if not path:
             return
         try:
-            self.load_labels(path)
-        except (LabelIOError, LabelSchemaError) as e:
+            self.load_interval_labels(path)
+        except (IntervalLabelIOError, IntervalLabelSchemaError) as e:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Load error",
-                f"Failed to load labels file:\n\n{e}\n\n"
-                f"For .htsv/.parquet, pass an explicit LabelSchema via the "
-                f"`labels=` and `label_schema=` kwargs of view().",
+                f"Failed to load interval-labels file:\n\n{e}\n\n"
+                f"For .htsv/.parquet, pass an explicit IntervalLabelSchema via the "
+                f"`interval_labels=` and `interval_label_schema=` kwargs of view().",
             )
         except Exception as e:
             QtWidgets.QMessageBox.warning(
-                self, "Load error", f"Failed to load or parse labels file:\n\n{e}"
+                self, "Load error", f"Failed to load or parse interval-labels file:\n\n{e}"
             )
 
-    def _on_export_labels(self):
-        """Save labels to a new file via Save-As dialog (never overwrites source)."""
+    def _on_export_interval_labels(self):
+        """Save interval labels to a new file via Save-As dialog (never overwrites source)."""
         self._stop_playback_if_playing()
-        if len(self.label_set) == 0:
-            QtWidgets.QMessageBox.information(self, "Export", "No labels to export.")
+        if len(self.interval_label_set) == 0:
+            QtWidgets.QMessageBox.information(self, "Export", "No interval labels to export.")
             return
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export labels", filter=self._LABEL_SAVE_FILTER
+            self, "Export interval labels", filter=self._INTERVAL_LABEL_SAVE_FILTER
         )
         if not path:
             return
         try:
-            self.label_set.save_as(path)
-            self._update_status(f"Exported labels to {path}")
-        except (LabelIOError, LabelSchemaError) as e:
+            self.interval_label_set.save_as(path)
+            self._update_status(f"Exported interval labels to {path}")
+        except (IntervalLabelIOError, IntervalLabelSchemaError) as e:
             QtWidgets.QMessageBox.warning(self, "Export error", str(e))
 
     def _on_save_to_source(self):
-        """Overwrite the original labels file. Requires labels_writeback=True."""
+        """Overwrite the original interval-labels file. Requires interval_labels_writeback=True."""
         self._stop_playback_if_playing()
-        if not self.label_set.writeback_allowed:
+        if not self.interval_label_set.writeback_allowed:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Save",
-                "Save-to-source is disabled. Pass `labels_writeback=True` to "
+                "Save-to-source is disabled. Pass `interval_labels_writeback=True` to "
                 "view() to opt in to overwriting the original file.",
             )
             return
-        if self.label_set.source_path is None:
+        if self.interval_label_set.source_path is None:
             QtWidgets.QMessageBox.warning(
-                self, "Save", "No source file recorded; use Export Labels As… instead."
+                self, "Save", "No source file recorded; use Export Interval Labels As… instead."
             )
             return
         try:
-            self.label_set.save_to_source()
-            self._update_status(f"Saved labels to {self.label_set.source_path}")
-        except (LabelIOError, LabelSchemaError) as e:
+            self.interval_label_set.save_to_source()
+            self._update_status(f"Saved interval labels to {self.interval_label_set.source_path}")
+        except (IntervalLabelIOError, IntervalLabelSchemaError) as e:
             QtWidgets.QMessageBox.warning(self, "Save error", str(e))
 
     # ---------- Navigation / rendering ----------
@@ -6419,7 +6419,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._set_cursor_time(new_cursor_time, update_slider=True)
 
         self._refresh_curves()
-        self._sync_window_label_visuals()
+        self._sync_window_interval_label_visuals()
 
         # Update hypnogram window marker to show current window
         self._set_hypnogram_window_marker(float(xr[0]), float(xr[1]))
@@ -6520,10 +6520,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                 t_slice = s.t[i0:i1]
                 y_slice = s.y[i0:i1]
                 curve.setData(t_slice, y_slice, _callSync="off")
-                if self.event_layers and idx < len(self.event_scatters):
-                    for layer_idx, layer in enumerate(self.event_layers):
-                        mask = layer.bool_per_series[idx][i0:i1]
-                        self.event_scatters[idx][layer_idx].setData(
+                if self.sample_markers and idx < len(self.sample_marker_scatters):
+                    for marker_idx, marker in enumerate(self.sample_markers):
+                        mask = marker.bool_per_series[idx][i0:i1]
+                        self.sample_marker_scatters[idx][marker_idx].setData(
                             x=t_slice[mask], y=y_slice[mask], _callSync="off"
                         )
 
@@ -6532,20 +6532,20 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._refresh_raster_plots()
         self._refresh_heatmap_plots()
 
-    def _apply_event_layer_style(self, layer_idx: int) -> None:
-        """Push the current style of ``self.event_layers[layer_idx]`` to every
-        scatter item already on screen for that layer. Used by the
-        Adjust Event Marker Properties dialog to update markers live."""
-        if not (0 <= layer_idx < len(self.event_layers)):
+    def _apply_sample_marker_style(self, marker_idx: int) -> None:
+        """Push the current style of ``self.sample_markers[marker_idx]`` to every
+        scatter item already on screen for that marker set. Used by the
+        Adjust Sample Marker Properties dialog to update markers live."""
+        if not (0 <= marker_idx < len(self.sample_markers)):
             return
-        layer = self.event_layers[layer_idx]
-        sk = _scatter_kwargs_for_layer(layer)
+        marker = self.sample_markers[marker_idx]
+        sk = _scatter_kwargs_for_marker(marker)
         no_pen = pg.mkPen(0, 0, 0, 0)
         no_brush = pg.mkBrush(0, 0, 0, 0)
-        for scatters in self.event_scatters:
-            if layer_idx >= len(scatters):
+        for scatters in self.sample_marker_scatters:
+            if marker_idx >= len(scatters):
                 continue
-            scat = scatters[layer_idx]
+            scat = scatters[marker_idx]
             scat.setSymbol(sk["symbol"])
             scat.setSize(sk["size"])
             scat.setPen(sk["pen"] if sk["pen"] is not None else no_pen)
@@ -6822,8 +6822,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._update_plot_area_height()
             # Re-apply x-range to keep all linked
             self._apply_x_range()
-            if len(self.label_set) > 0:
-                self._sync_label_visuals(
+            if len(self.interval_label_set) > 0:
+                self._sync_interval_label_visuals(
                     refresh_summary=False,
                     force_rebuild_window=True,
                 )
@@ -6905,7 +6905,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                     "state_definitions= to view().",
                 )
             ]
-        state_rows.append(("0", "Clear labels in active selection"))
+        state_rows.append(("0", "Clear interval labels in active selection"))
 
         # Mouse / wheel interactions (not expressible as QActions).
         mouse_rows = [
@@ -6988,7 +6988,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.status.showMessage("  ".join(info))
 
     def _format_cursor_with_state(self):
-        row = self.label_set.at_time(self.cursor_time)
+        row = self.interval_label_set.at_time(self.cursor_time)
         if row is None:
             return f"cursor={self.cursor_time:.3f}s, state='Unlabeled'"
 
@@ -7001,8 +7001,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         return result
 
     def _get_state_and_epoch_at_time(self, t):
-        """Return the LabelRow at time ``t``, or ``None`` if unlabeled."""
-        return self.label_set.at_time(t)
+        """Return the IntervalLabelRow at time ``t``, or ``None`` if unlabeled."""
+        return self.interval_label_set.at_time(t)
 
     def _get_state_at_time(self, t):
         row = self._get_state_and_epoch_at_time(t)

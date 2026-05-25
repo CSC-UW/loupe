@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from loupe.labels import LabelSchema, LabelSet
+from loupe.interval_labels import IntervalLabelSchema, IntervalLabelSet
 from loupe.state_config import StateConfig, load_state_config
 
 if TYPE_CHECKING:
@@ -17,11 +17,11 @@ if TYPE_CHECKING:
     from loupe.app import LoupeApp
 
 __all__ = [
-    "EventLayer",
     "HeatmapConfig",
-    "LabelSchema",
-    "LabelSet",
+    "IntervalLabelSchema",
+    "IntervalLabelSet",
     "RasterConfig",
+    "SampleMarkers",
     "StateConfig",
     "TraceConfig",
     "VideoConfig",
@@ -31,11 +31,11 @@ __all__ = [
 
 
 @dataclass
-class EventLayer:
-    """Point markers drawn on top of a stacked-subplots :class:`TraceConfig`.
+class SampleMarkers:
+    """Marker symbols stamped onto specific samples of a stacked-subplots :class:`TraceConfig`.
 
-    Pass one or more in :attr:`TraceConfig.event_layers` to overlay spike-,
-    seizure-, or other point-event markers on the trace they annotate.
+    Pass one or more in :attr:`TraceConfig.sample_markers` to overlay spike-,
+    seizure-, or other sample-aligned markers on the trace they annotate.
 
     Parameters
     ----------
@@ -103,10 +103,10 @@ class TraceConfig:
         ``data.name`` as the prefix and raises ``ValueError`` if it's
         unset.  A string is used as the prefix verbatim (e.g.
         ``array_name="LFP"`` → ``"LFP: CA1-SR"``).
-    event_layers : list[EventLayer] or None
-        Optional point-event markers drawn on top of the traces produced by
+    sample_markers : list[SampleMarkers] or None
+        Optional sample-aligned markers drawn on top of the traces produced by
         this DataArray.  Stacked-subplots mode only; at most one
-        :class:`TraceConfig` per window may carry event layers, and no
+        :class:`TraceConfig` per window may carry sample markers, and no
         :class:`HeatmapConfig` / :class:`RasterConfig` / :class:`Zip` may
         appear alongside.
     """
@@ -121,7 +121,7 @@ class TraceConfig:
     color_by: str | None = None
     color: "str | tuple | None" = None
     array_name: bool | str = False
-    event_layers: "list[EventLayer] | None" = None
+    sample_markers: "list[SampleMarkers] | None" = None
 
     @classmethod
     def from_path(
@@ -397,7 +397,7 @@ class Zip:
             "traces_per_page": None,
             "color_by": None,
             "array_name": False,
-            "event_layers": None,
+            "sample_markers": None,
         }
         for i, t in enumerate(self.traces):
             if not isinstance(t, TraceConfig):
@@ -439,15 +439,15 @@ def view(
     window_len: float = 10.0,
     # Video sources
     videos: "VideoConfig | list[VideoConfig] | None" = None,
-    # Label loading
-    labels: "pl.DataFrame | str | Path | None" = None,
-    label_schema: LabelSchema | None = None,
-    labels_writeback: bool = False,
+    # Interval-label loading
+    interval_labels: "pl.DataFrame | str | Path | None" = None,
+    interval_label_schema: IntervalLabelSchema | None = None,
+    interval_labels_writeback: bool = False,
     # State definitions
     state_definitions: str | Path | None = None,
     keymap: dict | None = None,
     label_colors: dict | None = None,
-    label_alpha: float | None = None,
+    interval_label_alpha: float | None = None,
     **kwargs,
 ) -> LoupeApp:
     """Launch the Loupe viewer.
@@ -471,16 +471,16 @@ def view(
         list.  Both ``video_path`` and ``frame_times_path`` may be lists
         of equal length, in which case the files are loaded as one
         continuous (concatenated) video — see :class:`VideoConfig`.
-    labels : pl.DataFrame, str, or Path, optional
-        Initial labels.  Either a polars DataFrame (requires
-        ``label_schema``) or a path to a ``.csv``, ``.htsv``,
+    interval_labels : pl.DataFrame, str, or Path, optional
+        Initial interval labels.  Either a polars DataFrame (requires
+        ``interval_label_schema``) or a path to a ``.csv``, ``.htsv``,
         ``.parquet``, or Visbrain ``.txt`` file.
-    label_schema : LabelSchema, optional
-        Required when ``labels`` is a DataFrame or an ``.htsv``/
+    interval_label_schema : IntervalLabelSchema, optional
+        Required when ``interval_labels`` is a DataFrame or an ``.htsv``/
         ``.parquet`` file.
-    labels_writeback : bool
-        If True, the GUI's "Save Labels (overwrite source)" action will
-        overwrite the file passed in ``labels``.  Default False.
+    interval_labels_writeback : bool
+        If True, the GUI's "Save Interval Labels (overwrite source)" action
+        will overwrite the file passed in ``interval_labels``.  Default False.
     state_definitions : str or Path, optional
         Path to a JSON file with ``"keymap"`` and ``"label_colors"``.
     keymap : dict, optional
@@ -488,8 +488,8 @@ def view(
     label_colors : dict, optional
         Programmatic ``state -> color`` map; overrides
         ``state_definitions``.
-    label_alpha : float, optional
-        Initial label-overlay alpha multiplier in ``[0.0, 1.0]``.
+    interval_label_alpha : float, optional
+        Initial interval-label overlay alpha multiplier in ``[0.0, 1.0]``.
     **kwargs
         Forwarded to :class:`LoupeApp` (``fixed_scale``, etc.).
 
@@ -536,7 +536,7 @@ def view(
     from loupe.app import (
         HeatmapSeries,
         DenseGroup,
-        EventLayer as _RenderedEventLayer,
+        SampleMarkers as _RenderedSampleMarkers,
         LoupeApp,
         Series,
     )
@@ -583,34 +583,34 @@ def view(
                 "same window. Move the traces into the Zip, or remove the Zip."
             )
 
-    event_carrier = next(
+    marker_carrier = next(
         (
             x for x in data_list
-            if isinstance(x, TraceConfig) and x.event_layers is not None
+            if isinstance(x, TraceConfig) and x.sample_markers is not None
         ),
         None,
     )
-    if event_carrier is not None:
-        if event_carrier.mode != "stacked-subplots":
+    if marker_carrier is not None:
+        if marker_carrier.mode != "stacked-subplots":
             raise ValueError(
-                "TraceConfig.event_layers require mode='stacked-subplots'."
+                "TraceConfig.sample_markers require mode='stacked-subplots'."
             )
-        others = [x for x in data_list if x is not event_carrier]
+        others = [x for x in data_list if x is not marker_carrier]
         if any(
-            isinstance(x, TraceConfig) and x.event_layers is not None
+            isinstance(x, TraceConfig) and x.sample_markers is not None
             for x in others
         ):
             raise ValueError(
-                "Only one TraceConfig may carry event_layers per window."
+                "Only one TraceConfig may carry sample_markers per window."
             )
         if any(isinstance(x, (HeatmapConfig, RasterConfig, Zip)) for x in others):
             raise ValueError(
-                "TraceConfig.event_layers cannot coexist with HeatmapConfig / "
+                "TraceConfig.sample_markers cannot coexist with HeatmapConfig / "
                 "RasterConfig / Zip in the same window."
             )
         if any(isinstance(x, TraceConfig) for x in others):
             raise ValueError(
-                "TraceConfig.event_layers require a single TraceConfig in the "
+                "TraceConfig.sample_markers require a single TraceConfig in the "
                 "data list."
             )
 
@@ -638,7 +638,7 @@ def view(
     overlay_groups = None
     overlay_colors: list | None = None
     order_acc: list[tuple[str, int]] = []
-    event_layers_rendered: list | None = None
+    sample_markers_rendered: list | None = None
 
     def _resolve_array_name(cfg) -> str:
         v = cfg.array_name
@@ -764,25 +764,25 @@ def view(
                         any_stacked_color = True
                     order_acc.append(("ts", base))
                     base += 1
-                if cfg.event_layers is not None:
-                    bool_per_layer = convert_event_arrays_aligned_with(
+                if cfg.sample_markers is not None:
+                    bool_per_marker = convert_event_arrays_aligned_with(
                         cfg.data,
-                        [layer.bool_array for layer in cfg.event_layers],
+                        [m.bool_array for m in cfg.sample_markers],
                         order_by=cfg.order_by,
                         descending=cfg.descending,
                     )
-                    event_layers_rendered = []
-                    for layer, bps in zip(cfg.event_layers, bool_per_layer):
-                        size = layer.size
+                    sample_markers_rendered = []
+                    for marker, bps in zip(cfg.sample_markers, bool_per_marker):
+                        size = marker.size
                         if size is None:
-                            size = 8.0 if layer.marker == "o" else 9.0
-                        alpha = layer.alpha
+                            size = 8.0 if marker.marker == "o" else 9.0
+                        alpha = marker.alpha
                         if alpha is None:
-                            alpha = 110 if layer.marker == "o" else 255
-                        event_layers_rendered.append(
-                            _RenderedEventLayer(
-                                marker=layer.marker,
-                                color=layer.color,
+                            alpha = 110 if marker.marker == "o" else 255
+                        sample_markers_rendered.append(
+                            _RenderedSampleMarkers(
+                                marker=marker.marker,
+                                color=marker.color,
                                 bool_per_series=bps,
                                 size=size,
                                 alpha=alpha,
@@ -820,28 +820,28 @@ def view(
         label_colors=label_colors,
     )
 
-    # Build the initial LabelSet, if any.
-    label_set: LabelSet | None = None
-    if labels is not None:
+    # Build the initial IntervalLabelSet, if any.
+    interval_label_set: IntervalLabelSet | None = None
+    if interval_labels is not None:
         try:
             import polars as pl_runtime
         except ImportError:  # pragma: no cover - polars is a hard dep
             pl_runtime = None
-        if pl_runtime is not None and isinstance(labels, pl_runtime.DataFrame):
-            if label_schema is None:
+        if pl_runtime is not None and isinstance(interval_labels, pl_runtime.DataFrame):
+            if interval_label_schema is None:
                 raise ValueError(
-                    "label_schema= is required when labels is a polars DataFrame."
+                    "interval_label_schema= is required when interval_labels is a polars DataFrame."
                 )
-            label_set = LabelSet.from_dataframe(
-                labels,
-                label_schema,
-                writeback_allowed=labels_writeback,
+            interval_label_set = IntervalLabelSet.from_dataframe(
+                interval_labels,
+                interval_label_schema,
+                writeback_allowed=interval_labels_writeback,
             )
         else:
-            label_set = LabelSet.from_path(
-                labels,
-                schema=label_schema,
-                writeback_allowed=labels_writeback,
+            interval_label_set = IntervalLabelSet.from_path(
+                interval_labels,
+                schema=interval_label_schema,
+                writeback_allowed=interval_labels_writeback,
             )
 
     if stacked_colors is not None and "colors" not in kwargs:
@@ -870,10 +870,10 @@ def view(
         dense_groups=dense_groups,
         heatmap_series=heatmap_series,
         window_len=window_len,
-        event_layers=event_layers_rendered,
+        sample_markers=sample_markers_rendered,
         state_config=state_config,
-        label_set=label_set,
-        label_alpha=label_alpha,
+        interval_label_set=interval_label_set,
+        interval_label_alpha=interval_label_alpha,
         video_configs=video_configs,
         reporter=reporter,
         **kwargs,

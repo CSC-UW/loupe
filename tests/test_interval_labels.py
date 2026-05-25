@@ -3,27 +3,27 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from loupe.labels import (
-    LabelIOError,
-    LabelSchema,
-    LabelSchemaError,
-    LabelSet,
+from loupe.interval_labels import (
+    IntervalLabelIOError,
+    IntervalLabelSchema,
+    IntervalLabelSchemaError,
+    IntervalLabelSet,
     infer_schema_for_path,
 )
 
 
 # ---------------------------------------------------------------------------
-# LabelSchema validation
+# IntervalLabelSchema validation
 # ---------------------------------------------------------------------------
 
 
 def test_schema_requires_end_or_duration():
-    with pytest.raises(LabelSchemaError):
-        LabelSchema(start_col="s", end_col=None, duration_col=None, label_col="l")
+    with pytest.raises(IntervalLabelSchemaError):
+        IntervalLabelSchema(start_col="s", end_col=None, duration_col=None, label_col="l")
 
 
 def test_schema_legacy_round_trip():
-    s = LabelSchema.legacy()
+    s = IntervalLabelSchema.legacy()
     assert s.start_col == "start_s"
     assert s.end_col == "end_s"
     assert s.label_col == "label"
@@ -31,28 +31,28 @@ def test_schema_legacy_round_trip():
 
 
 def test_schema_validate_missing_column():
-    schema = LabelSchema(start_col="a", end_col="b", label_col="state")
+    schema = IntervalLabelSchema(start_col="a", end_col="b", label_col="state")
     df = pl.DataFrame({"a": [0.0], "b": [1.0]})  # missing 'state'
-    with pytest.raises(LabelSchemaError, match="state"):
+    with pytest.raises(IntervalLabelSchemaError, match="state"):
         schema.validate(df)
 
 
 def test_schema_end_and_duration_disagree_raises():
-    schema = LabelSchema(start_col="s", end_col="e", duration_col="d", label_col="lbl")
+    schema = IntervalLabelSchema(start_col="s", end_col="e", duration_col="d", label_col="lbl")
     df = pl.DataFrame({"s": [0.0], "e": [1.0], "d": [2.0], "lbl": ["x"]})
-    with pytest.raises(LabelSchemaError, match="row 0"):
+    with pytest.raises(IntervalLabelSchemaError, match="row 0"):
         schema.validate(df)
 
 
 def test_schema_end_and_duration_agree_ok():
-    schema = LabelSchema(start_col="s", end_col="e", duration_col="d", label_col="lbl")
+    schema = IntervalLabelSchema(start_col="s", end_col="e", duration_col="d", label_col="lbl")
     df = pl.DataFrame({"s": [0.0, 1.0], "e": [1.0, 3.0], "d": [1.0, 2.0], "lbl": ["x", "y"]})
     schema.validate(df)
 
 
 def test_schema_duplicate_column_names_raise():
-    with pytest.raises(LabelSchemaError, match="duplicate"):
-        LabelSchema(start_col="x", end_col="y", label_col="x")
+    with pytest.raises(IntervalLabelSchemaError, match="duplicate"):
+        IntervalLabelSchema(start_col="x", end_col="y", label_col="x")
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ def test_schema_duplicate_column_names_raise():
 
 @pytest.fixture
 def legacy_set():
-    schema = LabelSchema.legacy()
+    schema = IntervalLabelSchema.legacy()
     df = pl.DataFrame(
         {
             "start_s": [0.0, 5.0, 10.0],
@@ -71,32 +71,32 @@ def legacy_set():
             "note": ["", "deep", ""],
         }
     )
-    return LabelSet.from_dataframe(df, schema)
+    return IntervalLabelSet.from_dataframe(df, schema)
 
 
 def test_round_trip_csv(tmp_path, legacy_set):
     path = tmp_path / "labels.csv"
     legacy_set.save_as(path)
-    reloaded = LabelSet.from_path(path)
+    reloaded = IntervalLabelSet.from_path(path)
     assert reloaded.df.drop("__loupe_row_id").equals(legacy_set.df.drop("__loupe_row_id"))
 
 
 def test_round_trip_htsv(tmp_path, legacy_set):
     path = tmp_path / "labels.htsv"
     legacy_set.save_as(path)
-    reloaded = LabelSet.from_path(path, schema=LabelSchema.legacy())
+    reloaded = IntervalLabelSet.from_path(path, schema=IntervalLabelSchema.legacy())
     assert reloaded.df.drop("__loupe_row_id").equals(legacy_set.df.drop("__loupe_row_id"))
 
 
 def test_round_trip_parquet(tmp_path, legacy_set):
     path = tmp_path / "labels.parquet"
     legacy_set.save_as(path)
-    reloaded = LabelSet.from_path(path, schema=LabelSchema.legacy())
+    reloaded = IntervalLabelSet.from_path(path, schema=IntervalLabelSchema.legacy())
     assert reloaded.df.drop("__loupe_row_id").equals(legacy_set.df.drop("__loupe_row_id"))
 
 
 def test_save_preserves_user_column_names(tmp_path):
-    schema = LabelSchema(
+    schema = IntervalLabelSchema(
         start_col="start_time",
         end_col="end_time",
         duration_col="duration",
@@ -113,7 +113,7 @@ def test_save_preserves_user_column_names(tmp_path):
             "confidence": [0.9, 0.8],
         }
     )
-    ls = LabelSet.from_dataframe(df, schema)
+    ls = IntervalLabelSet.from_dataframe(df, schema)
     out = tmp_path / "labels.htsv"
     ls.save_as(out)
     raw = pl.read_csv(out, separator="\t")
@@ -129,7 +129,7 @@ def test_save_preserves_user_column_names(tmp_path):
 
 
 def test_visbrain_writer_raises(tmp_path, legacy_set):
-    with pytest.raises(LabelIOError, match="read-only"):
+    with pytest.raises(IntervalLabelIOError, match="read-only"):
         legacy_set.save_as(tmp_path / "out.txt")
 
 
@@ -148,7 +148,7 @@ def test_visbrain_reader(tmp_path):
         "N2\t30.0\n",
         encoding="utf-8",
     )
-    ls = LabelSet.from_path(path)
+    ls = IntervalLabelSet.from_path(path)
     assert len(ls) == 3
     rows = list(ls)
     assert rows[0].start == 0.0
@@ -163,7 +163,7 @@ def test_visbrain_reader(tmp_path):
 def test_visbrain_skips_metadata(tmp_path):
     path = tmp_path / "hyp.txt"
     path.write_text("*hello\n*world\nWake\t1.0\n", encoding="utf-8")
-    ls = LabelSet.from_path(path)
+    ls = IntervalLabelSet.from_path(path)
     assert len(ls) == 1
 
 
@@ -184,28 +184,28 @@ def test_infer_schema_visbrain():
 
 
 def test_infer_schema_htsv_raises():
-    with pytest.raises(LabelIOError, match="explicit"):
+    with pytest.raises(IntervalLabelIOError, match="explicit"):
         infer_schema_for_path("foo.htsv")
 
 
 def test_infer_schema_parquet_raises():
-    with pytest.raises(LabelIOError, match="explicit"):
+    with pytest.raises(IntervalLabelIOError, match="explicit"):
         infer_schema_for_path("foo.parquet")
 
 
 # ---------------------------------------------------------------------------
-# LabelSet mechanics
+# IntervalLabelSet mechanics
 # ---------------------------------------------------------------------------
 
 
 def test_empty_set():
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     assert len(ls) == 0
     assert ls.at_time(5.0) is None
 
 
 def test_add_label_to_empty():
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     rid = ls.add(0.0, 10.0, "Wake")
     assert len(ls) == 1
     row = ls.at_time(5.0)
@@ -213,7 +213,7 @@ def test_add_label_to_empty():
 
 
 def test_add_overlapping_clips_existing():
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     ls.add(0.0, 10.0, "Wake")
     ls.add(5.0, 15.0, "NREM")
     rows = list(ls)
@@ -223,7 +223,7 @@ def test_add_overlapping_clips_existing():
 
 
 def test_add_contained_splits_existing():
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     ls.add(0.0, 20.0, "Wake")
     ls.add(8.0, 12.0, "NREM")
     rows = list(ls)
@@ -232,7 +232,7 @@ def test_add_contained_splits_existing():
 
 
 def test_clear_range_splits_existing():
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     ls.add(0.0, 20.0, "Wake")
     ls.clear_range(8.0, 12.0)
     rows = list(ls)
@@ -240,7 +240,7 @@ def test_clear_range_splits_existing():
 
 
 def test_merge_adjacent():
-    schema = LabelSchema.legacy()
+    schema = IntervalLabelSchema.legacy()
     df = pl.DataFrame(
         {
             "start_s": [0.0, 5.0, 10.0],
@@ -249,7 +249,7 @@ def test_merge_adjacent():
             "note": ["", "", ""],
         }
     )
-    ls = LabelSet.from_dataframe(df, schema)
+    ls = IntervalLabelSet.from_dataframe(df, schema)
     ls.merge_adjacent()
     rows = list(ls)
     assert [(r.start, r.end, r.label) for r in rows] == [
@@ -259,7 +259,7 @@ def test_merge_adjacent():
 
 
 def test_pop_last_undo():
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     ls.add(0.0, 5.0, "Wake")
     rid = ls.add(10.0, 15.0, "NREM")
     popped = ls.pop_last()
@@ -270,7 +270,7 @@ def test_pop_last_undo():
 
 def test_note_survives_endpoint_edit():
     """row_ids are stable across edits → notes don't go stale."""
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     rid = ls.add(0.0, 10.0, "Wake")
     ls.set_note(rid, "interesting")
     ls.update_cell(rid, "start_s", 1.0)
@@ -278,11 +278,11 @@ def test_note_survives_endpoint_edit():
 
 
 def test_update_cell_keeps_duration_consistent():
-    schema = LabelSchema(
+    schema = IntervalLabelSchema(
         start_col="s", end_col="e", duration_col="d", label_col="lbl"
     )
     df = pl.DataFrame({"s": [0.0], "e": [10.0], "d": [10.0], "lbl": ["Wake"]})
-    ls = LabelSet.from_dataframe(df, schema)
+    ls = IntervalLabelSet.from_dataframe(df, schema)
     rid = list(ls)[0].row_id
     ls.update_cell(rid, "e", 20.0)
     row_dict = ls.df.filter(pl.col("__loupe_row_id") == rid).row(0, named=True)
@@ -292,27 +292,27 @@ def test_update_cell_keeps_duration_consistent():
 def test_save_to_source_requires_writeback(tmp_path, legacy_set):
     path = tmp_path / "labels.csv"
     legacy_set.save_as(path)
-    reloaded = LabelSet.from_path(path)
-    with pytest.raises(LabelIOError, match="labels_writeback"):
+    reloaded = IntervalLabelSet.from_path(path)
+    with pytest.raises(IntervalLabelIOError, match="interval_labels_writeback"):
         reloaded.save_to_source()
 
 
 def test_save_to_source_with_opt_in(tmp_path, legacy_set):
     path = tmp_path / "labels.csv"
     legacy_set.save_as(path)
-    reloaded = LabelSet.from_path(path, writeback_allowed=True)
+    reloaded = IntervalLabelSet.from_path(path, writeback_allowed=True)
     reloaded.add(20.0, 25.0, "Wake")
     reloaded.save_to_source()
-    again = LabelSet.from_path(path)
+    again = IntervalLabelSet.from_path(path)
     assert len(again) == 4
 
 
 def test_split_inherits_extras():
-    schema = LabelSchema(
+    schema = IntervalLabelSchema(
         start_col="s", end_col="e", label_col="lbl", extra_cols=("scorer",)
     )
     df = pl.DataFrame({"s": [0.0], "e": [20.0], "lbl": ["Wake"], "scorer": ["alice"]})
-    ls = LabelSet.from_dataframe(df, schema)
+    ls = IntervalLabelSet.from_dataframe(df, schema)
     ls.add(8.0, 12.0, "NREM")
     rows = list(ls)
     # The new middle row gets a null extra.
@@ -325,7 +325,7 @@ def test_split_inherits_extras():
 
 
 def test_visible_in():
-    ls = LabelSet.empty()
+    ls = IntervalLabelSet.empty()
     ls.add(0.0, 5.0, "Wake")
     ls.add(5.0, 10.0, "NREM")
     ls.add(10.0, 15.0, "REM")

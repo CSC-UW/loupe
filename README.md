@@ -96,31 +96,32 @@ are not accepted.
   - `frame_times_correction` (optional, default `0.0`) — float (seconds) added to every frame time after loading. Applied uniformly whether `frame_times_path` is a single file or a list; useful as a quick alignment shim against the trace cursor without rewriting the underlying `.npy` files.
 - All loaded videos play together, locked to the trace cursor. Each runs in its own `VideoWorker` thread.
 
-#### Labels
-Loupe loads and saves labels via a small registry of formats and a `LabelSchema`
-that tells it which user‑named columns mean start, end, duration, label, note,
-and which extras to display. Rows are half‑open intervals `[start, end)`.
+#### Interval labels
+Loupe loads and saves interval labels via a small registry of formats and an
+`IntervalLabelSchema` that tells it which user‑named columns mean start, end,
+duration, label, note, and which extras to display. Rows are half‑open
+intervals `[start, end)`.
 
 Supported formats (all read; CSV / HTSV / Parquet also write):
 
 | Extension | Read | Write | Notes |
 |---|---|---|---|
 | `.csv`     | ✓ | ✓ | Defaults to legacy schema `start_s,end_s,label,note` |
-| `.htsv`    | ✓ | ✓ | Header‑bearing TSV; pass an explicit `LabelSchema` |
-| `.parquet` | ✓ | ✓ | Pass an explicit `LabelSchema` |
+| `.htsv`    | ✓ | ✓ | Header‑bearing TSV; pass an explicit `IntervalLabelSchema` |
+| `.parquet` | ✓ | ✓ | Pass an explicit `IntervalLabelSchema` |
 | `.txt`     | ✓ | ✗ | Visbrain hypnograms; read‑only (lossy if written) |
 
-Pass labels into `view()`:
+Pass interval labels into `view()`:
 
 ```python
 import polars as pl
-from loupe import view, LabelSchema, TraceConfig
+from loupe import view, IntervalLabelSchema, TraceConfig
 
 # Legacy CSV (no schema needed)
-view(TraceConfig(da), labels="labels.csv")
+view(TraceConfig(da), interval_labels="labels.csv")
 
 # HTSV with custom column names + extras shown in the GUI
-schema = LabelSchema(
+schema = IntervalLabelSchema(
     start_col="start_time",
     end_col="end_time",
     duration_col="duration",   # optional; if both end_col and duration_col
@@ -128,30 +129,31 @@ schema = LabelSchema(
     label_col="state",
     extra_cols=("scorer", "confidence"),
 )
-view(TraceConfig(da), labels="hypnogram.htsv", label_schema=schema)
+view(TraceConfig(da), interval_labels="hypnogram.htsv", interval_label_schema=schema)
 
 # Visbrain .txt (start of each bout = previous bout's end)
-view(TraceConfig(da), labels="hypnogram.txt")
+view(TraceConfig(da), interval_labels="hypnogram.txt")
 
 # Existing in-memory polars DataFrame
 df = pl.read_parquet("labels.parquet")
-view(TraceConfig(da), labels=df, label_schema=schema)
+view(TraceConfig(da), interval_labels=df, interval_label_schema=schema)
 ```
 
-`extra_cols` columns appear as additional cells in the labels summary table,
-the Jump‑to‑Epochs dialog, and the Ctrl+Shift+N edit dialog. They round‑trip
-on save preserving the user’s original column names.
+`extra_cols` columns appear as additional cells in the interval-labels summary
+table, the Jump‑to‑Epochs dialog, and the Ctrl+Shift+N edit dialog. They
+round‑trip on save preserving the user’s original column names.
 
-**Save safety.** File → Export Labels As… always opens a save dialog and
-writes a copy. The original file is **never** overwritten unless the caller
+**Save safety.** File → Export Interval Labels As… always opens a save dialog
+and writes a copy. The original file is **never** overwritten unless the caller
 explicitly opted in:
 
 ```python
-view(TraceConfig(da), labels="labels.htsv", label_schema=schema, labels_writeback=True)
+view(TraceConfig(da), interval_labels="labels.htsv", interval_label_schema=schema, interval_labels_writeback=True)
 ```
 
-When `labels_writeback=True`, an extra File → Save Labels (overwrite source)
-action becomes available (Ctrl+S). Without it, the menu item is disabled.
+When `interval_labels_writeback=True`, an extra File → Save Interval Labels
+(overwrite source) action becomes available (Ctrl+S). Without it, the menu item
+is disabled.
 
 #### State definitions
 State hotkeys and per‑state label colors come from any combination of:
@@ -292,14 +294,15 @@ shortcuts and mouse/wheel interactions. The Help menu inside the app
 ("Shortcuts / Help") also prints the active state hotkeys, which are
 configurable per project.
 
-Import/Export labels
-- File → Load Labels… reads `.csv`, `.htsv`, `.parquet`, or Visbrain `.txt`.
-  For `.htsv`/`.parquet`, pass an explicit `LabelSchema` via the `view()`
-  kwargs (the load dialog cannot guess column names).
-- File → Export Labels As… writes `.csv`, `.htsv`, or `.parquet`, preserving
-  the user's original column names.
-- File → Save Labels (overwrite source) — Ctrl+S — overwrites the original
-  file. Available only when `view()` was called with `labels_writeback=True`.
+Import/Export interval labels
+- File → Load Interval Labels… reads `.csv`, `.htsv`, `.parquet`, or Visbrain
+  `.txt`. For `.htsv`/`.parquet`, pass an explicit `IntervalLabelSchema` via
+  the `view()` kwargs (the load dialog cannot guess column names).
+- File → Export Interval Labels As… writes `.csv`, `.htsv`, or `.parquet`,
+  preserving the user's original column names.
+- File → Save Interval Labels (overwrite source) — Ctrl+S — overwrites the
+  original file. Available only when `view()` was called with
+  `interval_labels_writeback=True`.
 
 ---
 
@@ -334,20 +337,22 @@ Import/Export labels
     `example_state_definitions.json` to bootstrap), or
   - passing `state_definitions=`, `keymap=`, or `label_colors=` to `view()`
     at runtime.
-- Load labels in any supported format by passing `labels=` plus a custom
-  `LabelSchema` (see `loupe/labels.py`). Extra columns appear in the labels
-  table and round‑trip on save.
+- Load interval labels in any supported format by passing `interval_labels=`
+  plus a custom `IntervalLabelSchema` (see `loupe/interval_labels.py`). Extra
+  columns appear in the interval-labels table and round‑trip on save.
 - The primary extension surfaces are:
-  - `loupe.LabelSchema` — describes user column names.
-  - `loupe.LabelSet` — DataFrame‑backed label store with `add`, `clear_range`,
-    `merge_adjacent`, `update_cell`, `save_as`, `save_to_source`, etc.
+  - `loupe.IntervalLabelSchema` — describes user column names.
+  - `loupe.IntervalLabelSet` — DataFrame‑backed interval-label store with
+    `add`, `clear_range`, `merge_adjacent`, `update_cell`, `save_as`,
+    `save_to_source`, etc.
   - `loupe.StateConfig` — keymap + label colors.
 - Internal modular hot paths:
-  - Label management: `LabelSet.add`/`clear_range`/`merge_adjacent` plus the
-    GUI wrappers `_add_new_label`, `_clear_labels_in_range`,
-    `_merge_adjacent_same_labels`, `_finalize_label_change`.
+  - Interval-label management: `IntervalLabelSet.add`/`clear_range`/
+    `merge_adjacent` plus the GUI wrappers `_add_new_interval_label`,
+    `_clear_interval_labels_in_range`, `_merge_adjacent_same_interval_labels`,
+    `_finalize_interval_label_change`.
   - Rendering pipeline: `_apply_x_range`, `_refresh_curves`,
-    `_refresh_dense_curves`, `_sync_label_visuals`.
+    `_refresh_dense_curves`, `_sync_interval_label_visuals`.
   - Video plumbing: `VideoConfig` (public, `loupe.VideoConfig`), `VideoSlot`
     (internal, one per loaded video), `VideoWorker`, and the slot-loop helpers
     `_on_frame_ready(slot, ...)`, `_rescale_video_frame(slot)`,

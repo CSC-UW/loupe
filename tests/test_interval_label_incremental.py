@@ -71,57 +71,57 @@ def test_incremental_label_sync_preserves_unchanged_visuals(loupe_window, qapp):
     loupe_window._apply_x_range()
     qapp.processEvents()
 
-    loupe_window.label_set.add(0.0, 10.0, "NREM")
-    loupe_window.label_set.add(10.0, 20.0, "REM")
-    wake_id = loupe_window.label_set.add(30.0, 40.0, "Wake")
-    loupe_window._finalize_label_change(force_rebuild=True, refresh_summary=False)
+    loupe_window.interval_label_set.add(0.0, 10.0, "NREM")
+    loupe_window.interval_label_set.add(10.0, 20.0, "REM")
+    wake_id = loupe_window.interval_label_set.add(30.0, 40.0, "Wake")
+    loupe_window._finalize_interval_label_change(force_rebuild=True, refresh_summary=False)
     qapp.processEvents()
 
-    previous_visuals = dict(loupe_window._label_visuals)
-    previous_hypnogram_visuals = dict(loupe_window._hypnogram_label_visuals)
+    previous_visuals = dict(loupe_window._interval_label_visuals)
+    previous_hypnogram_visuals = dict(loupe_window._hypnogram_interval_label_visuals)
 
-    loupe_window._add_new_label(10.0, 20.0, "NREM")
+    loupe_window._add_new_interval_label(10.0, 20.0, "NREM")
     qapp.processEvents()
 
     # The (30, 40, Wake) row_id should still index the same visual bundle
     # because that row was untouched by the (10, 20) edit.
-    assert wake_id in loupe_window._label_visuals
-    assert loupe_window._label_visuals[wake_id] is previous_visuals[wake_id]
+    assert wake_id in loupe_window._interval_label_visuals
+    assert loupe_window._interval_label_visuals[wake_id] is previous_visuals[wake_id]
     assert (
-        loupe_window._hypnogram_label_visuals[wake_id]
+        loupe_window._hypnogram_interval_label_visuals[wake_id]
         is previous_hypnogram_visuals[wake_id]
     )
 
     # And the merged (0, 20) NREM label appears as a single row that overlaps
     # both edited intervals.
-    rows = list(loupe_window.label_set)
+    rows = list(loupe_window.interval_label_set)
     merged = [r for r in rows if r.label == "NREM"]
     assert len(merged) == 1
     assert merged[0].start == 0.0
     assert merged[0].end == 20.0
 
 
-def test_plot_rebuild_recreates_label_visuals(loupe_window, qapp):
+def test_plot_rebuild_recreates_interval_label_visuals(loupe_window, qapp):
     loupe_window.window_len = 40.0
     loupe_window.window_start = 0.0
     loupe_window._apply_x_range()
     qapp.processEvents()
 
-    loupe_window.label_set.add(5.0, 15.0, "Wake")
-    loupe_window.label_set.add(20.0, 30.0, "NREM")
-    loupe_window._finalize_label_change(force_rebuild=True, refresh_summary=False)
+    loupe_window.interval_label_set.add(5.0, 15.0, "Wake")
+    loupe_window.interval_label_set.add(20.0, 30.0, "NREM")
+    loupe_window._finalize_interval_label_change(force_rebuild=True, refresh_summary=False)
     qapp.processEvents()
 
-    previous_visuals = dict(loupe_window._label_visuals)
-    previous_hypnogram_visuals = dict(loupe_window._hypnogram_label_visuals)
+    previous_visuals = dict(loupe_window._interval_label_visuals)
+    previous_hypnogram_visuals = dict(loupe_window._hypnogram_interval_label_visuals)
 
     loupe_window._rebuild_all_plots()
     qapp.processEvents()
 
-    assert set(loupe_window._label_visuals) == set(previous_visuals)
+    assert set(loupe_window._interval_label_visuals) == set(previous_visuals)
     for key, old_bundle in previous_visuals.items():
-        assert loupe_window._label_visuals[key] is not old_bundle
+        assert loupe_window._interval_label_visuals[key] is not old_bundle
 
-    assert set(loupe_window._hypnogram_label_visuals) == set(previous_hypnogram_visuals)
+    assert set(loupe_window._hypnogram_interval_label_visuals) == set(previous_hypnogram_visuals)
     for key, old_region in previous_hypnogram_visuals.items():
-        assert loupe_window._hypnogram_label_visuals[key] is not old_region
+        assert loupe_window._hypnogram_interval_label_visuals[key] is not old_region

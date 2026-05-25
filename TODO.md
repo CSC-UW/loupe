@@ -23,8 +23,6 @@
 
 ### TraceConfig
 
-- [ ] `EventLayer` should be renamed something more descriptive, like `PointLabels` (perhaps what are currently referred to as "labels" could be `IntervalLabels`).
-
 #### Dense mode
 
 - [ ] It should be possible with multiple dense-mode `TraceConfig`s to scale each subplot independently, without having to use the "Dense view controls" menu.

@@ -1,9 +1,9 @@
-"""Labels: pluggable schema, in-memory `LabelSet`, and format I/O.
+"""Interval labels: pluggable schema, in-memory `IntervalLabelSet`, and format I/O.
 
-The :class:`LabelSchema` describes which user-named columns hold the start
-time, end time (or duration), label string, optional note, and optional extra
-columns. The :class:`LabelSet` wraps a polars ``DataFrame`` plus the schema
-plus session bookkeeping (history, source path, writeback flag).
+The :class:`IntervalLabelSchema` describes which user-named columns hold the
+start time, end time (or duration), label string, optional note, and optional
+extra columns. The :class:`IntervalLabelSet` wraps a polars ``DataFrame`` plus
+the schema plus session bookkeeping (history, source path, writeback flag).
 
 Format dispatch is by file extension. CSV, HTSV (header-bearing TSV), and
 Parquet support both reading and writing; Visbrain ``.txt`` is read-only
@@ -20,11 +20,11 @@ import numpy as np
 import polars as pl
 
 __all__ = [
-    "LabelIOError",
-    "LabelRow",
-    "LabelSchema",
-    "LabelSet",
-    "LabelSchemaError",
+    "IntervalLabelIOError",
+    "IntervalLabelRow",
+    "IntervalLabelSchema",
+    "IntervalLabelSet",
+    "IntervalLabelSchemaError",
     "infer_schema_for_path",
 ]
 
@@ -48,12 +48,12 @@ _VISBRAIN_SCHEMA_KWARGS: dict[str, Any] = dict(
 )
 
 
-class LabelIOError(IOError):
-    """Raised on label read/write failure."""
+class IntervalLabelIOError(IOError):
+    """Raised on interval-label read/write failure."""
 
 
-class LabelSchemaError(ValueError):
-    """Raised when a DataFrame does not match the declared :class:`LabelSchema`."""
+class IntervalLabelSchemaError(ValueError):
+    """Raised when a DataFrame does not match the declared :class:`IntervalLabelSchema`."""
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +62,8 @@ class LabelSchemaError(ValueError):
 
 
 @dataclass(frozen=True)
-class LabelSchema:
-    """Describe how a user's DataFrame columns map to label semantics.
+class IntervalLabelSchema:
+    """Describe how a user's DataFrame columns map to interval-label semantics.
 
     Exactly one of ``end_col`` or ``duration_col`` is required (both is also
     accepted, but the values must agree on every row — see :meth:`validate`).
@@ -96,13 +96,13 @@ class LabelSchema:
 
     def __post_init__(self) -> None:
         if self.end_col is None and self.duration_col is None:
-            raise LabelSchemaError(
-                "LabelSchema requires at least one of end_col or duration_col."
+            raise IntervalLabelSchemaError(
+                "IntervalLabelSchema requires at least one of end_col or duration_col."
             )
         if not self.start_col:
-            raise LabelSchemaError("LabelSchema.start_col cannot be empty.")
+            raise IntervalLabelSchemaError("IntervalLabelSchema.start_col cannot be empty.")
         if not self.label_col:
-            raise LabelSchemaError("LabelSchema.label_col cannot be empty.")
+            raise IntervalLabelSchemaError("IntervalLabelSchema.label_col cannot be empty.")
         # Detect column-name collisions in the schema declaration.
         names = [
             self.start_col,
@@ -117,18 +117,18 @@ class LabelSchema:
             if n is None:
                 continue
             if n in seen:
-                raise LabelSchemaError(
-                    f"LabelSchema has duplicate column name {n!r}"
+                raise IntervalLabelSchemaError(
+                    f"IntervalLabelSchema has duplicate column name {n!r}"
                 )
             seen.add(n)
 
     @classmethod
-    def legacy(cls) -> "LabelSchema":
+    def legacy(cls) -> "IntervalLabelSchema":
         """Loupe's traditional CSV schema (``start_s,end_s,label,note``)."""
         return cls(**_LEGACY_CSV_SCHEMA_KWARGS)
 
     @classmethod
-    def visbrain(cls) -> "LabelSchema":
+    def visbrain(cls) -> "IntervalLabelSchema":
         """Schema produced by the Visbrain ``.txt`` reader."""
         return cls(**_VISBRAIN_SCHEMA_KWARGS)
 
@@ -151,11 +151,11 @@ class LabelSchema:
     def validate(self, df: pl.DataFrame, *, eps: float = 1e-9) -> None:
         """Check required columns are present and consistent.
 
-        Raises :class:`LabelSchemaError` on any violation.
+        Raises :class:`IntervalLabelSchemaError` on any violation.
         """
         missing = [c for c in self.all_cols if c not in df.columns]
         if missing:
-            raise LabelSchemaError(
+            raise IntervalLabelSchemaError(
                 f"DataFrame is missing schema column(s): {missing}. "
                 f"Available columns: {df.columns}"
             )
@@ -169,7 +169,7 @@ class LabelSchema:
             if max_diff > eps:
                 # Find the first offending row for a useful error message.
                 offending = int(diff.arg_max() or 0)
-                raise LabelSchemaError(
+                raise IntervalLabelSchemaError(
                     f"end_col and duration_col disagree at row {offending}: "
                     f"|{self.end_col} - ({self.start_col} + {self.duration_col})| "
                     f"= {max_diff} > {eps}"
@@ -177,13 +177,13 @@ class LabelSchema:
 
 
 # ---------------------------------------------------------------------------
-# LabelRow view
+# IntervalLabelRow view
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class LabelRow:
-    """A read-only view of one label row."""
+class IntervalLabelRow:
+    """A read-only view of one interval-label row."""
 
     row_id: int
     start: float
@@ -208,7 +208,7 @@ def _read_csv(path: Path) -> pl.DataFrame:
 
 def _read_htsv(path: Path) -> pl.DataFrame:
     if path.suffix != ".htsv":
-        raise LabelIOError(
+        raise IntervalLabelIOError(
             f"HTSV files must use the .htsv extension, got {path.suffix!r}"
         )
     return pl.read_csv(path, separator="\t", infer_schema_length=10000)
@@ -252,7 +252,7 @@ def _read_visbrain(path: Path) -> pl.DataFrame:
         pl.Series("start_time", start),
         pl.Series("duration", duration),
     )
-    # Reorder to match LabelSchema.visbrain().all_cols
+    # Reorder to match IntervalLabelSchema.visbrain().all_cols
     return df.select(["start_time", "end_time", "duration", "state"])
 
 
@@ -262,7 +262,7 @@ def _write_csv(df: pl.DataFrame, path: Path) -> None:
 
 def _write_htsv(df: pl.DataFrame, path: Path) -> None:
     if path.suffix != ".htsv":
-        raise LabelIOError(
+        raise IntervalLabelIOError(
             f"HTSV files must use the .htsv extension, got {path.suffix!r}"
         )
     df.write_csv(path, separator="\t")
@@ -292,43 +292,43 @@ def _format_for_path(path: Path) -> str:
     ext = path.suffix.lower().lstrip(".")
     if ext in READERS or ext in WRITERS:
         return ext
-    raise LabelIOError(
-        f"Unrecognized label format for path {path!r}. "
+    raise IntervalLabelIOError(
+        f"Unrecognized interval-label format for path {path!r}. "
         f"Supported extensions: {sorted(set(READERS) | set(WRITERS))}"
     )
 
 
-def infer_schema_for_path(path: str | Path) -> LabelSchema:
-    """Best-effort default :class:`LabelSchema` for a label-file path.
+def infer_schema_for_path(path: str | Path) -> IntervalLabelSchema:
+    """Best-effort default :class:`IntervalLabelSchema` for a label-file path.
 
     Used by ``view()`` when the user passes a path but no schema. Falls back
-    to the legacy CSV schema for ``.csv``; uses :meth:`LabelSchema.visbrain`
+    to the legacy CSV schema for ``.csv``; uses :meth:`IntervalLabelSchema.visbrain`
     for ``.txt``; raises for ``.htsv`` and ``.parquet`` because their column
     names cannot be guessed safely.
     """
     p = Path(path)
     fmt = _format_for_path(p)
     if fmt == "csv":
-        return LabelSchema.legacy()
+        return IntervalLabelSchema.legacy()
     if fmt == "txt":
-        return LabelSchema.visbrain()
-    raise LabelIOError(
-        f"Cannot infer LabelSchema for {p.name}. Pass an explicit "
-        f"`label_schema=LabelSchema(...)` describing the columns."
+        return IntervalLabelSchema.visbrain()
+    raise IntervalLabelIOError(
+        f"Cannot infer IntervalLabelSchema for {p.name}. Pass an explicit "
+        f"`interval_label_schema=IntervalLabelSchema(...)` describing the columns."
     )
 
 
 # ---------------------------------------------------------------------------
-# LabelSet
+# IntervalLabelSet
 # ---------------------------------------------------------------------------
 
 
-class LabelSet:
-    """In-memory label store backed by a polars DataFrame.
+class IntervalLabelSet:
+    """In-memory interval-label store backed by a polars DataFrame.
 
     The DataFrame uses the user's column names as declared in
-    :class:`LabelSchema`, plus a private ``__loupe_row_id`` column for stable
-    cross-edit references. ``__loupe_row_id`` is stripped on save.
+    :class:`IntervalLabelSchema`, plus a private ``__loupe_row_id`` column for
+    stable cross-edit references. ``__loupe_row_id`` is stripped on save.
 
     All methods that mutate state keep the DataFrame sorted by start time
     and refresh the cached numpy ``starts`` / ``ends`` arrays used by
@@ -338,7 +338,7 @@ class LabelSet:
     def __init__(
         self,
         df: pl.DataFrame,
-        schema: LabelSchema,
+        schema: IntervalLabelSchema,
         *,
         source_path: Path | None = None,
         source_format: str | None = None,
@@ -351,7 +351,7 @@ class LabelSet:
                 pl.Series(_ROW_ID_COL, np.arange(len(df), dtype=np.int64))
             )
         self._df: pl.DataFrame = df
-        self.schema: LabelSchema = schema
+        self.schema: IntervalLabelSchema = schema
         self.source_path: Path | None = source_path
         self.source_format: str | None = source_format
         self.writeback_allowed: bool = bool(writeback_allowed)
@@ -365,9 +365,9 @@ class LabelSet:
     # --- construction ----------------------------------------------------
 
     @classmethod
-    def empty(cls, schema: LabelSchema | None = None) -> "LabelSet":
-        """Return an empty LabelSet matching ``schema`` (defaults to legacy)."""
-        schema = schema or LabelSchema.legacy()
+    def empty(cls, schema: IntervalLabelSchema | None = None) -> "IntervalLabelSet":
+        """Return an empty IntervalLabelSet matching ``schema`` (defaults to legacy)."""
+        schema = schema or IntervalLabelSchema.legacy()
         cols = {schema.start_col: pl.Float64, schema.label_col: pl.Utf8}
         if schema.end_col:
             cols[schema.end_col] = pl.Float64
@@ -385,12 +385,12 @@ class LabelSet:
     def from_dataframe(
         cls,
         df: pl.DataFrame,
-        schema: LabelSchema,
+        schema: IntervalLabelSchema,
         *,
         source_path: Path | None = None,
         writeback_allowed: bool = False,
-    ) -> "LabelSet":
-        """Create a LabelSet from an in-memory DataFrame matching ``schema``."""
+    ) -> "IntervalLabelSet":
+        """Create an IntervalLabelSet from an in-memory DataFrame matching ``schema``."""
         df = _normalize_loaded_df(df, schema)
         return cls(
             df,
@@ -404,16 +404,16 @@ class LabelSet:
     def from_path(
         cls,
         path: str | Path,
-        schema: LabelSchema | None = None,
+        schema: IntervalLabelSchema | None = None,
         *,
         format: str | None = None,
         writeback_allowed: bool = False,
-    ) -> "LabelSet":
-        """Read a labels file. ``schema`` is inferred for ``.csv``/``.txt``."""
+    ) -> "IntervalLabelSet":
+        """Read an interval-labels file. ``schema`` is inferred for ``.csv``/``.txt``."""
         p = Path(path)
         fmt = format or _format_for_path(p)
         if fmt not in READERS:
-            raise LabelIOError(f"Format {fmt!r} is read-only-not-supported.")
+            raise IntervalLabelIOError(f"Format {fmt!r} is read-only-not-supported.")
         if schema is None:
             schema = infer_schema_for_path(p)
         df = READERS[fmt](p)
@@ -495,7 +495,7 @@ class LabelSet:
         label: str,
         inherit_from: int | None = None,
     ) -> dict[str, Any]:
-        """Build a fresh row dict matching this LabelSet's columns."""
+        """Build a fresh row dict matching this IntervalLabelSet's columns."""
         sc = self.schema.start_col
         ec = self.schema.end_col
         dc = self.schema.duration_col
@@ -537,7 +537,7 @@ class LabelSet:
     def __len__(self) -> int:
         return self._df.height
 
-    def __iter__(self) -> Iterator[LabelRow]:
+    def __iter__(self) -> Iterator[IntervalLabelRow]:
         for src in self._df.iter_rows(named=True):
             yield self._row_from_dict(src)
 
@@ -558,7 +558,7 @@ class LabelSet:
     def row_ids(self) -> np.ndarray:
         return self._row_ids
 
-    def _row_from_dict(self, src: dict[str, Any]) -> LabelRow:
+    def _row_from_dict(self, src: dict[str, Any]) -> IntervalLabelRow:
         sc = self.schema.start_col
         ec = self.schema.end_col
         dc = self.schema.duration_col
@@ -571,7 +571,7 @@ class LabelSet:
         label = str(src[self.schema.label_col])
         note = str(src.get(nc, "") or "") if nc else ""
         extras = {c: src.get(c) for c in self.schema.extra_cols}
-        return LabelRow(
+        return IntervalLabelRow(
             row_id=int(src[_ROW_ID_COL]),
             start=start,
             end=end,
@@ -580,7 +580,7 @@ class LabelSet:
             extras=extras,
         )
 
-    def at_time(self, t: float) -> LabelRow | None:
+    def at_time(self, t: float) -> IntervalLabelRow | None:
         """Return the row containing ``t`` (start <= t < end), or None."""
         if len(self._df) == 0:
             return None
@@ -591,14 +591,14 @@ class LabelSet:
             return None
         return self.row_at_index(idx)
 
-    def row_at_index(self, idx: int) -> LabelRow:
+    def row_at_index(self, idx: int) -> IntervalLabelRow:
         return self._row_from_dict(self._df.row(idx, named=True))
 
     def index_for_row_id(self, row_id: int) -> int | None:
         hits = np.where(self._row_ids == int(row_id))[0]
         return int(hits[0]) if len(hits) else None
 
-    def row_for_id(self, row_id: int) -> LabelRow | None:
+    def row_for_id(self, row_id: int) -> IntervalLabelRow | None:
         idx = self.index_for_row_id(row_id)
         return self.row_at_index(idx) if idx is not None else None
 
@@ -612,7 +612,7 @@ class LabelSet:
             end_idx = start_idx
         return (start_idx, end_idx)
 
-    def visible_in(self, t0: float, t1: float) -> Iterator[LabelRow]:
+    def visible_in(self, t0: float, t1: float) -> Iterator[IntervalLabelRow]:
         a, b = self.visible_index_range(t0, t1)
         for i in range(a, b):
             yield self.row_at_index(i)
@@ -627,7 +627,7 @@ class LabelSet:
         *,
         inherit_from: int | None = None,
     ) -> int:
-        """Add a label spanning ``[start, end)``.
+        """Add an interval label spanning ``[start, end)``.
 
         Existing labels overlapping the range are split: portions outside the
         new range are preserved (and keep their extras), portions inside are
@@ -749,7 +749,7 @@ class LabelSet:
         other endpoint-related columns consistent automatically.
         """
         if col not in self._df.columns:
-            raise LabelSchemaError(f"Column {col!r} not present in the LabelSet")
+            raise IntervalLabelSchemaError(f"Column {col!r} not present in the IntervalLabelSet")
         sc = self.schema.start_col
         ec = self.schema.end_col
         dc = self.schema.duration_col
@@ -818,15 +818,15 @@ class LabelSet:
 
     def set_note(self, row_id: int, note: str) -> None:
         if not self.schema.note_col:
-            raise LabelSchemaError(
-                "This LabelSchema has no note_col. Use update_cell() to edit "
+            raise IntervalLabelSchemaError(
+                "This IntervalLabelSchema has no note_col. Use update_cell() to edit "
                 "an extra column."
             )
         self.update_cell(row_id, self.schema.note_col, note or "")
 
     # --- undo ------------------------------------------------------------
 
-    def pop_last(self) -> LabelRow | None:
+    def pop_last(self) -> IntervalLabelRow | None:
         """Remove the most recently surviving created row and return it."""
         while self.history:
             rid = self.history.pop()
@@ -848,7 +848,7 @@ class LabelSet:
         p = Path(path)
         fmt = format or _format_for_path(p)
         if fmt not in WRITERS:
-            raise LabelIOError(
+            raise IntervalLabelIOError(
                 f"Format {fmt!r} is read-only. Export to .csv, .htsv, or .parquet instead."
             )
         WRITERS[fmt](self.to_savable_df(), p)
@@ -856,12 +856,12 @@ class LabelSet:
     def save_to_source(self) -> None:
         """Overwrite the original source file. Requires ``writeback_allowed=True``."""
         if not self.writeback_allowed:
-            raise LabelIOError(
-                "Save-to-source is disabled. Pass `labels_writeback=True` to "
+            raise IntervalLabelIOError(
+                "Save-to-source is disabled. Pass `interval_labels_writeback=True` to "
                 "view() to opt in to overwriting the original file."
             )
         if self.source_path is None:
-            raise LabelIOError("LabelSet has no source_path; use save_as() instead.")
+            raise IntervalLabelIOError("IntervalLabelSet has no source_path; use save_as() instead.")
         self.save_as(self.source_path, format=self.source_format)
 
 
@@ -870,7 +870,7 @@ class LabelSet:
 # ---------------------------------------------------------------------------
 
 
-def _normalize_loaded_df(df: pl.DataFrame, schema: LabelSchema) -> pl.DataFrame:
+def _normalize_loaded_df(df: pl.DataFrame, schema: IntervalLabelSchema) -> pl.DataFrame:
     """Validate ``df`` against ``schema``, then ensure a usable canonical form.
 
     - Cast start/end/duration columns to ``Float64``.
