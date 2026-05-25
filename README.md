@@ -284,77 +284,12 @@ Status bar:
 
 ---
 
-### Keyboard & mouse cheatsheet
+### Keyboard & mouse shortcuts
 
-Navigation and windowing
-- Mouse wheel: page left/right one full window.
-- Shift + wheel: smooth scroll window (fraction of window length; configurable).
-- Ctrl + wheel: cursor scrub within the current window (like dragging the cursor slider).
-- `[` `]` or PageUp/PageDown: page window left/right.
-- Window spinner: change window length; the app keeps the cursor anchored proportionally.
-
-Dense view controls
-- Alt + wheel: adjust trace gain (amplitude scaling) up/down.
-- Shift + Alt + wheel: smooth vertical scroll through traces (~3 traces per notch).
-- Vertical scrollbar (right edge): drag to scroll through traces; reflects current position.
-- Ctrl+G: open Dense View Controls dialog (gain slider, step, traces per page).
-
-Playback and frame stepping
-- Space: toggle playback (loops within current window).
-- View → Set Playback Speed…: choose 0.25× to 4× (default 1×).
-- View → Frame Step Target → *video name*: pick which video clocks Left/Right stepping (defaults to the first slot). Menu entries are built from each `VideoConfig.name`.
-- Left/Right arrow: step the selected video one frame back/forward (holding repeats).
-
-Selection & labeling
-- Click‑drag in any plot: create/update selection. Drag handles to extend or refine.
-- While a selection is active, press a label hotkey. The exact bindings come
-  from the active state config (see "State definitions" above). The bundled
-  `example_state_definitions.json` defines `w`/`q`/`b` for various Wake states,
-  `1`/`2`/`3` for NREM substates, `r`/`p` for REM, plus `a`, `i`, `u`. The Help
-  menu (under "Help" in the menubar) prints the active bindings, including all
-  hotkeys for any state with multiple bindings.
-- `0`: Clear any labels in the selected range (splits existing intervals as needed).
-- Backspace (Edit → Delete last label): removes the most recently ending label.
-- Labels that overlap or are directly adjacent and have the same state are merged automatically into a single epoch.
-
-Epoch notes & navigation
-- Ctrl+Shift+N: Add or edit a note for the epoch at cursor (or most recently labeled epoch if cursor is unlabeled).
-- Ctrl+J: Open "Jump to Epochs" dialog to view all epochs in a table. Double-click to navigate.
-  - Filter by state (dropdown) or by text in notes (search box).
-  - Double-clicking an epoch centers the window on that epoch.
-
-Zoom & axes
-- Ctrl + 1 / Ctrl + 2: zoom Y‑axis in/out on the hovered plot.
-- View → Y‑Axis Controls… (Ctrl+D): per‑trace autorange toggle and min/max input.
-- `z`: toggle hypnogram zoom (zoom to window ± padding vs. full extent).
-- `h`: toggle hypnogram visibility (frees vertical space for videos).
-
-Subplot management
-- Ctrl+H: open Subplot Control Board (height, visibility, order for all subplots — stacked, dense, and raster).
-
-Video controls
-- View → Adjust Secondary Videos Size…: one spinbox per visible video (`QFormLayout`) sets each slot's layout weight, with live preview. Cancel restores the previous weights.
-- View → Show *video name* (checkable, one entry per slot) or:
-  - Ctrl+Shift+N (N = 1..9) toggles the visibility of the Nth video.
-- Videos auto‑scale to their label sizes; resizing the splitter re‑scales the frames.
-
-Raster viewer controls
-- View → Proportional Raster Plots (Ctrl+Shift+R): toggle proportional sizing of raster plots based on their row count. When enabled, a plot with 20 rows will be twice as tall as one with 10 rows.
-- View → Increase Raster Share (Ctrl+Shift+,): increase the vertical space allocated to raster plots by ~5%. No upper bound—you can keep increasing as needed.
-- View → Decrease Raster Share (Ctrl+Shift+.): decrease the vertical space allocated to raster plots by ~5%. No lower bound—you can keep decreasing as needed.
-- View → Adjust Raster Brightness…: slider to adjust the brightness/visibility of raster event lines (0.2–3.0). Default is 1.0; higher values make events more visible.
-- View → Raster Event Height…: adjust the vertical extent of event lines (0.1–0.5, distance from row center). Default is 0.4 (lines span 80% of row height).
-- View → Raster Event Thickness…: adjust the pen width of event lines in pixels (1–10). Default is 2.
-- Raster plots show only min/max Y tick labels and have no horizontal grid lines for a clean raster appearance.
-
-Subplot Control Board
-- View → Subplot Control Board… (Ctrl+H): opens a comprehensive dialog to control all subplots (time series and raster).
-  - **Height sliders**: Adjust individual plot heights from 0.01× to 20.0× the default. When one plot is made taller, the others proportionally shrink. For very small plots (below 0.2×), axis labels are automatically hidden to save space.
-  - **Hide checkbox**: Check "Hide" to hide a subplot entirely from the view. Hidden subplots disappear completely and remaining plots expand to fill the space.
-  - **Drag to reorder**: Drag subplot rows up/down to change their display order. Raster plots can be moved above time series plots, and vice versa.
-  - **Reset Heights**: Restore all height factors to 1.0×.
-  - **Show All**: Unhide all subplots.
-  - **Reset Order**: Restore the default order (all time series first, then all raster plots).
+See [KEYBINDINGS.md](KEYBINDINGS.md) for the complete list of keyboard
+shortcuts and mouse/wheel interactions. The Help menu inside the app
+("Shortcuts / Help") also prints the active state hotkeys, which are
+configurable per project.
 
 Import/Export labels
 - File → Load Labels… reads `.csv`, `.htsv`, `.parquet`, or Visbrain `.txt`.
