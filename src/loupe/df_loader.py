@@ -52,6 +52,7 @@ def dataframe_to_raster_series(
     alpha_range: tuple[float, float] = (0.3, 1.0),
     color_on: str | None = None,
     color_on_config: dict | None = None,
+    reporter=None,
 ) -> list:
     """Convert a Polars DataFrame into one or more RasterSeries for raster display.
 
@@ -226,7 +227,11 @@ def dataframe_to_raster_series(
 
     # ---- build RasterSeries per group ---------------------------------------
     result: list = []
+    n_groups = len(groups)
     for idx, gkey in enumerate(groups):
+        if reporter is not None:
+            label = "-".join(str(gv) for gv in gkey) if gkey else ""
+            reporter.item(idx, n_groups, detail=label)
         # filter to group
         if gcols:
             import polars as pl  # lazy

@@ -614,6 +614,20 @@ def view(
                 "data list."
             )
 
+    # ---- Qt application + launch-progress reporter -----------------------
+    # Bring the QApplication up before the slow conversion loop so the
+    # splash screen can show progress during that work.
+    app = QtWidgets.QApplication.instance()
+    created_app = False
+    if app is None:
+        _warn_if_ipython_without_qt()
+        app = QtWidgets.QApplication([])
+        created_app = True
+
+    from loupe.progress import ProgressReporter, make_splash
+    splash = make_splash(app) if created_app else None
+    reporter = ProgressReporter(splash=splash)
+
     # ---- dispatch each Config to its converter ----------------------------
     xr_series: list[Series] = []
     stacked_colors_acc: list = []
@@ -641,11 +655,14 @@ def view(
             return str(name)
         return str(v)
 
+    reporter.phase("Converting input data")
     for i, item in enumerate(data_list):
+        reporter.item(i, len(data_list), detail=type(item).__name__)
         if isinstance(item, Zip):
             das = [t.data for t in item.traces]
             overlay_groups = convert_xarray_inputs_overlay(
-                das, item.on, name_prefix=_resolve_array_name(item)
+                das, item.on, name_prefix=_resolve_array_name(item),
+                reporter=reporter,
             )
             overlay_colors = item.colors
         elif isinstance(item, RasterConfig):
@@ -660,6 +677,7 @@ def view(
                 alpha_range=item.alpha_range,
                 color_on=item.color_on,
                 color_on_config=item.color_on_config,
+                reporter=reporter,
             )
             if item.color_on is not None:
                 if item.color is not None or item.colors is not None:
@@ -695,6 +713,7 @@ def view(
                 vmax=item.vmax,
                 decim_method=item.decim_method,
                 array_name=resolved_array_name,
+                reporter=reporter,
             )
             base = len(array_list)
             array_list.extend(new_arrays)
@@ -710,6 +729,7 @@ def view(
                     descending=cfg.descending,
                     name_prefix=prefix,
                     color_by=cfg.color_by,
+                    reporter=reporter,
                 )
                 series_objs = [Series(n, t, y) for n, t, y in tuples]
                 group_name = prefix or (str(cfg.data.name) if cfg.data.name else f"dense_{i}")
@@ -733,6 +753,7 @@ def view(
                     descending=cfg.descending,
                     name_prefix=prefix,
                     color_by=cfg.color_by,
+                    reporter=reporter,
                 )
                 new_series = [Series(n, t, y) for n, t, y in tuples]
                 base = len(xr_series)
@@ -790,14 +811,7 @@ def view(
     array_series = array_list or None
     raster_series_list = raster_list or None
 
-    # ---- Qt event loop ----------------------------------------------------
-    app = QtWidgets.QApplication.instance()
-    created_app = False
-    if app is None:
-        _warn_if_ipython_without_qt()
-        app = QtWidgets.QApplication([])
-        created_app = True
-
+    # ---- Build main window ------------------------------------------------
     # Resolve the state config (keymap + label colors) up front so any
     # config error surfaces before we build the GUI.
     state_config = load_state_config(
@@ -847,6 +861,7 @@ def view(
                     f"videos must contain VideoConfig instances, got {type(v).__name__}"
                 )
 
+    reporter.phase("Building main window")
     w = LoupeApp(
         xr_series=xr_series_out,
         raster_series_list=raster_series_list,
@@ -860,9 +875,13 @@ def view(
         label_set=label_set,
         label_alpha=label_alpha,
         video_configs=video_configs,
+        reporter=reporter,
         **kwargs,
     )
     w.show()
+    if splash is not None:
+        splash.finish(w)
+    reporter.done()
 
     if created_app:
         import sys

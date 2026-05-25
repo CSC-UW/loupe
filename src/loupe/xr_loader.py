@@ -78,6 +78,7 @@ class OverlayGroup:
 def dataarray_to_series(
     da: xr.DataArray,
     name_prefix: str = "",
+    reporter=None,
 ) -> list[tuple[str, np.ndarray, np.ndarray]]:
     """Flatten a DataArray into a list of ``(name, t_array, y_array)`` tuples.
 
@@ -119,14 +120,19 @@ def dataarray_to_series(
         results.append((name_prefix, time_vals.copy(), da.values.astype(float)))
     else:
         dim_coords = [da.coords[d].values for d in non_time_dims]
+        total = 1
+        for c in dim_coords:
+            total *= len(c)
 
-        for combo in itertools.product(*dim_coords):
+        for idx, combo in enumerate(itertools.product(*dim_coords)):
             sel_dict = dict(zip(non_time_dims, combo))
             y = da.sel(sel_dict).values.astype(float)
 
             suffix = "-".join(str(v) for v in combo)
             name = f"{name_prefix}: {suffix}" if name_prefix else suffix
             results.append((name, time_vals.copy(), y))
+            if reporter is not None:
+                reporter.item(idx, total, detail=name)
 
     return results
 
@@ -296,6 +302,7 @@ def convert_xarray_inputs_with_order(
     descending: bool = False,
     name_prefix: str = "",
     color_by: str | None = None,
+    reporter=None,
 ) -> tuple[
     list[tuple[str, np.ndarray, np.ndarray]],
     np.ndarray | None,
@@ -330,7 +337,7 @@ def convert_xarray_inputs_with_order(
     color_values : np.ndarray or None
         One categorical value per trace, for coloring.
     """
-    tuples = dataarray_to_series(da, name_prefix=name_prefix)
+    tuples = dataarray_to_series(da, name_prefix=name_prefix, reporter=reporter)
     labels = [t[0] for t in tuples]
 
     non_time_dims = [d for d in da.dims if d != "time"]
@@ -447,6 +454,7 @@ def dataarray_to_arrays(
     vmax: float | None = None,
     decim_method: str = "peak",
     array_name: "bool | str | Callable[..., str]" = False,
+    reporter=None,
 ):
     """Convert a DataArray into one or more :class:`ArraySeries` heatmaps.
 
@@ -565,7 +573,12 @@ def dataarray_to_arrays(
 
     array_series_list = []
 
+    n_groups = len(groups)
     for gi, (split_val, sub_da) in enumerate(groups):
+        if reporter is not None:
+            reporter.item(
+                gi, n_groups, detail=str(split_val) if split_val is not None else ""
+            )
         non_time_dims = [d for d in sub_da.dims if d != "time"]
         if len(non_time_dims) != 1:
             extras = ", ".join(non_time_dims) or "(none)"
@@ -642,6 +655,8 @@ def dataarray_to_arrays(
         # Build mip-map for big arrays (cheap perf insurance).
         mipmap = None
         if Y.size >= ARRAY_MIPMAP_THRESHOLD:
+            if reporter is not None:
+                reporter.phase(f"Building mipmap for {name}")
             mipmap = _build_mipmap(Y, decim_method, ARRAY_MIPMAP_TARGET_MIN_COLS)
 
         array_series_list.append(ArraySeries(
@@ -705,6 +720,7 @@ def convert_xarray_inputs_overlay(
     data: list[xr.DataArray],
     overlay_dim: str,
     name_prefix: str = "",
+    reporter=None,
 ) -> list[OverlayGroup]:
     """Group traces from multiple DataArrays by a shared dimension.
 
@@ -760,7 +776,10 @@ def convert_xarray_inputs_overlay(
 
     if not extra_dims:
         # Simple case: just overlay_dim
-        for val in overlay_vals:
+        n_vals = len(overlay_vals)
+        for vi, val in enumerate(overlay_vals):
+            if reporter is not None:
+                reporter.item(vi, n_vals, detail=str(val))
             group = OverlayGroup(label=_with_prefix(str(val)))
             for src_idx, da in enumerate(data):
                 if val not in da.coords[overlay_dim].values:
@@ -780,9 +799,17 @@ def convert_xarray_inputs_overlay(
     else:
         # Extra dims: create one group per (overlay_val, extra_combo)
         extra_coords = [data[0].coords[d].values for d in extra_dims]
+        total_extra = 1
+        for c in extra_coords:
+            total_extra *= len(c)
+        n_total = len(overlay_vals) * max(1, total_extra)
+        idx = 0
         for val in overlay_vals:
             for combo in itertools.product(*extra_coords):
                 extra_label = "-".join(str(v) for v in combo)
+                if reporter is not None:
+                    reporter.item(idx, n_total, detail=f"{val}-{extra_label}")
+                idx += 1
                 group = OverlayGroup(
                     label=_with_prefix(f"{val}-{extra_label}")
                 )

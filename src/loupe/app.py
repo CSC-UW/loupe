@@ -1454,10 +1454,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         label_set: LabelSet | None = None,
         # Initial label-overlay alpha multiplier (0.0 – 1.0). None → 1.0.
         label_alpha: float | None = None,
+        # Optional ProgressReporter for launch-time progress.
+        reporter=None,
     ):
         super().__init__()
         self.setWindowTitle("Loupe — Multi-Trace + Video + Labeling")
         self.resize(1400, 900)
+
+        if reporter is None:
+            from loupe.progress import null_reporter
+            reporter = null_reporter()
+        self._reporter = reporter
 
         pg.setConfigOptions(
             antialias=False, useOpenGL=True, background="k", foreground="w"
@@ -1687,6 +1694,15 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.array_visible = [True] * len(self.array_series)
             self._array_cache_keys = [None] * len(self.array_series)
 
+        # Store raster series early too so set_series's _create_all_plots
+        # picks them up in a single pass — otherwise it builds trace-only
+        # plots first, then _rebuild_all_plots tears them down to add rasters.
+        if raster_series_list:
+            self.raster_series = list(raster_series_list)
+            self.raster_height_factors = [1.0] * len(self.raster_series)
+            self.raster_visible = [True] * len(self.raster_series)
+            self.subplot_order = None
+
         # Prefer overlay groups, then xarray series, then explicit file list, then dir
         if overlay_groups:
             self.set_overlay_series(overlay_groups, colors=overlay_colors)
@@ -1754,18 +1770,18 @@ class LoupeApp(QtWidgets.QMainWindow):
                 raster_timestamps, raster_yvals, raster_alphas, raster_colors
             )
 
-        # Load pre-converted RasterSeries (from df_loader)
+        # Pre-converted RasterSeries (from df_loader) were stored above so
+        # set_series's first _create_all_plots already includes them. Here we
+        # only need to handle the cases set_series didn't cover: overlay mode
+        # (which doesn't include rasters in _create_overlay_plots) and the
+        # raster-only path (no traces/dense/array/overlay at all).
         if raster_series_list:
-            self.raster_series = raster_series_list
-            self.raster_height_factors = [1.0] * len(raster_series_list)
-            self.raster_visible = [True] * len(raster_series_list)
-            self.subplot_order = None
             self._update_status(
                 f"Loaded {len(raster_series_list)} raster series from DataFrame."
             )
-            if self.series:
+            if overlay_groups:
                 self._rebuild_all_plots()
-            else:
+            elif not (xr_series or dense_groups or array_series):
                 self._update_time_range_from_raster()
                 self._create_raster_only_plots()
 
@@ -3536,6 +3552,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Create all plots (time series, dense, raster, and array)
         self._create_all_plots()
 
+        reporter = getattr(self, "_reporter", None)
+        if reporter is not None:
+            reporter.phase("Rendering")
         self._apply_x_range()
         self._update_nav_slider_from_window()
         n_dense = sum(len(g.series) for g in self.dense_groups)
@@ -4110,6 +4129,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             + len(self.raster_series)
             + len(self.array_series)
         )
+        reporter = getattr(self, "_reporter", None)
+        if reporter is not None and total_plots > 0:
+            reporter.phase("Creating plots")
+        built = 0
 
         # Build a (kind, idx) → display-row lookup. Each entry of
         # subplot_order maps to a sequential row, top-to-bottom. When
@@ -4134,6 +4157,9 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Create time series plots first
         for idx, s in enumerate(self.series):
+            if reporter is not None:
+                reporter.item(built, total_plots, detail=s.name)
+            built += 1
             row_idx = _row("ts", idx)
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
@@ -4231,6 +4257,11 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Create dense plots
         for gi in range(len(self.dense_groups)):
+            if reporter is not None:
+                reporter.item(
+                    built, total_plots, detail=self.dense_groups[gi].name
+                )
+            built += 1
             row_idx = _row("dense", gi)
             plt = self._create_dense_plot(gi, master_plot=master_plot)
             self.plot_area.addItem(plt, row=row_idx, col=0)
@@ -4248,6 +4279,9 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Create raster plots
         for idx, ms in enumerate(self.raster_series):
+            if reporter is not None:
+                reporter.item(built, total_plots, detail=ms.name)
+            built += 1
             row_idx = _row("raster", idx)
             vb = SelectableViewBox()
             vb.sigWheelScrolled.connect(self._page)
@@ -4320,6 +4354,9 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         # Create array (heatmap) plots
         for idx, asx in enumerate(self.array_series):
+            if reporter is not None:
+                reporter.item(built, total_plots, detail=asx.name)
+            built += 1
             row_idx = _row("array", idx)
             plt = self._create_array_plot(idx, asx, master_plot, row_idx, last_row + 1)
             self.plot_area.addItem(plt, row=row_idx, col=0)
