@@ -162,19 +162,6 @@ def nice_time_range(t_arrays):
     )
 
 
-def resolve_low_profile_x(
-    low_profile_x: bool | None, total_subplots: int
-) -> bool:
-    """Resolve the effective low-profile X-axis mode.
-
-    When the caller does not specify a preference, Loupe defaults to the
-    low-profile layout once three or more total subplots are loaded.
-    """
-    if low_profile_x is not None:
-        return bool(low_profile_x)
-    return total_subplots >= 3
-
-
 def clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
@@ -1436,7 +1423,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         colors=None,
         video_configs: list | None = None,
         fixed_scale=True,
-        low_profile_x: bool | None = None,
         window_len: float = 10.0,
         # Raster viewer arguments
         raster_timestamps=None,
@@ -1618,10 +1604,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._select_end = None
         self._is_zoom_drag = False
         self.fixed_scale = bool(fixed_scale)
-        self._low_profile_x_preference = low_profile_x
-        self.low_profile_x = resolve_low_profile_x(
-            self._low_profile_x_preference, total_subplots=0
-        )
 
         # Video slots — one VideoSlot per VideoConfig. Workers + threads
         # are owned by the slot; labels/menu actions get attached later
@@ -1778,7 +1760,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Load pre-converted RasterSeries (from df_loader)
         if raster_series_list:
             self.raster_series = raster_series_list
-            self._refresh_low_profile_x()
             self.raster_height_factors = [1.0] * len(raster_series_list)
             self.raster_visible = [True] * len(raster_series_list)
             self.subplot_order = None
@@ -1790,18 +1771,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             else:
                 self._update_time_range_from_raster()
                 self._create_raster_only_plots()
-
-    def _refresh_low_profile_x(self) -> None:
-        """Update low-profile X mode from explicit preference or subplot count."""
-        total_subplots = (
-            len(self.series)
-            + len(self.raster_series)
-            + len(self.dense_groups)
-            + len(self.array_series)
-        )
-        self.low_profile_x = resolve_low_profile_x(
-            self._low_profile_x_preference, total_subplots
-        )
 
     def eventFilter(self, obj, ev):
         try:
@@ -3455,7 +3424,6 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def set_series(self, series_list, colors=None):
         self.series = series_list
-        self._refresh_low_profile_x()
 
         # Assign per-trace colours (RGBA tuples or default white).
         if colors and len(colors) == len(series_list):
@@ -3630,8 +3598,6 @@ class LoupeApp(QtWidgets.QMainWindow):
                 series_idx += 1
             self._plot_to_series.append(indices)
 
-        self._refresh_low_profile_x()
-
         # Clear existing plots
         self._clear_all_label_visuals()
         self.plot_area.clear()
@@ -3765,7 +3731,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         self.raster_series = all_ms
-        self._refresh_low_profile_x()
         self.raster_height_factors = [1.0] * len(all_ms)
         self.raster_visible = [True] * len(all_ms)
         self.subplot_order = None
@@ -3909,7 +3874,6 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         if raster_series:
             self.raster_series = raster_series
-            self._refresh_low_profile_x()
             # Initialize height factors and visibility for raster plots
             self.raster_height_factors = [1.0] * len(raster_series)
             self.raster_visible = [True] * len(raster_series)
@@ -3940,7 +3904,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not self.raster_series:
             return
 
-        self._refresh_low_profile_x()
         self.window_start = self.t_global_min
         self.cursor_time = self.window_start
 
@@ -3985,7 +3948,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-            if self.low_profile_x and not is_last:
+            if not is_last:
                 try:
                     plt.setLabel("bottom", "")
                     bax = plt.getAxis("bottom")
@@ -4079,7 +4042,6 @@ class LoupeApp(QtWidgets.QMainWindow):
             if len(asx.t) > 0:
                 t_arrays.append(asx.t)
         self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
-        self._refresh_low_profile_x()
 
         # Create all plots
         self._create_all_plots()
@@ -4150,7 +4112,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addLegend(offset=(10, 10))
             plt.enableAutoRange("x", False)
 
-            if self.low_profile_x and not is_last:
+            if not is_last:
                 try:
                     plt.setLabel("bottom", "")
                     bax = plt.getAxis("bottom")
@@ -4239,7 +4201,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.plot_area.addItem(self.dense_vscroll_proxies[gi], row=row_idx, col=1)
             is_last = row_idx == last_row
             plt.setLabel("bottom", "Time", units="s" if is_last else None)
-            if self.low_profile_x and not is_last:
+            if not is_last:
                 try:
                     plt.setLabel("bottom", "")
                     bax = plt.getAxis("bottom")
@@ -4285,7 +4247,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-            if self.low_profile_x and not is_last:
+            if not is_last:
                 try:
                     plt.setLabel("bottom", "")
                     bax = plt.getAxis("bottom")
@@ -4384,7 +4346,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-        if self.low_profile_x and not is_last:
+        if not is_last:
             try:
                 plt.setLabel("bottom", "")
                 bax = plt.getAxis("bottom")
@@ -4454,7 +4416,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addLegend(offset=(10, 10))
             plt.enableAutoRange("x", False)
 
-            if self.low_profile_x and not is_last:
+            if not is_last:
                 try:
                     plt.setLabel("bottom", "")
                     bax = plt.getAxis("bottom")
@@ -6665,7 +6627,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.plot_area.addItem(plt, row=row, col=0)
 
                     # Update bottom axis visibility
-                    if self.low_profile_x and not is_last:
+                    if not is_last:
                         try:
                             plt.setLabel("bottom", "")
                             bax = plt.getAxis("bottom")
@@ -6697,7 +6659,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                             self.dense_vscroll_proxies[idx], row=row, col=1
                         )
 
-                    if self.low_profile_x and not is_last:
+                    if not is_last:
                         try:
                             plt.setLabel("bottom", "")
                             bax = plt.getAxis("bottom")
@@ -6725,7 +6687,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                     plt.setVisible(True)
                     self.plot_area.addItem(plt, row=row, col=0)
 
-                    if self.low_profile_x and not is_last:
+                    if not is_last:
                         try:
                             plt.setLabel("bottom", "")
                             bax = plt.getAxis("bottom")
@@ -6754,7 +6716,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.plot_area.addItem(plt, row=row, col=0)
 
                     # Update bottom axis visibility
-                    if self.low_profile_x and not is_last:
+                    if not is_last:
                         try:
                             plt.setLabel("bottom", "")
                             bax = plt.getAxis("bottom")

@@ -487,8 +487,7 @@ def view(
     label_alpha : float, optional
         Initial label-overlay alpha multiplier in ``[0.0, 1.0]``.
     **kwargs
-        Forwarded to :class:`LoupeApp` (``fixed_scale``,
-        ``low_profile_x``, etc.).
+        Forwarded to :class:`LoupeApp` (``fixed_scale``, etc.).
 
     Returns
     -------
