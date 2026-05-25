@@ -48,7 +48,6 @@
   - A markdown file with increased detail for each view, including performance/dev notes, could be linked to from the README.
 - [ ] `app.py` is getting huge, consider refactoring for agent friendliness.
 - [ ] Consider splitting the "Technical design" section of the README into a separate document.
-- [ ] Margins around stacked subplots should be reduced, if possible, to maximize information density.
 - [ ] When displaying very long pieces of data, scientific notation should not be used for the time axis labels. 36000 seconds should display as 36000, not 3.6e4, or 36 kiloseconds.
 - [ ] If no video is provided, the space used for the video viewer should be used for something else, e.g. the label / hypnogram views.
 - [ ] Include small sample data, for testing. Consider DataLad / GIN / GitLFS, or similar.
