@@ -6,7 +6,7 @@ This document explains:
 - What the application does
 - How to install and use it
 - A complete tour of features and shortcuts
-- Command‑line flags and data format
+- Data format
 - xarray integration for Jupyter notebooks
 - Technical design and implementation details
 
@@ -70,48 +70,14 @@ Every data input to `view()` must be wrapped in a Config:
 shared coordinate across multiple DataArrays. Bare DataArrays / DataFrames
 are not accepted.
 
-#### Command line (npy files)
-```bash
-# Load all *_t.npy/*_y.npy pairs from a folder
-python -m loupe.app --data_dir ./data
-
-# Load explicit pairs and one video
-python -m loupe.app \
-  --data_files ./data/eeg_t.npy ./data/eeg_y.npy ./data/load_t.npy ./data/load_y.npy \
-  --video ./data/video.mp4 --frame_times ./data/frame_times.npy
-
-# Multiple videos
-python -m loupe.app \
-  --data_dir ./data \
-  --video ./data/video.mp4 --frame_times ./data/frame_times.npy \
-  --video2 ./data/video2.mp4 --frame_times2 ./data/frame_times2.npy \
-  --video3 ./data/video3.mp4 --frame_times3 ./data/frame_times3.npy
-
-# Raster plots (e.g., neural spike rasters)
-python -m loupe.app \
-  --data_dir ./data \
-  --raster_timestamps ./data/spikes1_timestamps.npy ./data/spikes2_timestamps.npy \
-  --raster_yvals ./data/spikes1_yvals.npy ./data/spikes2_yvals.npy \
-  --raster_alphas ./data/spikes1_alphas.npy ./data/spikes2_alphas.npy \
-  --raster_colors "#FF5500" "#00AAFF"
-
-# xarray data from the command line
-python -m loupe.app \
-  --xr_path ./data.zarr \
-  --xr_group dmd_2 --xr_variable data \
-  --xr_filter '{"syn_id": [3, 6], "time": [0, 1800]}'
-```
-
 ---
 
 ### Data format
 
 #### Time series (npy)
 - Each time series is provided as a pair: `<name>_t.npy` (1‑D float seconds, monotonic) and `<name>_y.npy` (1‑D float values).
-- You can:
-  - Point the app to a directory with many pairs using `--data_dir`, or
-  - Provide an ordered list of files using `--data_files` (any mix of `_t.npy` and `_y.npy` files). Pairs are matched by basename; row order follows first appearance in your list.
-- Optional per‑series colors can be provided with `--colors`. Accepted formats: `#RRGGBB[AA]`, `0xRRGGBB`, or `R,G,B[,A]`.
+- Pairs are matched by basename; row order follows first appearance.
+- Optional per‑series colors accept `#RRGGBB[AA]`, `0xRRGGBB`, or `R,G,B[,A]`.
 
 #### xarray DataArrays
 - Each DataArray must have a `'time'` dimension with coordinates.
@@ -127,7 +93,6 @@ python -m loupe.app \
   - `name` (optional) — display label used for the empty-frame placeholder and the Show / Frame Step Target menu entries. Defaults to `"Video {i+1}"`.
   - `stretch` (optional) — initial vertical layout weight relative to other videos. Defaults to 3 for the first slot and 2 for the rest.
   - `frame_times_correction` (optional, default `0.0`) — float (seconds) added to every frame time after loading. Applied uniformly whether `frame_times_path` is a single file or a list; useful as a quick alignment shim against the trace cursor without rewriting the underlying `.npy` files.
-- From the CLI, use `--video/--frame_times`, `--video2/--frame_times2`, and `--video3/--frame_times3` for up to three videos. The flags are pair-wise: omitting either half of a pair drops that slot.
 - All loaded videos play together, locked to the trace cursor. Each runs in its own `VideoWorker` thread.
 
 #### Labels
@@ -190,8 +155,7 @@ action becomes available (Ctrl+S). Without it, the menu item is disabled.
 #### State definitions
 State hotkeys and per‑state label colors come from any combination of:
 
-1. an explicit `state_definitions=<path>` kwarg on `view()` (or
-   `--state-definitions` on the CLI),
+1. an explicit `state_definitions=<path>` kwarg on `view()`,
 2. otherwise, a `state_definitions.json` file next to `loupe/app.py`
    (gitignored, user‑local — copy `example_state_definitions.json` to bootstrap),
 3. plus any `keymap=` / `label_colors=` kwargs on `view()`, which override
@@ -300,41 +264,6 @@ The **Array Plot Control Board** (View → Array Plot Controls…, `Ctrl+Shift+A
 
 ---
 
-### Command‑line flags
-
-Time series:
-- `--data_dir PATH` — load all `<name>_t.npy` / `<name>_y.npy` pairs from a directory.
-- `--data_files FILE...` — explicit ordered list of `.npy` files for multiple series.
-- `--colors COLOR...` — optional colors matching series order (see format above).
-
-Video:
-- `--video, --frame_times` — main video and frame times.
-- `--video2, --frame_times2` — second video and frame times.
-- `--video3, --frame_times3` — third video and frame times.
-- Beyond three videos: drive Loupe from Python via `view(..., videos=[VideoConfig(...), ...])`.
-
-Display:
-- `--fixed_scale` — disable Y auto‑scaling; initial per‑trace Y limits are set from robust percentiles (1–99%) with padding.
-- `--low_profile_x` — hide X axis labels/ticks for all but the bottom trace; vertical grid lines are preserved on hidden axes. This is now the default automatically whenever Loupe launches with 3 or more total subplots.
-
-Raster viewer:
-- `--raster_timestamps FILE...` — list of .npy files with event timestamps for each raster subplot.
-- `--raster_yvals FILE...` — list of .npy files with row indices (0 to N-1) for each event.
-- `--raster_alphas FILE...` — optional list of .npy files with alpha values (0-1) for each event.
-- `--raster_colors COLOR...` — list of hex colors (#RRGGBB) for each raster subplot.
-
-xarray:
-- `--xr_path FILE...` — path(s) to zarr or netCDF stores.
-- `--xr_group GROUP...` — group(s) within the store(s).
-- `--xr_variable NAME` — variable name in the dataset (default: `data`).
-- `--xr_filter JSON` — JSON filter dict for dimension slicing (e.g. `'{"syn_id": [3, 6]}'`).
-
-Labels & state:
-- `--state-definitions PATH` — JSON file with `keymap` and `label_colors`. Falls back to `state_definitions.json` next to `app.py` if omitted; raises `LoupeConfigError` if neither exists.
-- `--labels PATH` — initial labels file (`.csv`, `.htsv`, `.parquet`, or Visbrain `.txt`). For `.htsv`/`.parquet`, the schema is inferred only from the legacy CSV header; non‑standard column names require driving Loupe via `view()` with an explicit `LabelSchema`.
-
----
-
 ### UI tour
 Left side:
 - Multi‑trace panel: stacked subplots (one per trace) and/or dense plots (many traces on one axis), all X‑linked.
@@ -343,7 +272,7 @@ Left side:
 - Each plot has a vertical cursor line synchronized across traces.
 
 Right side:
-- Videos panel: any number of time‑synchronized videos stacked vertically (CLI exposes up to three; Python `view(..., videos=[...])` accepts more), plus a per‑window cursor slider underneath the top video.
+- Videos panel: any number of time‑synchronized videos stacked vertically (pass them via `view(..., videos=[VideoConfig(...), ...])`), plus a per‑window cursor slider underneath the top video.
 - When no videos are loaded, a dark placeholder occupies the videos panel area.
 - Hypnogram overview at the bottom: shows full‑recording label spans and a translucent region indicating the current window.
 
@@ -444,7 +373,7 @@ Import/Export labels
 3. Click‑drag to select an epoch; press a label key. Repeat across the recording.
 4. Use `0` to clear labels for re‑labeling specific regions.
 5. Use the hypnogram to verify global dynamics; toggle `z` to zoom the overview.
-6. Adjust Y scales per trace via Ctrl+D (or use `--fixed_scale` at launch).
+6. Adjust Y scales per trace via Ctrl+D.
 7. If reviewing behavior videos, step the selected video frame‑by‑frame with Left/Right. Use the frame step target menu to choose which video to step.
 8. Add notes to epochs (Ctrl+Shift+N) to flag unclear or interesting cases for later review.
 9. Use Jump to Epochs (Ctrl+J) to quickly navigate to epochs with specific states or notes.
@@ -497,7 +426,7 @@ Videos and threading
 
 Layout and sizing
 - Left plot spines (Y axes) are aligned by measuring axis widths and applying the maximum using `setWidth()`.
-- `--low_profile_x` keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels. If you do not pass the flag, Loupe now turns this on automatically when 3 or more total subplots are loaded at launch.
+- Low‑profile X mode keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels. Loupe turns this on automatically when 3 or more total subplots are loaded at launch.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Each `VideoSlot` carries its own stretch (default 3 for the first slot, 2 for the rest), reallocated via View → Adjust Secondary Videos Size… without fighting other controls.
 - Traces are placed in a `GraphicsLayoutWidget` wrapped in a `QScrollArea` (for stacked-subplot vertical paging). Dense plots add a `QScrollBar` to the right of the plot area for vertical trace navigation.
 - Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Three plot types are supported: `"ts"` (stacked subplots), `"dense"`, and `"raster"`. Each has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically.
@@ -523,7 +452,7 @@ Performance notes
 
 ### Troubleshooting
 - No videos appear:
-  - Ensure `opencv-python` is installed and the paths to `--video` and `--frame_times` exist.
+  - Ensure `opencv-python` is installed and the `video_path` / `frame_times_path` you passed to `VideoConfig` exist.
   - Verify `frame_times.npy` is 1‑D and aligned with the video frames.
 - X grid lines missing (low profile mode):
   - The app retains vertical grid lines by keeping a minimal bottom axis per row with hidden tick text. If you manually change plot styles, keep axes alive to preserve grids.
