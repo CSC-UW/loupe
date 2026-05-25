@@ -3715,7 +3715,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         y_col: str = "source_id",
         group_col: str | list[str] | None = None,
         alpha_col: str | None = None,
-        name: str = "events",
+        array_name: str = "",
         colors=None,
         alpha_range: tuple[float, float] = (0.3, 1.0),
     ):
@@ -3733,8 +3733,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             Column(s) to split into separate subplots.
         alpha_col : str or None
             Column for per-event opacity.
-        name : str
-            Base name for the raster subplots.
+        array_name : str
+            Array-level prefix for each subplot label.  ``""`` (default)
+            uses the raw group value(s); a non-empty string is used as a
+            prefix verbatim.
         colors : dict, list, tuple or None
             Color specification per group.
         alpha_range : tuple[float, float]
@@ -3752,8 +3754,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             data = [data]
 
         all_ms: list[RasterSeries] = []
-        for i, mdf in enumerate(data):
-            prefix = name if len(data) == 1 else f"{name}_{i}"
+        for mdf in data:
             all_ms.extend(
                 dataframe_to_raster_series(
                     mdf,
@@ -3761,7 +3762,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                     y_col=y_col,
                     group_col=group_col,
                     alpha_col=alpha_col,
-                    name=prefix,
+                    array_name=array_name,
                     colors=colors,
                     alpha_range=alpha_range,
                 )

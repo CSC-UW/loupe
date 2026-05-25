@@ -230,9 +230,13 @@ class RasterConfig:
         subplots.  ``None`` (default) puts all events in a single subplot.
     alpha_col : str or None
         Column for per-event opacity, normalized to *alpha_range*.
-    name : str
-        Base name for the raster subplots (default ``"events"``).  Group
-        values are appended when *group_col* is set.
+    array_name : str
+        Array-level component of each subplot label.  ``""`` (default)
+        leaves grouped subplots labeled by raw group values (e.g.
+        ``"CA1-SR"``) and ungrouped subplots labeled with an empty
+        string.  A non-empty string is used as a prefix verbatim
+        (e.g. ``array_name="units"`` → ``"units: CA1-SR"``).  Multi-column
+        groups join values with ``"-"`` (e.g. ``"imec0-CA1-SR"``).
     color : str, RGB(A) tuple, or None
         Single color applied to every group produced by this DataFrame
         (e.g. ``"#a020f0"`` or ``(160, 32, 240)``).  Takes precedence over
@@ -264,7 +268,7 @@ class RasterConfig:
     y_col: str = "source_id"
     group_col: "str | list[str] | None" = None
     alpha_col: str | None = None
-    name: str = "events"
+    array_name: str = ""
     color: "str | tuple | None" = None
     colors: "dict | list | tuple | None" = None
     alpha_range: tuple[float, float] = (0.3, 1.0)
@@ -651,7 +655,7 @@ def view(
                 y_col=item.y_col,
                 group_col=item.group_col,
                 alpha_col=item.alpha_col,
-                name=item.name,
+                array_name=item.array_name,
                 colors=item.colors,
                 alpha_range=item.alpha_range,
                 color_on=item.color_on,

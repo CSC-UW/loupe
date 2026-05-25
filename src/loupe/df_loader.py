@@ -42,7 +42,7 @@ def dataframe_to_raster_series(
     y_col: str = "source_id",
     group_col: str | list[str] | None = None,
     alpha_col: str | None = None,
-    name: str = "events",
+    array_name: str = "",
     colors: (
         dict[object, tuple[int, int, int]]
         | list[tuple[int, int, int]]
@@ -72,9 +72,13 @@ def dataframe_to_raster_series(
     alpha_col : str or None
         Column for per-event opacity.  Values are normalized to
         *alpha_range*.  ``None`` gives every event alpha = 1.0.
-    name : str
-        Base name for the RasterSeries.  Group values are appended when
-        *group_col* is provided (e.g. ``"events: dmd=1"``).
+    array_name : str
+        Array-level component of each subplot label.  ``""`` (default)
+        leaves grouped subplots labeled by raw group values (e.g.
+        ``"CA1-SR"``) and ungrouped subplots labeled with an empty
+        string.  A non-empty string is used as a prefix verbatim
+        (e.g. ``array_name="units"`` → ``"units: CA1-SR"``).  Multi-column
+        groups join values with ``"-"`` (e.g. ``"imec0-CA1-SR"``).
     colors : dict, list, tuple or None
         Color specification per group:
 
@@ -278,12 +282,11 @@ def dataframe_to_raster_series(
         if cat_idx is not None:
             cat_idx = cat_idx[order]
 
-        # name
         if gcols:
-            label_parts = [f"{gc}={gv}" for gc, gv in zip(gcols, gkey)]
-            series_name = f"{name}: {', '.join(label_parts)}"
+            suffix = "-".join(str(gv) for gv in gkey)
+            series_name = f"{array_name}: {suffix}" if array_name else suffix
         else:
-            series_name = name
+            series_name = array_name
 
         color = _color_for(gkey, idx)
 

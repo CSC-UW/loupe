@@ -35,6 +35,10 @@
 
 - [ ] Consider using `PlotCurveItem` or `PlotScatteritem` instead of `PlotDataItem` for optimum performance.
 
+### LabelStripConfig
+
+- [ ] Add the ability to display labels as a subplot aligned to the data window.
+
 ## Other
 
 - [ ] Make "TraceConfig", "HeatmapConfig", and "RasterConfig" APIs as consistent as possible.
