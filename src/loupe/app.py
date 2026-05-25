@@ -1515,9 +1515,6 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         self.raster_event_thickness = 1  # pen width in pixels
         self.scale_raster_proportionally = False  # toggled via View menu
-        self.raster_share_boost = (
-            0  # adjustment to raster share (each unit = 5%, no bounds)
-        )
         self.raster_brightness = (
             1.0  # brightness multiplier for alpha values (0.2 to 3.0)
         )
@@ -2042,15 +2039,32 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         mview.addAction(self.action_proportional_raster)
 
-        increase_raster_share_action = QtGui.QAction("Increase Raster Share", self)
-        increase_raster_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+,"))
-        increase_raster_share_action.triggered.connect(self._increase_raster_share)
-        mview.addAction(increase_raster_share_action)
+        increase_focused_height_action = QtGui.QAction(
+            "Increase Focused Subplot Height", self
+        )
+        increase_focused_height_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+,"))
+        increase_focused_height_action.triggered.connect(
+            lambda: self._adjust_focused_subplot_height(1.1)
+        )
+        mview.addAction(increase_focused_height_action)
 
-        decrease_raster_share_action = QtGui.QAction("Decrease Raster Share", self)
-        decrease_raster_share_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+."))
-        decrease_raster_share_action.triggered.connect(self._decrease_raster_share)
-        mview.addAction(decrease_raster_share_action)
+        decrease_focused_height_action = QtGui.QAction(
+            "Decrease Focused Subplot Height", self
+        )
+        decrease_focused_height_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+."))
+        decrease_focused_height_action.triggered.connect(
+            lambda: self._adjust_focused_subplot_height(0.9)
+        )
+        mview.addAction(decrease_focused_height_action)
+
+        reset_focused_height_action = QtGui.QAction(
+            "Reset Focused Subplot Height", self
+        )
+        reset_focused_height_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+0"))
+        reset_focused_height_action.triggered.connect(
+            self._reset_focused_subplot_height
+        )
+        mview.addAction(reset_focused_height_action)
 
         # Array (heatmap) sizing — mirror the raster triplet
         self.action_proportional_array = QtGui.QAction(
@@ -2209,21 +2223,49 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.scale_raster_proportionally = checked
         self._apply_trace_visibility()  # Rebuilds layout with new sizing
 
-    def _increase_raster_share(self):
-        """Increase the vertical space share for raster plots by ~5%."""
-        if not self.raster_series:
-            return
-        self.raster_share_boost += 1
-        self._apply_trace_visibility()
-        self._update_status(f"Raster share boost: {self.raster_share_boost * 5:+d}%")
+    def _focused_height_factor_slot(self):
+        """Resolve the hovered subplot to its (factors_list, idx, label) triple.
 
-    def _decrease_raster_share(self):
-        """Decrease the vertical space share for raster plots by ~5%."""
-        if not self.raster_series:
+        Returns None if no stacked subplot is hovered.
+        """
+        if self.hovered_plot is None:
+            return None
+        targets = (
+            (self.plots, self.plot_height_factors, "trace"),
+            (self.dense_plots, self.dense_height_factors, "dense"),
+            (self.raster_plots, self.raster_height_factors, "raster"),
+            (self.array_plots, self.array_height_factors, "array"),
+        )
+        for plots, factors, label in targets:
+            for i, plt in enumerate(plots):
+                if plt is self.hovered_plot:
+                    while len(factors) <= i:
+                        factors.append(1.0)
+                    return factors, i, label
+        return None
+
+    def _adjust_focused_subplot_height(self, multiplier: float):
+        """Scale the focused subplot's height factor (clamped to [0.1, 20])."""
+        slot = self._focused_height_factor_slot()
+        if slot is None:
+            self._update_status("Hover a subplot to resize it")
             return
-        self.raster_share_boost -= 1
+        factors, idx, label = slot
+        new_factor = max(0.1, min(20.0, factors[idx] * multiplier))
+        factors[idx] = new_factor
         self._apply_trace_visibility()
-        self._update_status(f"Raster share boost: {self.raster_share_boost * 5:+d}%")
+        self._update_status(f"{label}[{idx}] height: {new_factor:.2f}")
+
+    def _reset_focused_subplot_height(self):
+        """Reset the focused subplot's height factor to 1.0."""
+        slot = self._focused_height_factor_slot()
+        if slot is None:
+            self._update_status("Hover a subplot to resize it")
+            return
+        factors, idx, label = slot
+        factors[idx] = 1.0
+        self._apply_trace_visibility()
+        self._update_status(f"{label}[{idx}] height: 1.00")
 
     def _toggle_proportional_array(self, checked: bool):
         """Toggle proportional array plot sizing on/off."""
@@ -3105,13 +3147,11 @@ class LoupeApp(QtWidgets.QMainWindow):
                     )
 
                     if self.scale_raster_proportionally and ms:
-                        # Combine proportional scaling with custom factor
-                        boost_factor = 1.0 + (self.raster_share_boost * 0.05)
-                        BASE_HEIGHT_PER_ROW = 12 * boost_factor
+                        BASE_HEIGHT_PER_ROW = 12
                         preferred = max(
                             MIN_HEIGHT, int(ms.n_rows * BASE_HEIGHT_PER_ROW * factor)
                         )
-                        stretch = max(1, int(ms.n_rows * boost_factor * factor * 10))
+                        stretch = max(1, int(ms.n_rows * factor * 10))
                     else:
                         preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
                         stretch = max(1, int(factor * 100))
