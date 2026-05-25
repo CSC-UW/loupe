@@ -196,7 +196,7 @@ class HeatmapConfig:
           per split group.  1-arg callables ``(split_val) -> ...`` are also
           accepted.
     vmin, vmax : float or None
-        Color scale limits.  Default is robust 1–99 percentile per array.
+        Color scale limits.  Default is robust 1–99 percentile per heatmap.
     decim_method : str
         Time-axis decimation when zoomed out. ``"peak"`` (max-absolute per
         bin, preserves transients) or ``"mean"``.
@@ -534,7 +534,7 @@ def view(
     from PySide6 import QtWidgets
 
     from loupe.app import (
-        ArraySeries,
+        HeatmapSeries,
         DenseGroup,
         EventLayer as _RenderedEventLayer,
         LoupeApp,
@@ -545,7 +545,7 @@ def view(
         convert_event_arrays_aligned_with,
         convert_xarray_inputs_overlay,
         convert_xarray_inputs_with_order,
-        dataarray_to_arrays,
+        dataarray_to_heatmaps,
     )
 
     # ---- normalize data into a list of Configs ----------------------------
@@ -633,7 +633,7 @@ def view(
     stacked_colors_acc: list = []
     any_stacked_color = False
     dense_list: list[DenseGroup] = []
-    array_list: list[ArraySeries] = []
+    heatmap_list: list[HeatmapSeries] = []
     raster_list = []
     overlay_groups = None
     overlay_colors: list | None = None
@@ -697,14 +697,14 @@ def view(
                 order_acc.append(("raster", base + j))
         elif isinstance(item, HeatmapConfig):
             # Callable array_name is plumbed straight through; everything
-            # else resolves to a string prefix here so dataarray_to_arrays
+            # else resolves to a string prefix here so dataarray_to_heatmaps
             # only sees the two cases it knows about.
             resolved_array_name = (
                 item.array_name
                 if callable(item.array_name)
                 else _resolve_array_name(item)
             )
-            new_arrays = dataarray_to_arrays(
+            new_heatmaps = dataarray_to_heatmaps(
                 item.data,
                 split_on=item.split_on,
                 sort_on=item.sort_on,
@@ -715,10 +715,10 @@ def view(
                 array_name=resolved_array_name,
                 reporter=reporter,
             )
-            base = len(array_list)
-            array_list.extend(new_arrays)
-            for j in range(len(new_arrays)):
-                order_acc.append(("array", base + j))
+            base = len(heatmap_list)
+            heatmap_list.extend(new_heatmaps)
+            for j in range(len(new_heatmaps)):
+                order_acc.append(("heatmap", base + j))
         else:  # TraceConfig
             cfg = item
             prefix = _resolve_array_name(cfg)
@@ -795,20 +795,20 @@ def view(
                 )
 
     # Compute subplot_order, forwarded only if it deviates from the default
-    # (ts → dense → raster → array) — matches the default ordering inside
+    # (ts → dense → raster → heatmap) — matches the default ordering inside
     # LoupeApp so callers without mixed input never carry a no-op list.
     default_order = (
         [("ts", k) for k in range(len(xr_series))]
         + [("dense", k) for k in range(len(dense_list))]
         + [("raster", k) for k in range(len(raster_list))]
-        + [("array", k) for k in range(len(array_list))]
+        + [("heatmap", k) for k in range(len(heatmap_list))]
     )
     config_subplot_order = order_acc if order_acc != default_order else None
 
     xr_series_out = xr_series or None
     stacked_colors = stacked_colors_acc if any_stacked_color else None
     dense_groups = dense_list or None
-    array_series = array_list or None
+    heatmap_series = heatmap_list or None
     raster_series_list = raster_list or None
 
     # ---- Build main window ------------------------------------------------
@@ -868,7 +868,7 @@ def view(
         overlay_groups=overlay_groups,
         overlay_colors=overlay_colors,
         dense_groups=dense_groups,
-        array_series=array_series,
+        heatmap_series=heatmap_series,
         window_len=window_len,
         event_layers=event_layers_rendered,
         state_config=state_config,

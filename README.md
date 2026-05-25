@@ -228,14 +228,14 @@ view([
 ```
 Both views share synchronized X (time) axes.
 
-#### Array view
-The array view renders an `xr.DataArray` as a 2-D heatmap (imshow-style) over time, with one row per entry of a non-time dimension. It is designed for inspecting many traces at once at fine-grained detail — e.g. `dF[syn_id, time]` shown as a heatmap with synapses on the y-axis and time on the x-axis — while keeping all the synchronized cursor / labeling / video / hypnogram infrastructure of Loupe.
+#### Heatmap view
+The heatmap view renders an `xr.DataArray` as a 2-D heatmap (imshow-style) over time, with one row per entry of a non-time dimension. It is designed for inspecting many traces at once at fine-grained detail — e.g. `dF[syn_id, time]` shown as a heatmap with synapses on the y-axis and time on the x-axis — while keeping all the synchronized cursor / labeling / video / hypnogram infrastructure of Loupe.
 
 `HeatmapConfig` parameters:
 - `split_on` — coordinate or dim name to split into one subplot per unique value (e.g. `'dend-ID'` to get one heatmap per dendrite). Uses `xr.DataArray.groupby`, so works with both dim names and 1-D coords on a dim.
 - `sort_on` — coordinate name on the row dim controlling y-axis row order (sorted ascending).
 - `colormap` — matplotlib colormap name. A list applies one entry per `split_on` group in order. Default `"magma"`.
-- `vmin`, `vmax` — color scale limits. Default is robust 1–99 percentile per array.
+- `vmin`, `vmax` — color scale limits. Default is robust 1–99 percentile per heatmap.
 - `decim_method` — `"peak"` (max-absolute per bin, preserves transients; default) or `"mean"`.
 
 Each subplot must have exactly one non-time dim remaining after the split — otherwise a clear error is raised.
@@ -246,22 +246,22 @@ from loupe import view, HeatmapConfig
 w = view(HeatmapConfig(dnv, split_on="dend-ID", sort_on="pos",
                        colormap=["magma", "viridis", "plasma", "inferno"]))
 
-# Single array (no split):
+# Single heatmap (no split):
 w = view(HeatmapConfig(dF_one_dend, sort_on="pos"))
 ```
 
-The **Array Plot Control Board** (View → Array Plot Controls…, `Ctrl+Shift+A`) provides per-subplot live adjustment of:
+The **Heatmap Plot Controls** dialog (View → Heatmap Plot Controls…, `Ctrl+Shift+H`) provides per-subplot live adjustment of:
 - vmin / vmax (slider + spinbox; "Reset to 1–99% percentile" button)
 - Colormap (dropdown of presets, freely editable)
 - Decimation method (peak / mean)
-- "Apply to all arrays" copies the current row's settings to every other array plot.
+- "Apply to all heatmaps" copies the current row's settings to every other heatmap plot.
 
-**Performance.** Array plots use a layered strategy to stay responsive even with multiple plots loaded:
-1. Cursor moves, selection drags, label additions, and Y-zoom skip the array refresh entirely.
+**Performance.** Heatmap plots use a layered strategy to stay responsive even with multiple plots loaded:
+1. Cursor moves, selection drags, label additions, and Y-zoom skip the heatmap refresh entirely.
 2. Each plot caches its last-rendered `(window, view-width, vmin, vmax, cmap, decim_method)` and short-circuits if unchanged.
 3. NaN values are sentinel-replaced at load time so refresh uses fast `np.max` / `np.mean` (no nan-aware overhead).
 4. Manual NumPy LUT mapping → uint8 RGBA upload bypasses pyqtgraph's per-pixel level math.
-5. Arrays exceeding 5 M elements get a power-of-2 mip-map at load time (~2× memory), so pan latency stays O(viewbox-width) regardless of recording length.
+5. Heatmaps exceeding 5 M elements get a power-of-2 mip-map at load time (~2× memory), so pan latency stays O(viewbox-width) regardless of recording length.
 
 ---
 

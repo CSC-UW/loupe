@@ -80,8 +80,8 @@ class RasterSeries:
 
 
 @dataclass
-class ArraySeries:
-    """Holds data for an array (heatmap/imshow) subplot.
+class HeatmapSeries:
+    """Holds data for a heatmap (imshow-style) subplot.
 
     Represents a single 2-D buffer ``Y`` of shape ``(n_rows, n_time)`` with a
     shared time axis ``t``.  Each row corresponds to one entry of the row dim
@@ -117,7 +117,7 @@ class LabelVisualBundle:
     raster_regions: list[tuple[int, pg.LinearRegionItem]]
     dense_regions: list[tuple[int, pg.LinearRegionItem]]
     hypnogram_region: pg.LinearRegionItem | None
-    array_regions: list[tuple[int, pg.LinearRegionItem]] = field(default_factory=list)
+    heatmap_regions: list[tuple[int, pg.LinearRegionItem]] = field(default_factory=list)
 
 
 RASTER_ALPHA_LEVEL_COUNT = 11
@@ -1081,7 +1081,7 @@ def _colormap_display_name(cmap: "str | Colormap") -> str:
 def _colormap_cache_token(cmap: "str | Colormap"):
     """Hashable, equality-stable token identifying a colormap value.
 
-    Used as part of the per-frame array-render cache key (which compares by
+    Used as part of the per-frame heatmap-render cache key (which compares by
     ``==``). Strings compare by value; Colormap instances by ``id()`` so a
     new instance forces a re-render.
     """
@@ -1090,7 +1090,7 @@ def _colormap_cache_token(cmap: "str | Colormap"):
     return ("__cmap_obj__", id(cmap))
 
 
-# Built-in colormap suggestions for the Array Plot Control Board.
+# Built-in colormap suggestions for the Heatmap Plot Controls dialog.
 ARRAY_COLORMAP_PRESETS = (
     "magma",
     "viridis",
@@ -1105,12 +1105,12 @@ ARRAY_COLORMAP_PRESETS = (
 )
 
 
-class ArrayControlsDialog(QtWidgets.QDialog):
-    """Non-modal dialog for adjusting per-array vmin/vmax, colormap, and decim method."""
+class HeatmapControlsDialog(QtWidgets.QDialog):
+    """Non-modal dialog for adjusting per-heatmap vmin/vmax, colormap, and decim method."""
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Array Plot Controls")
+        self.setWindowTitle("Heatmap Plot Controls")
         self.setModal(False)
         self.main_window = parent
 
@@ -1125,7 +1125,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
 
         self._group_widgets: list[dict] = []
 
-        for ai, asx in enumerate(self.main_window.array_series):
+        for ai, asx in enumerate(self.main_window.heatmap_series):
             grp_box = QtWidgets.QGroupBox(asx.name)
             grp_layout = QtWidgets.QFormLayout(grp_box)
 
@@ -1207,7 +1207,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
             grp_layout.addRow("Decimation:", decim_box)
 
             # Apply-to-all button
-            apply_all_btn = QtWidgets.QPushButton("Apply to all arrays")
+            apply_all_btn = QtWidgets.QPushButton("Apply to all heatmaps")
             grp_layout.addRow("", apply_all_btn)
 
             main_layout.addWidget(grp_box)
@@ -1270,19 +1270,19 @@ class ArrayControlsDialog(QtWidgets.QDialog):
         return int(((value - w["slider_lo"]) / w["slider_span"]) * 10000)
 
     def _invalidate_array_cache(self, ai: int) -> None:
-        if ai < len(self.main_window._array_cache_keys):
-            self.main_window._array_cache_keys[ai] = None
+        if ai < len(self.main_window._heatmap_cache_keys):
+            self.main_window._heatmap_cache_keys[ai] = None
 
     def _refresh_one(self, ai: int) -> None:
         self._invalidate_array_cache(ai)
-        self.main_window._refresh_array_plots()
+        self.main_window._refresh_heatmap_plots()
 
     def _sync_widgets_to_state(self, ai: int) -> None:
         """Update slider/spinbox/combo/radio without firing handlers."""
         if ai >= len(self._group_widgets):
             return
         w = self._group_widgets[ai]
-        asx = self.main_window.array_series[ai]
+        asx = self.main_window.heatmap_series[ai]
         for sl in (w["vmin_slider"], w["vmax_slider"]):
             sl.blockSignals(True)
         for sp in (w["vmin_spin"], w["vmax_spin"]):
@@ -1316,7 +1316,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
 
     def _on_vmin_slider(self, ai: int, slider_val: int) -> None:
         v = self._slider_to_value(ai, slider_val)
-        asx = self.main_window.array_series[ai]
+        asx = self.main_window.heatmap_series[ai]
         asx.vmin = float(v)
         spin = self._group_widgets[ai]["vmin_spin"]
         spin.blockSignals(True)
@@ -1325,7 +1325,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
         self._refresh_one(ai)
 
     def _on_vmin_spin(self, ai: int, value: float) -> None:
-        asx = self.main_window.array_series[ai]
+        asx = self.main_window.heatmap_series[ai]
         asx.vmin = float(value)
         slider = self._group_widgets[ai]["vmin_slider"]
         slider.blockSignals(True)
@@ -1335,7 +1335,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
 
     def _on_vmax_slider(self, ai: int, slider_val: int) -> None:
         v = self._slider_to_value(ai, slider_val)
-        asx = self.main_window.array_series[ai]
+        asx = self.main_window.heatmap_series[ai]
         asx.vmax = float(v)
         spin = self._group_widgets[ai]["vmax_spin"]
         spin.blockSignals(True)
@@ -1344,7 +1344,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
         self._refresh_one(ai)
 
     def _on_vmax_spin(self, ai: int, value: float) -> None:
-        asx = self.main_window.array_series[ai]
+        asx = self.main_window.heatmap_series[ai]
         asx.vmax = float(value)
         slider = self._group_widgets[ai]["vmax_slider"]
         slider.blockSignals(True)
@@ -1355,11 +1355,11 @@ class ArrayControlsDialog(QtWidgets.QDialog):
     def _on_cmap_changed(self, ai: int, name: str) -> None:
         if not name:
             return
-        self.main_window.array_series[ai].colormap = str(name)
+        self.main_window.heatmap_series[ai].colormap = str(name)
         self._refresh_one(ai)
 
     def _on_decim_changed(self, ai: int, method: str) -> None:
-        asx = self.main_window.array_series[ai]
+        asx = self.main_window.heatmap_series[ai]
         if asx.decim_method == method:
             return
         asx.decim_method = method
@@ -1373,7 +1373,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
         self._refresh_one(ai)
 
     def _reset_levels(self, ai: int) -> None:
-        asx = self.main_window.array_series[ai]
+        asx = self.main_window.heatmap_series[ai]
         finite = asx.Y[np.isfinite(asx.Y)]
         if finite.size == 0:
             return
@@ -1385,8 +1385,8 @@ class ArrayControlsDialog(QtWidgets.QDialog):
         self._refresh_one(ai)
 
     def _apply_to_all(self, ai: int) -> None:
-        src = self.main_window.array_series[ai]
-        for j, asx in enumerate(self.main_window.array_series):
+        src = self.main_window.heatmap_series[ai]
+        for j, asx in enumerate(self.main_window.heatmap_series):
             if j == ai:
                 continue
             asx.vmin = src.vmin
@@ -1395,7 +1395,7 @@ class ArrayControlsDialog(QtWidgets.QDialog):
             asx.decim_method = src.decim_method
             self._sync_widgets_to_state(j)
             self._invalidate_array_cache(j)
-        self.main_window._refresh_array_plots()
+        self.main_window._refresh_heatmap_plots()
 
 
 # ---------------- Main window ----------------
@@ -1438,12 +1438,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         overlay_colors=None,
         # Dense mode
         dense_groups=None,
-        # Array (heatmap) mode
-        array_series=None,
-        # Initial layout order — list of ("ts"|"dense"|"raster"|"array", idx)
+        # Heatmap mode
+        heatmap_series=None,
+        # Initial layout order — list of ("ts"|"dense"|"raster"|"heatmap", idx)
         # tuples that specifies the visual subplot order top-to-bottom.
         # When None, falls back to the type-segregated default
-        # (ts → dense → raster → array). User can still rearrange interactively
+        # (ts → dense → raster → heatmap). User can still rearrange interactively
         # via the Plot Order dialog after launch.
         subplot_order=None,
         # Bool-event marker overlays for stacked-subplots traces.
@@ -1521,7 +1521,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             0.1  # distance from center in each direction (0.1-0.5)
         )
         self.raster_event_thickness = 1  # pen width in pixels
-        self.scale_raster_proportionally = False  # toggled via View menu
+        self.scale_raster_proportionally = True  # toggled via View menu
         self.raster_brightness = (
             1.0  # brightness multiplier for alpha values (0.2 to 3.0)
         )
@@ -1546,25 +1546,24 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Visibility flags for raster plots (similar to trace_visible for time series)
         self.raster_visible: list[bool] = []
 
-        # Array (heatmap) plots
-        self.array_series: list[ArraySeries] = []
-        self.array_plots: list[pg.PlotItem] = []
-        self.array_image_items: list[pg.ImageItem] = []
-        self.array_cur_lines: list[pg.InfiniteLine] = []
-        self.array_sel_regions: list[pg.LinearRegionItem] = []
-        self.array_height_factors: list[float] = []
-        self.array_visible: list[bool] = []
+        # Heatmap plots
+        self.heatmap_series: list[HeatmapSeries] = []
+        self.heatmap_plots: list[pg.PlotItem] = []
+        self.heatmap_image_items: list[pg.ImageItem] = []
+        self.heatmap_cur_lines: list[pg.InfiniteLine] = []
+        self.heatmap_sel_regions: list[pg.LinearRegionItem] = []
+        self.heatmap_height_factors: list[float] = []
+        self.heatmap_visible: list[bool] = []
         # Proportional sizing (mirror raster-plot behaviour). On by default
         # because most users prefer per-row weighting for heatmaps.
-        self.scale_array_proportionally = True
-        self.array_share_boost = 0  # each unit = 5%, no bounds
-        # When True, scale all array plots down uniformly so the total height
+        self.scale_heatmap_proportionally = True
+        # When True, scale all heatmap plots down uniformly so the total height
         # of every visible subplot fits in the plot-area viewport without
         # vertical scrolling. Toggled via View menu. Re-evaluated on every
-        # resize. Has no effect when there are no array plots.
-        self.compact_arrays_to_fit = True
-        # Cache last-rendered key per array plot so identical refreshes return early
-        self._array_cache_keys: list[tuple | None] = []
+        # resize. Has no effect when there are no heatmap plots.
+        self.compact_heatmaps_to_fit = True
+        # Cache last-rendered key per heatmap plot so identical refreshes return early
+        self._heatmap_cache_keys: list[tuple | None] = []
         # Cache uint8 RGBA LUTs by colormap name (built once per name)
         self._lut_cache: dict[str, np.ndarray] = {}
         # Plot order: list of (type, index) tuples, e.g., [("ts", 0), ("ts", 1), ("raster", 0)]
@@ -1687,12 +1686,12 @@ class LoupeApp(QtWidgets.QMainWindow):
                 for g in dense_groups
             ]
 
-        # Store array series early (before set_series triggers plot creation)
-        if array_series:
-            self.array_series = list(array_series)
-            self.array_height_factors = [1.0] * len(self.array_series)
-            self.array_visible = [True] * len(self.array_series)
-            self._array_cache_keys = [None] * len(self.array_series)
+        # Store heatmap series early (before set_series triggers plot creation)
+        if heatmap_series:
+            self.heatmap_series = list(heatmap_series)
+            self.heatmap_height_factors = [1.0] * len(self.heatmap_series)
+            self.heatmap_visible = [True] * len(self.heatmap_series)
+            self._heatmap_cache_keys = [None] * len(self.heatmap_series)
 
         # Store raster series early too so set_series's _create_all_plots
         # picks them up in a single pass — otherwise it builds trace-only
@@ -1706,7 +1705,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Prefer overlay groups, then xarray series, then explicit file list, then dir
         if overlay_groups:
             self.set_overlay_series(overlay_groups, colors=overlay_colors)
-        elif xr_series or dense_groups or array_series:
+        elif xr_series or dense_groups or heatmap_series:
             self.set_series(xr_series or [], colors=colors)
 
         # User-supplied initial layout order overrides the default segregated
@@ -1774,14 +1773,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         # set_series's first _create_all_plots already includes them. Here we
         # only need to handle the cases set_series didn't cover: overlay mode
         # (which doesn't include rasters in _create_overlay_plots) and the
-        # raster-only path (no traces/dense/array/overlay at all).
+        # raster-only path (no traces/dense/heatmap/overlay at all).
         if raster_series_list:
             self._update_status(
                 f"Loaded {len(raster_series_list)} raster series from DataFrame."
             )
             if overlay_groups:
                 self._rebuild_all_plots()
-            elif not (xr_series or dense_groups or array_series):
+            elif not (xr_series or dense_groups or heatmap_series):
                 self._update_time_range_from_raster()
                 self._create_raster_only_plots()
 
@@ -1993,58 +1992,109 @@ class LoupeApp(QtWidgets.QMainWindow):
         medit.addAction(note_action)
 
         mview = self.menuBar().addMenu("&View")
+
+        # ----- Group 1: Navigation & playback -----
+        play_action = QtGui.QAction("Toggle Playback", self)
+        play_action.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Space))
+        play_action.triggered.connect(self._toggle_playback)
+        mview.addAction(play_action)
+
+        page_left_action = QtGui.QAction("Page Left", self)
+        page_left_action.setShortcuts(
+            [
+                QtGui.QKeySequence(QtCore.Qt.Key.Key_BracketLeft),
+                QtGui.QKeySequence(QtCore.Qt.Key.Key_PageUp),
+            ]
+        )
+        page_left_action.triggered.connect(lambda: self._page(-1))
+        mview.addAction(page_left_action)
+
+        page_right_action = QtGui.QAction("Page Right", self)
+        page_right_action.setShortcuts(
+            [
+                QtGui.QKeySequence(QtCore.Qt.Key.Key_BracketRight),
+                QtGui.QKeySequence(QtCore.Qt.Key.Key_PageDown),
+            ]
+        )
+        page_right_action.triggered.connect(lambda: self._page(+1))
+        mview.addAction(page_right_action)
+
+        step_back_action = QtGui.QAction("Step Frame Back", self)
+        step_back_action.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Left))
+        step_back_action.triggered.connect(lambda: self._step_frame(-1))
+        mview.addAction(step_back_action)
+
+        step_fwd_action = QtGui.QAction("Step Frame Forward", self)
+        step_fwd_action.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Right))
+        step_fwd_action.triggered.connect(lambda: self._step_frame(+1))
+        mview.addAction(step_fwd_action)
+
+        next_epoch_action = QtGui.QAction("Next Epoch", self)
+        next_epoch_action.setShortcut(QtGui.QKeySequence("N"))
+        next_epoch_action.triggered.connect(lambda: self._jump_to_epoch_by_offset(+1))
+        mview.addAction(next_epoch_action)
+
+        prev_epoch_action = QtGui.QAction("Previous Epoch", self)
+        prev_epoch_action.setShortcut(QtGui.QKeySequence("B"))
+        prev_epoch_action.triggered.connect(lambda: self._jump_to_epoch_by_offset(-1))
+        mview.addAction(prev_epoch_action)
+
+        jump_epochs_action = QtGui.QAction("Jump to Epochs...", self)
+        jump_epochs_action.setShortcut(QtGui.QKeySequence("Ctrl+J"))
+        jump_epochs_action.triggered.connect(self._show_jump_to_epochs_dialog)
+        mview.addAction(jump_epochs_action)
+
+        playback_speed_action = QtGui.QAction("Set Playback Speed...", self)
+        playback_speed_action.triggered.connect(self._adjust_playback_speed)
+        mview.addAction(playback_speed_action)
+
+        scroll_speed_action = QtGui.QAction("Adjust Smooth Scroll Speed...", self)
+        scroll_speed_action.triggered.connect(self._adjust_scroll_speed)
+        mview.addAction(scroll_speed_action)
+
+        # ----- Group 2: Hypnogram -----
+        mview.addSeparator()
+
+        toggle_hyp_vis_action = QtGui.QAction("Toggle Hypnogram Visibility", self)
+        toggle_hyp_vis_action.setShortcut(QtGui.QKeySequence("H"))
+        toggle_hyp_vis_action.triggered.connect(self._toggle_hypnogram_visibility)
+        mview.addAction(toggle_hyp_vis_action)
+
+        toggle_hyp_zoom_action = QtGui.QAction("Toggle Hypnogram Zoom", self)
+        toggle_hyp_zoom_action.setShortcut(QtGui.QKeySequence("Z"))
+        toggle_hyp_zoom_action.triggered.connect(self._toggle_hypnogram_zoom)
+        mview.addAction(toggle_hyp_zoom_action)
+
+        # ----- Group 3: Trace / time-series plots -----
+        mview.addSeparator()
+
         y_axis_action = QtGui.QAction("Y-Axis Controls...", self)
         y_axis_action.setShortcut(QtGui.QKeySequence("Ctrl+D"))
         y_axis_action.triggered.connect(self._show_y_axis_dialog)
         mview.addAction(y_axis_action)
+
+        zoom_y_in_action = QtGui.QAction("Zoom Y In (hovered plot)", self)
+        zoom_y_in_action.setShortcut(QtGui.QKeySequence("Ctrl+1"))
+        zoom_y_in_action.triggered.connect(lambda: self._zoom_active_plot_y(0.9))
+        mview.addAction(zoom_y_in_action)
+
+        zoom_y_out_action = QtGui.QAction("Zoom Y Out (hovered plot)", self)
+        zoom_y_out_action.setShortcut(QtGui.QKeySequence("Ctrl+2"))
+        zoom_y_out_action.triggered.connect(lambda: self._zoom_active_plot_y(1.1))
+        mview.addAction(zoom_y_out_action)
 
         dense_ctrl_action = QtGui.QAction("Dense View Controls...", self)
         dense_ctrl_action.setShortcut(QtGui.QKeySequence("Ctrl+G"))
         dense_ctrl_action.triggered.connect(self._show_dense_controls_dialog)
         mview.addAction(dense_ctrl_action)
 
-        scroll_speed_action = QtGui.QAction("Adjust Smooth Scroll Speed...", self)
-        scroll_speed_action.triggered.connect(self._adjust_scroll_speed)
-        mview.addAction(scroll_speed_action)
+        label_alpha_action = QtGui.QAction("Adjust Label Alpha...", self)
+        label_alpha_action.triggered.connect(self._adjust_label_alpha)
+        mview.addAction(label_alpha_action)
 
-        adjust_video_sizes_action = QtGui.QAction(
-            "Adjust Secondary Videos Size...", self
-        )
-        adjust_video_sizes_action.triggered.connect(self._adjust_secondary_video_sizes)
-        mview.addAction(adjust_video_sizes_action)
-
-        # Show/Hide videos (with Ctrl+Shift+N hotkeys for N=1..9)
-        for slot in self.video_slots:
-            action = QtGui.QAction(f"Show {slot.name}", self)
-            action.setCheckable(True)
-            action.setChecked(slot.index == 0)
-            if slot.index < 9:
-                action.setShortcut(
-                    QtGui.QKeySequence(f"Ctrl+Shift+{slot.index + 1}")
-                )
-            action.toggled.connect(partial(self._set_video_visible, slot.index))
-            mview.addAction(action)
-            slot.show_action = action
-
-        # Frame-step target selector
-        step_menu = mview.addMenu("Frame Step Target")
-        self.step_action_group = QtGui.QActionGroup(self)
-        self.step_action_group.setExclusive(True)
-        for slot in self.video_slots:
-            action = QtGui.QAction(slot.name, self, checkable=True)
-            self.step_action_group.addAction(action)
-            action.setChecked(slot.index == 0)
-            action.triggered.connect(partial(self._set_frame_step_source, slot.index))
-            step_menu.addAction(action)
-            slot.step_action = action
-
-        # Playback speed
-        playback_speed_action = QtGui.QAction("Set Playback Speed...", self)
-        playback_speed_action.triggered.connect(self._adjust_playback_speed)
-        mview.addAction(playback_speed_action)
-
-        # Raster viewer settings
+        # ----- Group 4: Raster plots -----
         mview.addSeparator()
+
         self.action_proportional_raster = QtGui.QAction(
             "Proportional Raster Plots", self
         )
@@ -2055,6 +2105,65 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._toggle_proportional_raster
         )
         mview.addAction(self.action_proportional_raster)
+
+        raster_brightness_action = QtGui.QAction("Adjust Raster Brightness...", self)
+        raster_brightness_action.triggered.connect(self._adjust_raster_brightness)
+        mview.addAction(raster_brightness_action)
+
+        raster_height_action = QtGui.QAction("Raster Event Height...", self)
+        raster_height_action.triggered.connect(self._adjust_raster_event_height)
+        mview.addAction(raster_height_action)
+
+        raster_thickness_action = QtGui.QAction("Raster Event Thickness...", self)
+        raster_thickness_action.triggered.connect(self._adjust_raster_event_thickness)
+        mview.addAction(raster_thickness_action)
+
+        adjust_event_markers_action = QtGui.QAction(
+            "Adjust Event Marker Properties...", self
+        )
+        adjust_event_markers_action.triggered.connect(
+            self._adjust_event_marker_properties
+        )
+        mview.addAction(adjust_event_markers_action)
+
+        # ----- Group 5: Heatmap plots -----
+        mview.addSeparator()
+
+        self.action_proportional_heatmap = QtGui.QAction(
+            "Proportional Heatmap Plots", self
+        )
+        self.action_proportional_heatmap.setCheckable(True)
+        self.action_proportional_heatmap.setChecked(self.scale_heatmap_proportionally)
+        self.action_proportional_heatmap.toggled.connect(
+            self._toggle_proportional_heatmap
+        )
+        mview.addAction(self.action_proportional_heatmap)
+
+        # Uniformly compress heatmap plots so the entire stack fits on screen
+        # (no vertical scrollbar). On by default; users with few heatmaps can
+        # turn it off to get the full per-row 12px sizing.
+        self.action_compact_heatmaps_to_fit = QtGui.QAction(
+            "Compact Heatmap Plots to Fit Screen", self
+        )
+        self.action_compact_heatmaps_to_fit.setCheckable(True)
+        self.action_compact_heatmaps_to_fit.setChecked(self.compact_heatmaps_to_fit)
+        self.action_compact_heatmaps_to_fit.toggled.connect(
+            self._toggle_compact_heatmaps_to_fit
+        )
+        mview.addAction(self.action_compact_heatmaps_to_fit)
+
+        heatmap_ctrl_action = QtGui.QAction("Heatmap Plot Controls...", self)
+        heatmap_ctrl_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+H"))
+        heatmap_ctrl_action.triggered.connect(self._show_heatmap_controls_dialog)
+        mview.addAction(heatmap_ctrl_action)
+
+        # ----- Group 6: Subplot layout -----
+        mview.addSeparator()
+
+        subplot_control_action = QtGui.QAction("Subplot Control Board...", self)
+        subplot_control_action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
+        subplot_control_action.triggered.connect(self._show_subplot_control_dialog)
+        mview.addAction(subplot_control_action)
 
         increase_focused_height_action = QtGui.QAction(
             "Increase Focused Subplot Height", self
@@ -2083,84 +2192,48 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         mview.addAction(reset_focused_height_action)
 
-        # Array (heatmap) sizing — mirror the raster triplet
-        self.action_proportional_array = QtGui.QAction(
-            "Proportional Array Plots", self
-        )
-        self.action_proportional_array.setCheckable(True)
-        self.action_proportional_array.setChecked(self.scale_array_proportionally)
-        self.action_proportional_array.toggled.connect(
-            self._toggle_proportional_array
-        )
-        mview.addAction(self.action_proportional_array)
-
-        increase_array_share_action = QtGui.QAction("Increase Array Share", self)
-        increase_array_share_action.triggered.connect(self._increase_array_share)
-        mview.addAction(increase_array_share_action)
-
-        decrease_array_share_action = QtGui.QAction("Decrease Array Share", self)
-        decrease_array_share_action.triggered.connect(self._decrease_array_share)
-        mview.addAction(decrease_array_share_action)
-
-        # Uniformly compress array plots so the entire stack fits on screen
-        # (no vertical scrollbar). On by default; users with few arrays can
-        # turn it off to get the full per-row 12px sizing.
-        self.action_compact_arrays_to_fit = QtGui.QAction(
-            "Compact Array Plots to Fit Screen", self
-        )
-        self.action_compact_arrays_to_fit.setCheckable(True)
-        self.action_compact_arrays_to_fit.setChecked(self.compact_arrays_to_fit)
-        self.action_compact_arrays_to_fit.toggled.connect(
-            self._toggle_compact_arrays_to_fit
-        )
-        mview.addAction(self.action_compact_arrays_to_fit)
-
-        raster_brightness_action = QtGui.QAction("Adjust Raster Brightness...", self)
-        raster_brightness_action.triggered.connect(self._adjust_raster_brightness)
-        mview.addAction(raster_brightness_action)
-
-        label_alpha_action = QtGui.QAction("Adjust Label Alpha...", self)
-        label_alpha_action.triggered.connect(self._adjust_label_alpha)
-        mview.addAction(label_alpha_action)
-
+        # ----- Group 7: Videos -----
         mview.addSeparator()
-        raster_height_action = QtGui.QAction("Raster Event Height...", self)
-        raster_height_action.triggered.connect(self._adjust_raster_event_height)
-        mview.addAction(raster_height_action)
 
-        raster_thickness_action = QtGui.QAction("Raster Event Thickness...", self)
-        raster_thickness_action.triggered.connect(self._adjust_raster_event_thickness)
-        mview.addAction(raster_thickness_action)
+        # Show/Hide videos (with Ctrl+Shift+N hotkeys for N=1..9)
+        for slot in self.video_slots:
+            action = QtGui.QAction(f"Show {slot.name}", self)
+            action.setCheckable(True)
+            action.setChecked(slot.index == 0)
+            if slot.index < 9:
+                action.setShortcut(
+                    QtGui.QKeySequence(f"Ctrl+Shift+{slot.index + 1}")
+                )
+            action.toggled.connect(partial(self._set_video_visible, slot.index))
+            mview.addAction(action)
+            slot.show_action = action
 
-        mview.addSeparator()
-        array_ctrl_action = QtGui.QAction("Array Plot Controls...", self)
-        array_ctrl_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+A"))
-        array_ctrl_action.triggered.connect(self._show_array_controls_dialog)
-        mview.addAction(array_ctrl_action)
-
-        mview.addSeparator()
-        adjust_event_markers_action = QtGui.QAction(
-            "Adjust Event Marker Properties...", self
+        adjust_video_sizes_action = QtGui.QAction(
+            "Adjust Secondary Videos Size...", self
         )
-        adjust_event_markers_action.triggered.connect(
-            self._adjust_event_marker_properties
-        )
-        mview.addAction(adjust_event_markers_action)
+        adjust_video_sizes_action.triggered.connect(self._adjust_secondary_video_sizes)
+        mview.addAction(adjust_video_sizes_action)
 
-        mview.addSeparator()
-        subplot_control_action = QtGui.QAction("Subplot Control Board...", self)
-        subplot_control_action.setShortcut(QtGui.QKeySequence("Ctrl+H"))
-        subplot_control_action.triggered.connect(self._show_subplot_control_dialog)
-        mview.addAction(subplot_control_action)
-
-        mview.addSeparator()
-        jump_epochs_action = QtGui.QAction("Jump to Epochs...", self)
-        jump_epochs_action.setShortcut(QtGui.QKeySequence("Ctrl+J"))
-        jump_epochs_action.triggered.connect(self._show_jump_to_epochs_dialog)
-        mview.addAction(jump_epochs_action)
+        # Frame-step target selector
+        step_menu = mview.addMenu("Frame Step Target")
+        self.step_action_group = QtGui.QActionGroup(self)
+        self.step_action_group.setExclusive(True)
+        for slot in self.video_slots:
+            action = QtGui.QAction(slot.name, self, checkable=True)
+            self.step_action_group.addAction(action)
+            action.setChecked(slot.index == 0)
+            action.triggered.connect(partial(self._set_frame_step_source, slot.index))
+            step_menu.addAction(action)
+            slot.step_action = action
 
         mhelp = self.menuBar().addMenu("&Help")
         hh = QtGui.QAction("Shortcuts / Help", self)
+        hh.setShortcuts(
+            [
+                QtGui.QKeySequence(QtCore.Qt.Key.Key_F1),
+                QtGui.QKeySequence("?"),
+            ]
+        )
         hh.triggered.connect(self._show_help)
         mhelp.addAction(hh)
 
@@ -2251,7 +2324,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             (self.plots, self.plot_height_factors, "trace"),
             (self.dense_plots, self.dense_height_factors, "dense"),
             (self.raster_plots, self.raster_height_factors, "raster"),
-            (self.array_plots, self.array_height_factors, "array"),
+            (self.heatmap_plots, self.heatmap_height_factors, "heatmap"),
         )
         for plots, factors, label in targets:
             for i, plt in enumerate(plots):
@@ -2284,26 +2357,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_trace_visibility()
         self._update_status(f"{label}[{idx}] height: 1.00")
 
-    def _toggle_proportional_array(self, checked: bool):
-        """Toggle proportional array plot sizing on/off."""
-        self.scale_array_proportionally = checked
+    def _toggle_proportional_heatmap(self, checked: bool):
+        """Toggle proportional heatmap plot sizing on/off."""
+        self.scale_heatmap_proportionally = checked
         self._apply_trace_visibility()  # Rebuilds layout with new sizing
-
-    def _increase_array_share(self):
-        """Increase the vertical space share for array plots by ~5%."""
-        if not self.array_series:
-            return
-        self.array_share_boost += 1
-        self._apply_trace_visibility()
-        self._update_status(f"Array share boost: {self.array_share_boost * 5:+d}%")
-
-    def _decrease_array_share(self):
-        """Decrease the vertical space share for array plots by ~5%."""
-        if not self.array_series:
-            return
-        self.array_share_boost -= 1
-        self._apply_trace_visibility()
-        self._update_status(f"Array share boost: {self.array_share_boost * 5:+d}%")
 
     def _adjust_raster_brightness(self):
         """Show a dialog to adjust raster event brightness."""
@@ -2476,7 +2533,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 reg.setBrush(brush)
                 for line in reg.lines:
                     line.setPen(pen)
-            for _i, reg in bundle.array_regions:
+            for _i, reg in bundle.heatmap_regions:
                 reg.setBrush(brush)
                 for line in reg.lines:
                     line.setPen(pen)
@@ -2785,7 +2842,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             n_ts_plots
             + len(self.dense_groups)
             + len(self.raster_series)
-            + len(self.array_series)
+            + len(self.heatmap_series)
         )
         if total_subplots == 0:
             QtWidgets.QMessageBox.information(
@@ -2800,16 +2857,16 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_height_factors.append(1.0)
         while len(self.dense_height_factors) < len(self.dense_groups):
             self.dense_height_factors.append(1.0)
-        while len(self.array_height_factors) < len(self.array_series):
-            self.array_height_factors.append(1.0)
+        while len(self.heatmap_height_factors) < len(self.heatmap_series):
+            self.heatmap_height_factors.append(1.0)
         if not hasattr(self, "trace_visible") or len(self.trace_visible) != n_ts_plots:
             self.trace_visible = [True] * n_ts_plots
         while len(self.raster_visible) < len(self.raster_series):
             self.raster_visible.append(True)
         while len(self.dense_visible) < len(self.dense_groups):
             self.dense_visible.append(True)
-        while len(self.array_visible) < len(self.array_series):
-            self.array_visible.append(True)
+        while len(self.heatmap_visible) < len(self.heatmap_series):
+            self.heatmap_visible.append(True)
 
         # Initialize subplot order if not set
         if self.subplot_order is None:
@@ -2820,8 +2877,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self.subplot_order.append(("dense", i))
             for i in range(len(self.raster_series)):
                 self.subplot_order.append(("raster", i))
-            for i in range(len(self.array_series)):
-                self.subplot_order.append(("array", i))
+            for i in range(len(self.heatmap_series)):
+                self.subplot_order.append(("heatmap", i))
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Subplot Control Board")
@@ -2867,13 +2924,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                 visible = self.dense_visible[idx]
                 n = len(group.series)
                 display_name = f"[Dense/{n}] {name}"
-            elif plot_type == "array":
-                asx = self.array_series[idx]
+            elif plot_type == "heatmap":
+                asx = self.heatmap_series[idx]
                 name = asx.name
-                factor = self.array_height_factors[idx]
-                visible = self.array_visible[idx]
+                factor = self.heatmap_height_factors[idx]
+                visible = self.heatmap_visible[idx]
                 n = asx.Y.shape[0]
-                display_name = f"[Array/{n}] {name}"
+                display_name = f"[Heatmap/{n}] {name}"
             else:
                 name = self.raster_series[idx].name
                 factor = self.raster_height_factors[idx]
@@ -2920,8 +2977,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.plot_height_factors[idx] = new_factor
                 elif plot_type == "dense":
                     self.dense_height_factors[idx] = new_factor
-                elif plot_type == "array":
-                    self.array_height_factors[idx] = new_factor
+                elif plot_type == "heatmap":
+                    self.heatmap_height_factors[idx] = new_factor
                 else:
                     self.raster_height_factors[idx] = new_factor
                 val_label.setText(f"{new_factor:.2f}x")
@@ -2936,8 +2993,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.trace_visible[idx] = is_visible
                 elif plot_type == "dense":
                     self.dense_visible[idx] = is_visible
-                elif plot_type == "array":
-                    self.array_visible[idx] = is_visible
+                elif plot_type == "heatmap":
+                    self.heatmap_visible[idx] = is_visible
                 else:
                     self.raster_visible[idx] = is_visible
                 self._apply_trace_visibility()
@@ -2963,7 +3020,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 valid = True
             elif plot_type == "raster" and idx < len(self.raster_series):
                 valid = True
-            elif plot_type == "array" and idx < len(self.array_series):
+            elif plot_type == "heatmap" and idx < len(self.heatmap_series):
                 valid = True
             if valid:
                 row_data = create_row_widget(plot_type, idx)
@@ -3002,8 +3059,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.plot_height_factors[rw["idx"]] = 1.0
                 elif rw["type"] == "dense":
                     self.dense_height_factors[rw["idx"]] = 1.0
-                elif rw["type"] == "array":
-                    self.array_height_factors[rw["idx"]] = 1.0
+                elif rw["type"] == "heatmap":
+                    self.heatmap_height_factors[rw["idx"]] = 1.0
                 else:
                     self.raster_height_factors[rw["idx"]] = 1.0
                 rw["slider"].blockSignals(False)
@@ -3022,8 +3079,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self.trace_visible[rw["idx"]] = True
                 elif rw["type"] == "dense":
                     self.dense_visible[rw["idx"]] = True
-                elif rw["type"] == "array":
-                    self.array_visible[rw["idx"]] = True
+                elif rw["type"] == "heatmap":
+                    self.heatmap_visible[rw["idx"]] = True
                 else:
                     self.raster_visible[rw["idx"]] = True
                 rw["hide_check"].blockSignals(False)
@@ -3048,8 +3105,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self.subplot_order.append(("dense", i))
             for i in range(len(self.raster_series)):
                 self.subplot_order.append(("raster", i))
-            for i in range(len(self.array_series)):
-                self.subplot_order.append(("array", i))
+            for i in range(len(self.heatmap_series)):
+                self.subplot_order.append(("heatmap", i))
             # Close and reopen dialog to refresh
             dlg.accept()
             QtCore.QTimer.singleShot(50, self._show_subplot_control_dialog)
@@ -3070,8 +3127,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         """Apply custom height factors to all visible plots based on subplot_order.
 
         Two-pass: compute each visible row's natural ``(preferred, stretch)``
-        first, then — when ``compact_arrays_to_fit`` is on and the natural
-        total exceeds the plot-area viewport — scale every array row's
+        first, then — when ``compact_heatmaps_to_fit`` is on and the natural
+        total exceeds the plot-area viewport — scale every heatmap row's
         preferred height down by a single uniform ratio so the visible total
         matches the viewport (no scrollbar).  Lines and raster rows keep
         their natural heights so the shrink is borne entirely by the heatmaps.
@@ -3116,32 +3173,31 @@ class LoupeApp(QtWidgets.QMainWindow):
                     preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor * 3))
                     stretch = max(1, int(factor * 300))
 
-                elif plot_type == "array":
+                elif plot_type == "heatmap":
                     factor = (
-                        self.array_height_factors[idx]
-                        if idx < len(self.array_height_factors)
+                        self.heatmap_height_factors[idx]
+                        if idx < len(self.heatmap_height_factors)
                         else 1.0
                     )
                     plt = (
-                        self.array_plots[idx]
-                        if idx < len(self.array_plots)
+                        self.heatmap_plots[idx]
+                        if idx < len(self.heatmap_plots)
                         else None
                     )
                     asx = (
-                        self.array_series[idx]
-                        if idx < len(self.array_series)
+                        self.heatmap_series[idx]
+                        if idx < len(self.heatmap_series)
                         else None
                     )
 
-                    if self.scale_array_proportionally and asx is not None:
+                    if self.scale_heatmap_proportionally and asx is not None:
                         # Mirror raster proportional sizing: weight by row count.
-                        boost_factor = 1.0 + (self.array_share_boost * 0.05)
-                        BASE_HEIGHT_PER_ROW = 12 * boost_factor
+                        BASE_HEIGHT_PER_ROW = 12
                         n_rows = max(1, asx.Y.shape[0])
                         preferred = max(
                             MIN_HEIGHT, int(n_rows * BASE_HEIGHT_PER_ROW * factor)
                         )
-                        stretch = max(1, int(n_rows * boost_factor * factor * 10))
+                        stretch = max(1, int(n_rows * factor * 10))
                     else:
                         # Heatmaps benefit from a bit more vertical room than line
                         # plots; mirror dense's larger default.
@@ -3175,20 +3231,20 @@ class LoupeApp(QtWidgets.QMainWindow):
 
                 specs.append((plot_type, idx, plt, factor, preferred, stretch))
 
-            # ---- Pass 1.5: optional uniform array compression --------------
-            if self.compact_arrays_to_fit and any(s[0] == "array" for s in specs):
+            # ---- Pass 1.5: optional uniform heatmap compression ------------
+            if self.compact_heatmaps_to_fit and any(s[0] == "heatmap" for s in specs):
                 viewport_h = self._available_plot_area_height()
                 if viewport_h > 0:
                     natural_total = sum(s[4] for s in specs)
-                    array_total = sum(s[4] for s in specs if s[0] == "array")
-                    non_array_total = natural_total - array_total
-                    target_array_total = max(MIN_HEIGHT, viewport_h - non_array_total)
-                    if array_total > target_array_total and array_total > 0:
-                        compress = target_array_total / array_total
+                    heatmap_total = sum(s[4] for s in specs if s[0] == "heatmap")
+                    non_heatmap_total = natural_total - heatmap_total
+                    target_heatmap_total = max(MIN_HEIGHT, viewport_h - non_heatmap_total)
+                    if heatmap_total > target_heatmap_total and heatmap_total > 0:
+                        compress = target_heatmap_total / heatmap_total
                         specs = [
                             (
                                 pt, idx, plt, factor,
-                                max(MIN_HEIGHT, int(round(pref * compress))) if pt == "array" else pref,
+                                max(MIN_HEIGHT, int(round(pref * compress))) if pt == "heatmap" else pref,
                                 stretch,
                             )
                             for (pt, idx, plt, factor, pref, stretch) in specs
@@ -3219,9 +3275,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception:
             return 0
 
-    def _toggle_compact_arrays_to_fit(self, checked: bool) -> None:
-        """View-menu handler for the 'Compact Array Plots to Fit Screen' toggle."""
-        self.compact_arrays_to_fit = bool(checked)
+    def _toggle_compact_heatmaps_to_fit(self, checked: bool) -> None:
+        """View-menu handler for the 'Compact Heatmap Plots to Fit Screen' toggle."""
+        self.compact_heatmaps_to_fit = bool(checked)
         self._apply_custom_plot_heights()
 
     def _configure_plot_for_height(self, plt, factor, is_raster=False):
@@ -3253,8 +3309,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_visible.append(True)
         while len(self.dense_visible) < len(self.dense_groups):
             self.dense_visible.append(True)
-        while len(self.array_visible) < len(self.array_series):
-            self.array_visible.append(True)
+        while len(self.heatmap_visible) < len(self.heatmap_series):
+            self.heatmap_visible.append(True)
 
         # Use subplot_order if set, otherwise default order
         if self.subplot_order:
@@ -3263,7 +3319,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             order = [("ts", i) for i in range(n_ts)]
             order += [("dense", i) for i in range(len(self.dense_groups))]
             order += [("raster", i) for i in range(len(self.raster_series))]
-            order += [("array", i) for i in range(len(self.array_series))]
+            order += [("heatmap", i) for i in range(len(self.heatmap_series))]
 
         # Filter to only visible plots
         visible = []
@@ -3274,8 +3330,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             elif plot_type == "dense":
                 if idx < len(self.dense_visible) and self.dense_visible[idx]:
                     visible.append((plot_type, idx))
-            elif plot_type == "array":
-                if idx < len(self.array_visible) and self.array_visible[idx]:
+            elif plot_type == "heatmap":
+                if idx < len(self.heatmap_visible) and self.heatmap_visible[idx]:
                     visible.append((plot_type, idx))
             else:  # raster
                 if idx < len(self.raster_visible) and self.raster_visible[idx]:
@@ -3523,10 +3579,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_sel_regions.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
-        self.array_plots.clear()
-        self.array_image_items.clear()
-        self.array_cur_lines.clear()
-        self.array_sel_regions.clear()
+        self.heatmap_plots.clear()
+        self.heatmap_image_items.clear()
+        self.heatmap_cur_lines.clear()
+        self.heatmap_sel_regions.clear()
 
         # Initialize height factors and visibility for time series plots
         self.plot_height_factors = [1.0] * len(series_list)
@@ -3534,7 +3590,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Reset subplot order when loading new data
         self.subplot_order = None
 
-        # Calculate time range from time series, dense groups, raster, and array data
+        # Calculate time range from time series, dense groups, raster, and heatmap data
         t_arrays = [s.t for s in self.series]
         for g in self.dense_groups:
             for s in g.series:
@@ -3542,14 +3598,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         for ms in self.raster_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
-        for asx in self.array_series:
+        for asx in self.heatmap_series:
             if len(asx.t) > 0:
                 t_arrays.append(asx.t)
         self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
         self.window_start = self.t_global_min
         self.cursor_time = self.window_start
 
-        # Create all plots (time series, dense, raster, and array)
+        # Create all plots (time series, dense, raster, and heatmap)
         self._create_all_plots()
 
         reporter = getattr(self, "_reporter", None)
@@ -4083,10 +4139,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_sel_regions.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
-        self.array_plots.clear()
-        self.array_image_items.clear()
-        self.array_cur_lines.clear()
-        self.array_sel_regions.clear()
+        self.heatmap_plots.clear()
+        self.heatmap_image_items.clear()
+        self.heatmap_cur_lines.clear()
+        self.heatmap_sel_regions.clear()
 
         # Recalculate time range
         t_arrays = [s.t for s in self.series]
@@ -4096,7 +4152,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for ms in self.raster_series:
             if len(ms.timestamps) > 0:
                 t_arrays.append(ms.timestamps)
-        for asx in self.array_series:
+        for asx in self.heatmap_series:
             if len(asx.t) > 0:
                 t_arrays.append(asx.t)
         self.t_global_min, self.t_global_max = nice_time_range(t_arrays)
@@ -4118,7 +4174,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _create_all_plots(self):
-        """Create time series, dense, raster, and array plots in the layout."""
+        """Create time series, dense, raster, and heatmap plots in the layout."""
         if self.overlay_mode:
             self._create_overlay_plots()
             return
@@ -4127,7 +4183,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             len(self.series)
             + len(self.dense_groups)
             + len(self.raster_series)
-            + len(self.array_series)
+            + len(self.heatmap_series)
         )
         reporter = getattr(self, "_reporter", None)
         if reporter is not None and total_plots > 0:
@@ -4137,7 +4193,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Build a (kind, idx) → display-row lookup. Each entry of
         # subplot_order maps to a sequential row, top-to-bottom. When
         # subplot_order is unset, fall back to the legacy segregated order
-        # (ts → dense → raster → array). Each plot builds in type-segregated
+        # (ts → dense → raster → heatmap). Each plot builds in type-segregated
         # order regardless, then looks up its row from this map — so the
         # visual layout is decoupled from build order.
         if self.subplot_order:
@@ -4147,7 +4203,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 [("ts", i) for i in range(len(self.series))]
                 + [("dense", i) for i in range(len(self.dense_groups))]
                 + [("raster", i) for i in range(len(self.raster_series))]
-                + [("array", i) for i in range(len(self.array_series))]
+                + [("heatmap", i) for i in range(len(self.heatmap_series))]
             )
         row_for = {entry: row for row, entry in enumerate(order)}
         last_row = total_plots - 1
@@ -4352,12 +4408,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             vb.sigDragUpdate.connect(self._on_drag_update)
             vb.sigDragFinish.connect(self._on_drag_finish)
 
-        # Create array (heatmap) plots
-        for idx, asx in enumerate(self.array_series):
+        # Create heatmap plots
+        for idx, asx in enumerate(self.heatmap_series):
             if reporter is not None:
                 reporter.item(built, total_plots, detail=asx.name)
             built += 1
-            row_idx = _row("array", idx)
+            row_idx = _row("heatmap", idx)
             plt = self._create_array_plot(idx, asx, master_plot, row_idx, last_row + 1)
             self.plot_area.addItem(plt, row=row_idx, col=0)
             if master_plot is None:
@@ -4370,8 +4426,8 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _create_array_plot(
         self,
-        array_idx: int,
-        asx: ArraySeries,
+        heatmap_idx: int,
+        asx: HeatmapSeries,
         master_plot,
         row_idx: int,
         total_plots: int,
@@ -4447,12 +4503,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         vb.sigDragFinish.connect(self._on_drag_finish)
 
         # Register with parallel registries.
-        self.array_plots.append(plt)
-        self.array_image_items.append(image_item)
-        self.array_cur_lines.append(cur_line)
-        self.array_sel_regions.append(sel_region)
-        if len(self._array_cache_keys) <= array_idx:
-            self._array_cache_keys.append(None)
+        self.heatmap_plots.append(plt)
+        self.heatmap_image_items.append(image_item)
+        self.heatmap_cur_lines.append(cur_line)
+        self.heatmap_sel_regions.append(sel_region)
+        if len(self._heatmap_cache_keys) <= heatmap_idx:
+            self._heatmap_cache_keys.append(None)
 
         return plt
 
@@ -5230,10 +5286,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                     seg_y[1::2] = cat_yt[indices]
                     line_item.setData(seg_x, seg_y, _callSync="off")
 
-    # ---------- Array (heatmap) plots ----------
+    # ---------- Heatmap plots ----------
 
-    def _is_array_plot_visible(self, plot_idx: int) -> bool:
-        return plot_idx >= len(self.array_visible) or self.array_visible[plot_idx]
+    def _is_heatmap_plot_visible(self, plot_idx: int) -> bool:
+        return plot_idx >= len(self.heatmap_visible) or self.heatmap_visible[plot_idx]
 
     def _get_array_lut(self, cmap: "str | Colormap") -> np.ndarray:
         """Return a cached uint8 RGBA LUT for *cmap*.
@@ -5295,9 +5351,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         return reshaped.max(axis=2)  # peak (sentinel -inf survives)
 
     def _slice_array_at_window(
-        self, asx: ArraySeries, i0: int, i1: int, target_w: int
+        self, asx: HeatmapSeries, i0: int, i1: int, target_w: int
     ) -> tuple[np.ndarray, int, int]:
-        """Slice an ArraySeries (or its mip-map) to the visible window.
+        """Slice an HeatmapSeries (or its mip-map) to the visible window.
 
         Returns ``(Y_slice, sliced_i0, sliced_i1)``: the second/third are the
         level-0 column indices the slice covers (used to position the image
@@ -5321,32 +5377,32 @@ class LoupeApp(QtWidgets.QMainWindow):
         l_i1 = min(l_i1, asx.mipmap_levels[level].shape[1])
         return asx.mipmap_levels[level][:, l_i0:l_i1], l_i0 * factor, l_i1 * factor
 
-    def _refresh_array_plots(self) -> None:
-        """Update array (heatmap) plots for the current window."""
-        if not self.array_series:
+    def _refresh_heatmap_plots(self) -> None:
+        """Update heatmap plots for the current window."""
+        if not self.heatmap_series:
             return
         t0 = self.window_start
         t1 = self.window_start + self.window_len
         # Make sure cache list keeps pace with the registry length.
-        while len(self._array_cache_keys) < len(self.array_series):
-            self._array_cache_keys.append(None)
+        while len(self._heatmap_cache_keys) < len(self.heatmap_series):
+            self._heatmap_cache_keys.append(None)
 
-        for i, asx in enumerate(self.array_series):
-            if not self._is_array_plot_visible(i):
+        for i, asx in enumerate(self.heatmap_series):
+            if not self._is_heatmap_plot_visible(i):
                 continue
-            if i >= len(self.array_image_items):
+            if i >= len(self.heatmap_image_items):
                 continue
-            image_item = self.array_image_items[i]
+            image_item = self.heatmap_image_items[i]
 
             i0 = int(np.searchsorted(asx.t, t0, side="left"))
             i1 = int(np.searchsorted(asx.t, t1, side="right"))
             if i1 - i0 < 2:
                 image_item.clear()
-                self._array_cache_keys[i] = None
+                self._heatmap_cache_keys[i] = None
                 continue
 
             target_w = max(
-                1, int(self.array_plots[i].getViewBox().width())
+                1, int(self.heatmap_plots[i].getViewBox().width())
             )
 
             cache_key = (
@@ -5354,7 +5410,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 float(asx.vmin), float(asx.vmax),
                 _colormap_cache_token(asx.colormap), asx.decim_method,
             )
-            if self._array_cache_keys[i] == cache_key:
+            if self._heatmap_cache_keys[i] == cache_key:
                 continue
 
             Y_slice, sliced_i0, sliced_i1 = self._slice_array_at_window(
@@ -5383,7 +5439,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             width = max(t_end - t_start, 1e-12)
             image_item.setRect(QtCore.QRectF(t_start, 0.0, width, float(n_rows)))
 
-            self._array_cache_keys[i] = cache_key
+            self._heatmap_cache_keys[i] = cache_key
 
     # ---------- Video & Static Image ----------
     def _load_video_data(self, slot: VideoSlot, vpath, ft_path):
@@ -5585,18 +5641,18 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._dense_ctrl_dialog.raise_()
         self._dense_ctrl_dialog.activateWindow()
 
-    def _show_array_controls_dialog(self):
-        if not self.array_series:
+    def _show_heatmap_controls_dialog(self):
+        if not self.heatmap_series:
             QtWidgets.QMessageBox.information(
-                self, "Array Plot Controls", "No array plots loaded."
+                self, "Heatmap Plot Controls", "No heatmap plots loaded."
             )
             return
-        if hasattr(self, "_array_ctrl_dialog") and self._array_ctrl_dialog is not None:
-            self._array_ctrl_dialog.deleteLater()
-        self._array_ctrl_dialog = ArrayControlsDialog(self)
-        self._array_ctrl_dialog.show()
-        self._array_ctrl_dialog.raise_()
-        self._array_ctrl_dialog.activateWindow()
+        if hasattr(self, "_heatmap_ctrl_dialog") and self._heatmap_ctrl_dialog is not None:
+            self._heatmap_ctrl_dialog.deleteLater()
+        self._heatmap_ctrl_dialog = HeatmapControlsDialog(self)
+        self._heatmap_ctrl_dialog.show()
+        self._heatmap_ctrl_dialog.raise_()
+        self._heatmap_ctrl_dialog.activateWindow()
 
     def _on_plot_hovered(self, plot, is_hovered):
         if is_hovered:
@@ -5655,8 +5711,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         elif self.raster_sel_regions:
             a, b = self.raster_sel_regions[0].getRegion()
             self._select_start, self._select_end = float(a), float(b)
-        elif self.array_sel_regions:
-            a, b = self.array_sel_regions[0].getRegion()
+        elif self.heatmap_sel_regions:
+            a, b = self.heatmap_sel_regions[0].getRegion()
             self._select_start, self._select_end = float(a), float(b)
 
     def _show_active_selection(self, final=False):
@@ -5667,7 +5723,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 r.hide()
             for r in self.raster_sel_regions:
                 r.hide()
-            for r in self.array_sel_regions:
+            for r in self.heatmap_sel_regions:
                 r.hide()
             return
         a = min(self._select_start, self._select_end)
@@ -5681,7 +5737,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for r in self.raster_sel_regions:
             r.setRegion((a, b))
             r.show()
-        for r in self.array_sel_regions:
+        for r in self.heatmap_sel_regions:
             r.setRegion((a, b))
             r.show()
 
@@ -5694,7 +5750,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             r.hide()
         for r in self.raster_sel_regions:
             r.hide()
-        for r in self.array_sel_regions:
+        for r in self.heatmap_sel_regions:
             r.hide()
 
     def _label_key(self, row) -> LabelKey:
@@ -5725,7 +5781,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         return (
             any(self._is_trace_plot_visible(idx) for idx in range(len(self.plots)))
             or any(self._is_raster_plot_visible(idx) for idx in range(len(self.raster_plots)))
-            or any(self._is_array_plot_visible(idx) for idx in range(len(self.array_plots)))
+            or any(self._is_heatmap_plot_visible(idx) for idx in range(len(self.heatmap_plots)))
             or len(self.dense_plots) > 0
         )
 
@@ -5746,7 +5802,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         plot_regions: list[tuple[int, pg.LinearRegionItem]] = []
         raster_regions: list[tuple[int, pg.LinearRegionItem]] = []
         dense_regions: list[tuple[int, pg.LinearRegionItem]] = []
-        array_regions: list[tuple[int, pg.LinearRegionItem]] = []
+        heatmap_regions: list[tuple[int, pg.LinearRegionItem]] = []
 
         for i, plt in enumerate(self.plots):
             if not self._is_trace_plot_visible(i):
@@ -5785,8 +5841,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(reg)
             raster_regions.append((i, reg))
 
-        for i, plt in enumerate(self.array_plots):
-            if not self._is_array_plot_visible(i):
+        for i, plt in enumerate(self.heatmap_plots):
+            if not self._is_heatmap_plot_visible(i):
                 continue
             reg = pg.LinearRegionItem(
                 values=(a, b),
@@ -5794,13 +5850,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                 pen=pg.mkPen(*color),
                 movable=False,
             )
-            # Array plots draw their image at z=0; keep label regions on top
+            # Heatmap plots draw their image at z=0; keep label regions on top
             # of the heatmap so they stay visible (-20 would hide them).
             reg.setZValue(20)
             plt.addItem(reg)
-            array_regions.append((i, reg))
+            heatmap_regions.append((i, reg))
 
-        if not (plot_regions or raster_regions or dense_regions or array_regions):
+        if not (plot_regions or raster_regions or dense_regions or heatmap_regions):
             return
 
         self._label_visuals[key] = LabelVisualBundle(
@@ -5808,7 +5864,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             raster_regions=raster_regions,
             dense_regions=dense_regions,
             hypnogram_region=None,
-            array_regions=array_regions,
+            heatmap_regions=heatmap_regions,
         )
 
     def _remove_window_label_visual(self, key: LabelKey) -> None:
@@ -5825,7 +5881,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for _i, item in bundle.raster_regions:
             self._remove_graphics_item(item)
 
-        for _i, item in bundle.array_regions:
+        for _i, item in bundle.heatmap_regions:
             self._remove_graphics_item(item)
 
     def _add_hypnogram_label_visual(self, row) -> None:
@@ -6001,65 +6057,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         height = (y_range[1] - y_range[0]) * factor
         vb.setYRange(center - height / 2.0, center + height / 2.0, padding=0)
 
+    def _toggle_hypnogram_visibility(self):
+        if self.hypnogram_widget is not None:
+            self.hypnogram_widget.setVisible(not self.hypnogram_widget.isVisible())
+
     def keyPressEvent(self, ev: QtGui.QKeyEvent):
+        # Single-key state hotkeys and `0` clear are intentionally context-
+        # dependent (need an active selection), so they're handled here rather
+        # than as menu QActions with global shortcuts. Every other binding
+        # lives on a QAction in _build_menu so it's discoverable in the menus.
         ktxt = ev.text().lower()
         key = ev.key()
-
-        # Toggle hypnogram visibility with 'h'
-        if ktxt == "h":
-            if self.hypnogram_widget is not None:
-                vis = self.hypnogram_widget.isVisible()
-                self.hypnogram_widget.setVisible(not vis)
-            return
-
-        if ev.modifiers() == QtCore.Qt.KeyboardModifier.ControlModifier:
-            if key == QtCore.Qt.Key.Key_1:
-                self._zoom_active_plot_y(0.9)
-                return
-            if key == QtCore.Qt.Key.Key_2:
-                self._zoom_active_plot_y(1.1)
-                return
-        # Ctrl+Shift+N (N=1..9) toggles the Nth video's visibility
-        if ev.modifiers() == (
-            QtCore.Qt.KeyboardModifier.ControlModifier
-            | QtCore.Qt.KeyboardModifier.ShiftModifier
-        ):
-            digit_keys = {
-                QtCore.Qt.Key.Key_1: 0, QtCore.Qt.Key.Key_2: 1,
-                QtCore.Qt.Key.Key_3: 2, QtCore.Qt.Key.Key_4: 3,
-                QtCore.Qt.Key.Key_5: 4, QtCore.Qt.Key.Key_6: 5,
-                QtCore.Qt.Key.Key_7: 6, QtCore.Qt.Key.Key_8: 7,
-                QtCore.Qt.Key.Key_9: 8,
-            }
-            if key in digit_keys:
-                i = digit_keys[key]
-                if 0 <= i < len(self.video_slots):
-                    slot = self.video_slots[i]
-                    if slot.label is not None:
-                        new_vis = not slot.label.isVisible()
-                        self._set_video_visible(i, new_vis)
-                        if slot.show_action is not None:
-                            slot.show_action.setChecked(slot.label.isVisible())
-                    return
-
-        if key == QtCore.Qt.Key.Key_Space:
-            self._toggle_playback()
-            return
-
-        # ]/[ = horizontal time page
-        if key in (QtCore.Qt.Key.Key_BracketRight, QtCore.Qt.Key.Key_PageDown):
-            self._page(+1)
-            return
-        if key in (QtCore.Qt.Key.Key_BracketLeft, QtCore.Qt.Key.Key_PageUp):
-            self._page(-1)
-            return
-        # Left/Right arrow = frame step on selected video
-        if key == QtCore.Qt.Key.Key_Right:
-            self._step_frame(+1)
-            return
-        if key == QtCore.Qt.Key.Key_Left:
-            self._step_frame(-1)
-            return
 
         if (
             ktxt in self.keymap
@@ -6076,7 +6084,6 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self._clear_selection()
                 return
 
-        # Clear labels in selected region with '0'
         if (
             key == QtCore.Qt.Key.Key_0
             and self._select_start is not None
@@ -6090,19 +6097,6 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self._update_status(f"Cleared labels in [{a:.3f}, {b:.3f}]")
                 self._clear_selection()
                 return
-
-        # Toggle hypnogram zoom
-        if ktxt == "z":
-            self._toggle_hypnogram_zoom()
-            return
-
-        # Next / previous epoch navigation
-        if ktxt == "n":
-            self._jump_to_epoch_by_offset(+1)
-            return
-        if ktxt == "b":
-            self._jump_to_epoch_by_offset(-1)
-            return
 
         super().keyPressEvent(ev)
 
@@ -6416,8 +6410,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.enableAutoRange("x", False)
             plt.setXRange(*xr, padding=0.0)
 
-        # Also apply to array (heatmap) plots
-        for plt in self.array_plots:
+        # Also apply to heatmap plots
+        for plt in self.heatmap_plots:
             plt.enableAutoRange("x", False)
             plt.setXRange(*xr, padding=0.0)
 
@@ -6455,7 +6449,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             ln.setPos(self.cursor_time)
         for ln in self.raster_cur_lines:
             ln.setPos(self.cursor_time)
-        for ln in self.array_cur_lines:
+        for ln in self.heatmap_cur_lines:
             ln.setPos(self.cursor_time)
 
     def _set_cursor_time(self, t, update_slider=True):
@@ -6533,10 +6527,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                             x=t_slice[mask], y=y_slice[mask], _callSync="off"
                         )
 
-        # Also refresh dense, raster, and array plots
+        # Also refresh dense, raster, and heatmap plots
         self._refresh_dense_curves()
         self._refresh_raster_plots()
-        self._refresh_array_plots()
+        self._refresh_heatmap_plots()
 
     def _apply_event_layer_style(self, layer_idx: int) -> None:
         """Push the current style of ``self.event_layers[layer_idx]`` to every
@@ -6562,10 +6556,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._rescale_all_video_frames()
         QtCore.QTimer.singleShot(50, self._refresh_curves)
         QtCore.QTimer.singleShot(60, self._align_left_axes)
-        # Re-fit array plots when compact mode is on, since the available
+        # Re-fit heatmap plots when compact mode is on, since the available
         # viewport height changed. Deferred so the layout has settled by the
         # time we measure viewport().height().
-        if getattr(self, "compact_arrays_to_fit", False) and self.array_series:
+        if getattr(self, "compact_heatmaps_to_fit", False) and self.heatmap_series:
             QtCore.QTimer.singleShot(70, self._apply_custom_plot_heights)
 
     def _align_left_axes(self):
@@ -6735,10 +6729,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                         except Exception:
                             pass
 
-                elif plot_type == "array":
-                    if idx >= len(self.array_plots):
+                elif plot_type == "heatmap":
+                    if idx >= len(self.heatmap_plots):
                         continue
-                    plt = self.array_plots[idx]
+                    plt = self.heatmap_plots[idx]
                     plt.setVisible(True)
                     self.plot_area.addItem(plt, row=row, col=0)
 
@@ -6814,10 +6808,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                     else False
                 ):
                     plt.setVisible(False)
-            for idx, plt in enumerate(self.array_plots):
+            for idx, plt in enumerate(self.heatmap_plots):
                 if (
-                    not self.array_visible[idx]
-                    if idx < len(self.array_visible)
+                    not self.heatmap_visible[idx]
+                    if idx < len(self.heatmap_visible)
                     else False
                 ):
                     plt.setVisible(False)
@@ -6853,35 +6847,128 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _show_help(self):
         self._stop_playback_if_playing()
-        # Build the labels line dynamically from the active state config so all
-        # hotkeys (including multi-key bindings) are shown for every state.
+
+        def _strip_mnemonic(text: str) -> str:
+            # "&Save Labels..." -> "Save Labels...", "&&" -> "&"
+            out = []
+            i = 0
+            while i < len(text):
+                ch = text[i]
+                if ch == "&" and i + 1 < len(text) and text[i + 1] == "&":
+                    out.append("&")
+                    i += 2
+                    continue
+                if ch == "&":
+                    i += 1
+                    continue
+                out.append(ch)
+                i += 1
+            return "".join(out)
+
+        # Walk the menu bar and collect every QAction that has a shortcut.
+        rows_by_menu: list[tuple[str, list[tuple[str, str]]]] = []
+        for menu_action in self.menuBar().actions():
+            menu = menu_action.menu()
+            if menu is None:
+                continue
+            menu_name = _strip_mnemonic(menu_action.text()) or "Menu"
+            rows: list[tuple[str, str]] = []
+            for act in menu.actions():
+                if act.isSeparator():
+                    continue
+                seqs = act.shortcuts()
+                if not seqs:
+                    continue
+                label = _strip_mnemonic(act.text()).rstrip(".")
+                shortcut_text = " / ".join(
+                    s.toString(QtGui.QKeySequence.SequenceFormat.NativeText)
+                    for s in seqs
+                    if not s.isEmpty()
+                )
+                if shortcut_text:
+                    rows.append((shortcut_text, label))
+            if rows:
+                rows_by_menu.append((menu_name, rows))
+
+        # State hotkeys (configurable, not menu actions).
         keys_for_state = self.state_config.keys_for_state
         if keys_for_state:
-            label_bits = [
-                f"{state}=" + "/".join(keys)
+            state_rows = [
+                (" / ".join(keys), f"Label selection as {state}")
                 for state, keys in sorted(keys_for_state.items())
             ]
-            labels_line = ", ".join(label_bits) + ", Backspace=delete last"
         else:
-            labels_line = (
-                "(no states configured — pass keymap=, label_colors=, or "
-                "state_definitions= to view())"
-            )
+            state_rows = [
+                (
+                    "—",
+                    "No states configured — pass keymap=, label_colors=, or "
+                    "state_definitions= to view().",
+                )
+            ]
+        state_rows.append(("0", "Clear labels in active selection"))
 
-        QtWidgets.QMessageBox.information(
-            self,
-            "Help",
-            (
-                "<b>Hotkeys</b><br>"
-                "<b>Spacebar:</b> Toggle window playback<br>"
-                "<b>Ctrl+D:</b> Show/hide Y-Axis Controls<br>"
-                "<b>Ctrl+1 / Ctrl+2:</b> Zoom Y-Axis In / Out (on hovered plot)<br>"
-                f"<b>Labels:</b> {labels_line}<br>"
-                "<b>Paging:</b> [ ] or Scroll Wheel = previous/next page<br><br>"
-                "Click-drag in any plot to create selection. Selection stays active across pages; "
-                "drag its handles to extend, then press a label hotkey.<br>"
-            ),
+        # Mouse / wheel interactions (not expressible as QActions).
+        mouse_rows = [
+            ("Click-drag in any plot", "Create / extend selection"),
+            ("Mouse wheel", "Page left/right one full window"),
+            ("Shift + wheel", "Smooth scroll window"),
+            ("Ctrl + wheel", "Cursor scrub within current window"),
+            ("Alt + wheel", "Adjust trace gain (Dense view)"),
+            ("Shift + Alt + wheel", "Vertical scroll through traces (Dense view)"),
+        ]
+
+        def _table(rows: list[tuple[str, str]]) -> str:
+            parts = [
+                "<table cellspacing='0' cellpadding='4' "
+                "style='border-collapse:collapse;'>"
+            ]
+            for shortcut, label in rows:
+                parts.append(
+                    "<tr>"
+                    f"<td style='padding-right:18px; white-space:nowrap;'>"
+                    f"<b>{shortcut}</b></td>"
+                    f"<td>{label}</td>"
+                    "</tr>"
+                )
+            parts.append("</table>")
+            return "".join(parts)
+
+        html_parts = ["<h3>Keyboard shortcuts</h3>"]
+        for menu_name, rows in rows_by_menu:
+            html_parts.append(f"<h4>{menu_name}</h4>")
+            html_parts.append(_table(rows))
+        html_parts.append("<h4>Selection &amp; labeling</h4>")
+        html_parts.append(
+            "<p style='margin:0 0 6px 0; color:#888;'>"
+            "These keys act on the active selection; create one by click-dragging "
+            "in any plot. State hotkeys are configurable via "
+            "<code>keymap=</code> or <code>state_definitions=</code>."
+            "</p>"
         )
+        html_parts.append(_table(state_rows))
+        html_parts.append("<h3>Mouse &amp; wheel</h3>")
+        html_parts.append(_table(mouse_rows))
+        html_parts.append(
+            "<p style='margin-top:10px; color:#888;'>"
+            "See <code>KEYBINDINGS.md</code> in the repo for the canonical reference."
+            "</p>"
+        )
+        html = "".join(html_parts)
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Shortcuts / Help")
+        dlg.resize(560, 640)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        browser = QtWidgets.QTextBrowser(dlg)
+        browser.setOpenExternalLinks(True)
+        browser.setHtml(html)
+        layout.addWidget(browser)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Close, parent=dlg
+        )
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        dlg.exec()
 
     def _update_status(self, msg=None):
         info = []

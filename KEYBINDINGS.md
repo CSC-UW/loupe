@@ -77,15 +77,15 @@ A few notes:
 
 | Shortcut | Action | Context / Notes |
 | --- | --- | --- |
-| Ctrl + Shift + R | Toggle Proportional Raster Plots | Sizes raster plots by row count when enabled. |
+| Ctrl + Shift + R | Toggle Proportional Raster Plots | On by default. Sizes raster plots by row count. |
 
 Brightness, event height, and event thickness are adjusted via View → Adjust Raster Brightness… / Raster Event Height… / Raster Event Thickness… (no dedicated keybinding).
 
-### Array / heatmap plots
+### Heatmap plots
 
 | Shortcut | Action | Context / Notes |
 | --- | --- | --- |
-| Ctrl + Shift + A | Open Array Plot Controls dialog | Available when array/heatmap plots are present. |
+| Ctrl + Shift + H | Open Heatmap Plot Controls dialog | Available when heatmap plots are present. |
 
 ### Video controls
 

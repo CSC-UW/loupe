@@ -440,11 +440,11 @@ def convert_event_arrays_aligned_with(
 
 
 # ---------------------------------------------------------------------------
-# Array (heatmap) conversion
+# Heatmap conversion
 # ---------------------------------------------------------------------------
 
 
-def dataarray_to_arrays(
+def dataarray_to_heatmaps(
     da: xr.DataArray,
     *,
     split_on: str | None = None,
@@ -456,7 +456,7 @@ def dataarray_to_arrays(
     array_name: "bool | str | Callable[..., str]" = False,
     reporter=None,
 ):
-    """Convert a DataArray into one or more :class:`ArraySeries` heatmaps.
+    """Convert a DataArray into one or more :class:`HeatmapSeries` heatmaps.
 
     Parameters
     ----------
@@ -465,7 +465,7 @@ def dataarray_to_arrays(
         ``split_on`` it must have exactly one remaining non-time dim
         (the row dim).
     split_on : str or None
-        Coordinate or dim name to group by — produces one ``ArraySeries``
+        Coordinate or dim name to group by — produces one ``HeatmapSeries``
         per unique value.  If *None*, the input must already have exactly
         one non-time dim.
     sort_on : str or None
@@ -496,7 +496,7 @@ def dataarray_to_arrays(
 
     Returns
     -------
-    list[ArraySeries]
+    list[HeatmapSeries]
     """
     # Local imports keep the loader Qt-free at module-load time.
     import xarray as xr  # lazy
@@ -504,7 +504,7 @@ def dataarray_to_arrays(
     from loupe.app import (
         ARRAY_MIPMAP_TARGET_MIN_COLS,
         ARRAY_MIPMAP_THRESHOLD,
-        ArraySeries,
+        HeatmapSeries,
     )
 
     if "time" not in da.dims:
@@ -571,7 +571,7 @@ def dataarray_to_arrays(
     else:
         name_prefix = str(array_name)
 
-    array_series_list = []
+    heatmap_series_list = []
 
     n_groups = len(groups)
     for gi, (split_val, sub_da) in enumerate(groups):
@@ -583,7 +583,7 @@ def dataarray_to_arrays(
         if len(non_time_dims) != 1:
             extras = ", ".join(non_time_dims) or "(none)"
             raise ValueError(
-                "Array mode requires exactly one non-time dimension per "
+                "Heatmap mode requires exactly one non-time dimension per "
                 f"subplot after split. Found dims: {sub_da.dims}. "
                 f"Non-time dims after split: {extras}. Use split_on= to group "
                 "or pre-select extra dims with .sel()."
@@ -659,7 +659,7 @@ def dataarray_to_arrays(
                 reporter.phase(f"Building mipmap for {name}")
             mipmap = _build_mipmap(Y, decim_method, ARRAY_MIPMAP_TARGET_MIN_COLS)
 
-        array_series_list.append(ArraySeries(
+        heatmap_series_list.append(HeatmapSeries(
             name=name,
             t=time_vals.astype(float, copy=True),
             Y=Y,
@@ -672,7 +672,7 @@ def dataarray_to_arrays(
             mipmap_levels=mipmap,
         ))
 
-    return array_series_list
+    return heatmap_series_list
 
 
 def _build_mipmap(
