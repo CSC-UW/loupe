@@ -66,38 +66,8 @@ class OverlayTrace:
 class OverlayGroup:
     """A group of traces sharing the same overlay dimension value."""
 
-    label: str  # shared dimension value label, e.g. "syn1"
+    label: str  # shared dimension value label, e.g. "1" or "prefix: 1"
     traces: list[OverlayTrace] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Dimension-name abbreviation
-# ---------------------------------------------------------------------------
-
-_ABBREV_MAP = {
-    "channel": "ch",
-    "channels": "ch",
-    "syn_id": "syn",
-    "synapse": "syn",
-    "neuron": "n",
-    "trial": "tr",
-    "frequency": "freq",
-    "wavelength": "wl",
-    "electrode": "el",
-    "region": "reg",
-    "condition": "cond",
-    "repetition": "rep",
-    "stimulus": "stim",
-}
-
-
-def _abbrev_dim(dim_name: str) -> str:
-    """Return a short abbreviation for a dimension name."""
-    low = dim_name.lower()
-    if low in _ABBREV_MAP:
-        return _ABBREV_MAP[low]
-    # Generic: first 3 characters
-    return low[:3] if len(low) > 4 else low
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +86,11 @@ def dataarray_to_series(
     da : xr.DataArray
         Must have a ``'time'`` dimension with coordinates.
     name_prefix : str, optional
-        Prefix prepended to each trace name (e.g. the DataArray's name).
+        Caller-resolved array-name string.  When non-empty, multi-trace
+        outputs are named ``f"{name_prefix}: {coord_value}"`` and 1-D
+        outputs take *name_prefix* verbatim.  When empty (the default),
+        multi-trace outputs use just the coord value and 1-D outputs have
+        an empty name.
 
     Returns
     -------
@@ -142,24 +116,16 @@ def dataarray_to_series(
     results: list[tuple[str, np.ndarray, np.ndarray]] = []
 
     if not non_time_dims:
-        # Simple 1D case
-        name = name_prefix or da.name or "trace"
-        results.append((str(name), time_vals.copy(), da.values.astype(float)))
+        results.append((name_prefix, time_vals.copy(), da.values.astype(float)))
     else:
         dim_coords = [da.coords[d].values for d in non_time_dims]
-        abbrevs = [_abbrev_dim(d) for d in non_time_dims]
 
         for combo in itertools.product(*dim_coords):
             sel_dict = dict(zip(non_time_dims, combo))
             y = da.sel(sel_dict).values.astype(float)
 
-            label = "-".join(f"{ab}{v}" for ab, v in zip(abbrevs, combo))
-            if name_prefix:
-                name = f"{name_prefix}: {label}"
-            elif da.name:
-                name = f"{da.name}: {label}"
-            else:
-                name = label
+            suffix = "-".join(str(v) for v in combo)
+            name = f"{name_prefix}: {suffix}" if name_prefix else suffix
             results.append((name, time_vals.copy(), y))
 
     return results
@@ -231,17 +197,9 @@ def convert_xarray_inputs(
     if not isinstance(data, list):
         data = [data]
 
-    # Decide prefixes
-    all_named = all(da.name for da in data)
-    use_prefix = len(data) > 1
-
     results: list[tuple[str, np.ndarray, np.ndarray]] = []
-    for i, da in enumerate(data):
-        if use_prefix:
-            prefix = str(da.name) if all_named else f"arr{i}"
-        else:
-            prefix = ""  # single array: let dataarray_to_series use da.name
-        results.extend(dataarray_to_series(da, name_prefix=prefix))
+    for da in data:
+        results.extend(dataarray_to_series(da))
 
     return results
 
@@ -488,8 +446,7 @@ def dataarray_to_arrays(
     vmin: float | None = None,
     vmax: float | None = None,
     decim_method: str = "peak",
-    name_prefix: str = "",
-    label: "str | Callable[..., str] | None" = None,
+    array_name: "bool | str | Callable[..., str]" = False,
 ):
     """Convert a DataArray into one or more :class:`ArraySeries` heatmaps.
 
@@ -520,15 +477,14 @@ def dataarray_to_arrays(
         Color scale limits.  Default is robust 1–99 percentile per group.
     decim_method : str
         ``"peak"`` (max-absolute per bin, default) or ``"mean"``.
-    name_prefix : str
-        Optional prefix prepended to every subplot name (default-naming
-        path only; ignored when ``label`` is supplied).
-    label : str, callable, or None
-        Subplot-name override.  ``None`` (default) uses the auto-format
-        ``"{name_prefix}: {split_on}={split_val}"`` (or just the prefix
-        when there's no split).  A string is used verbatim per subplot.
-        A callable ``(split_val, sub_da) -> str`` (or 1-arg
-        ``(split_val) -> str``) is invoked per split group.
+    array_name : bool, str, or callable
+        Controls subplot names.  ``False`` (default) names subplots with
+        just ``split_val`` (or an empty string when there's no split).
+        ``True`` uses ``data.name`` as the prefix (``ValueError`` if
+        unset).  A string is used as the prefix verbatim.  A callable
+        ``(split_val, sub_da) -> str`` (or 1-arg ``(split_val) -> str``)
+        is invoked per split group and its return value is the full
+        subplot name.
 
     Returns
     -------
@@ -593,7 +549,20 @@ def dataarray_to_arrays(
     else:
         cmaps = [colormap]
 
-    da_name = str(da.name) if da.name else ""
+    if array_name is True:
+        if not da.name:
+            raise ValueError(
+                "array_name=True requires data.name; set the DataArray's "
+                "name or pass an explicit string."
+            )
+        name_prefix = str(da.name)
+    elif array_name is False:
+        name_prefix = ""
+    elif callable(array_name):
+        name_prefix = None  # resolved per-group below
+    else:
+        name_prefix = str(array_name)
+
     array_series_list = []
 
     for gi, (split_val, sub_da) in enumerate(groups):
@@ -659,17 +628,16 @@ def dataarray_to_arrays(
         else:
             cmap_value = cmaps[gi % len(cmaps)]
 
-        # Subplot name: explicit ``label`` wins; otherwise auto-format
-        # ``"{prefix}: {split_on}={split_val}"`` (or just prefix when no split).
-        if callable(label):
-            name = str(_call_with_optional_subda(label, split_val, sub_da))
-        elif isinstance(label, str):
-            name = label
+        # Subplot name: callable array_name wins; otherwise combine the
+        # resolved prefix with the split value.
+        if callable(array_name):
+            name = str(_call_with_optional_subda(array_name, split_val, sub_da))
         elif split_val is None:
-            name = name_prefix or da_name or "array"
+            name = name_prefix
+        elif name_prefix:
+            name = f"{name_prefix}: {split_on}={split_val}"
         else:
-            base = name_prefix or da_name or "data"
-            name = f"{base}: {split_on}={split_val}"
+            name = f"{split_on}={split_val}"
 
         # Build mip-map for big arrays (cheap perf insurance).
         mipmap = None
@@ -736,6 +704,7 @@ def _extract_time_vals(da: xr.DataArray) -> np.ndarray:
 def convert_xarray_inputs_overlay(
     data: list[xr.DataArray],
     overlay_dim: str,
+    name_prefix: str = "",
 ) -> list[OverlayGroup]:
     """Group traces from multiple DataArrays by a shared dimension.
 
@@ -746,6 +715,9 @@ def convert_xarray_inputs_overlay(
     overlay_dim : str
         Dimension to overlay on (e.g. ``'syn_id'``). Traces sharing the same
         coordinate value on this dimension are grouped into a single subplot.
+    name_prefix : str, optional
+        Prefix prepended to each subplot label as ``f"{name_prefix}: {val}"``.
+        Empty string (default) leaves the label as the raw value.
 
     Returns
     -------
@@ -766,11 +738,9 @@ def convert_xarray_inputs_overlay(
                 f"Found: {da.dims}"
             )
 
-    # Determine source names
-    all_named = all(da.name for da in data)
-    source_names = [
-        str(da.name) if all_named else f"arr{i}" for i, da in enumerate(data)
-    ]
+    # Source names default to the DataArray's own .name (used for legend); a
+    # missing .name renders as an empty string rather than a synthesized id.
+    source_names = [str(da.name) if da.name else "" for da in data]
 
     # Collect the union of overlay_dim values across all arrays
     overlay_vals_set: dict[object, None] = {}  # ordered set via dict
@@ -782,8 +752,8 @@ def convert_xarray_inputs_overlay(
     # Determine extra non-time, non-overlay dims (iterate over these)
     extra_dims = [d for d in data[0].dims if d not in ("time", overlay_dim)]
 
-    overlay_abbrev = _abbrev_dim(overlay_dim)
-    extra_abbrevs = [_abbrev_dim(d) for d in extra_dims]
+    def _with_prefix(label: str) -> str:
+        return f"{name_prefix}: {label}" if name_prefix else label
 
     # Build groups
     groups: list[OverlayGroup] = []
@@ -791,8 +761,7 @@ def convert_xarray_inputs_overlay(
     if not extra_dims:
         # Simple case: just overlay_dim
         for val in overlay_vals:
-            label = f"{overlay_abbrev}{val}"
-            group = OverlayGroup(label=label)
+            group = OverlayGroup(label=_with_prefix(str(val)))
             for src_idx, da in enumerate(data):
                 if val not in da.coords[overlay_dim].values:
                     continue
@@ -813,13 +782,10 @@ def convert_xarray_inputs_overlay(
         extra_coords = [data[0].coords[d].values for d in extra_dims]
         for val in overlay_vals:
             for combo in itertools.product(*extra_coords):
-                overlay_label = f"{overlay_abbrev}{val}"
-                extra_label = "-".join(
-                    f"{ab}{v}" for ab, v in zip(extra_abbrevs, combo)
+                extra_label = "-".join(str(v) for v in combo)
+                group = OverlayGroup(
+                    label=_with_prefix(f"{val}-{extra_label}")
                 )
-                label = f"{overlay_label}-{extra_label}"
-
-                group = OverlayGroup(label=label)
                 sel_extra = dict(zip(extra_dims, combo))
 
                 for src_idx, da in enumerate(data):

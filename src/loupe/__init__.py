@@ -96,9 +96,13 @@ class TraceConfig:
         Single color applied to every trace produced by this DataArray,
         e.g. ``"#a020f0"`` or ``(160, 32, 240)``.  Overrides ``color_by``
         when both are set.
-    label : str or None
-        Display name override.  Used as the trace name (or, for multi-trace
-        DataArrays, as the name prefix replacing ``data.name``).
+    array_name : bool or str
+        Controls the array-level component of each trace name.  ``False``
+        (default) prepends nothing; multi-trace DataArrays render as just
+        the coord value (e.g. ``"CA1-SR"``).  ``True`` uses
+        ``data.name`` as the prefix and raises ``ValueError`` if it's
+        unset.  A string is used as the prefix verbatim (e.g.
+        ``array_name="LFP"`` → ``"LFP: CA1-SR"``).
     event_layers : list[EventLayer] or None
         Optional point-event markers drawn on top of the traces produced by
         this DataArray.  Stacked-subplots mode only; at most one
@@ -116,7 +120,7 @@ class TraceConfig:
     traces_per_page: int | None = None
     color_by: str | None = None
     color: "str | tuple | None" = None
-    label: str | None = None
+    array_name: bool | str = False
     event_layers: "list[EventLayer] | None" = None
 
     @classmethod
@@ -168,11 +172,14 @@ class HeatmapConfig:
     ----------
     data : xr.DataArray
         The DataArray to display as a heatmap (imshow-style) over time.
-    label : str, callable, or None
-        Display name override.  Either a string (used verbatim per subplot,
-        no ``"split_on=val"`` suffix) or a callable
-        ``(split_val, sub_da) -> str`` invoked once per split group.
-        1-arg callables ``(split_val) -> str`` are also accepted.
+    array_name : bool, str, or callable
+        Controls subplot names.  ``False`` (default) names subplots as
+        just ``"{split_on}={split_val}"`` (or an empty string when there's
+        no split).  ``True`` uses ``data.name`` as the prefix and raises
+        ``ValueError`` if it's unset.  A string is used as the prefix
+        verbatim.  A callable ``(split_val, sub_da) -> str`` (or 1-arg
+        ``(split_val) -> str``) is invoked per split group and its return
+        value is the full subplot name.
     split_on : str or None
         Coordinate or dim name to split into one subplot per unique value
         (e.g. one heatmap per dendrite).
@@ -196,7 +203,7 @@ class HeatmapConfig:
     """
 
     data: xr.DataArray
-    label: "str | Callable[..., str] | None" = None
+    array_name: "bool | str | Callable[..., str]" = False
     split_on: str | None = None
     sort_on: str | None = None
     colormap: "str | Colormap | list | dict | Callable[..., Any]" = "magma"
@@ -348,26 +355,35 @@ class Zip:
     ----------
     traces : list[TraceConfig]
         Two or more :class:`TraceConfig` instances whose ``data`` shares
-        the dim named by *on*.  Only ``color`` and ``label`` on each
-        TraceConfig apply within a Zip; other fields must remain at their
-        defaults (Zip dictates the per-subplot layout).
+        the dim named by *on*.  Only ``color`` on each TraceConfig applies
+        within a Zip; other fields must remain at their defaults (Zip
+        dictates the per-subplot layout).
     on : str
         Coordinate dim to zip on (e.g. ``"syn_id"``).
     colors : list, optional
         One color per wrapped TraceConfig.  If omitted, a default palette
         is used.
-    label : str, optional
-        Optional subplot-name prefix.
+    array_name : bool or str
+        Optional subplot-name prefix.  ``False`` (default) leaves subplot
+        labels as just the overlay dim value.  A string is used as the
+        prefix verbatim.  ``True`` is rejected because a Zip wraps
+        multiple DataArrays and has no single source name.
     """
 
     traces: list
     on: str
     colors: list | None = None
-    label: str | None = None
+    array_name: bool | str = False
 
     def __post_init__(self):
         if len(self.traces) < 2:
             raise ValueError("Zip requires at least 2 TraceConfigs")
+        if self.array_name is True:
+            raise ValueError(
+                "Zip(array_name=True) is not supported: a Zip wraps "
+                "multiple DataArrays and has no single source name. "
+                "Pass an explicit string or leave array_name=False."
+            )
         meaningless = {
             "mode": "stacked-subplots",
             "order_by": None,
@@ -376,6 +392,7 @@ class Zip:
             "step": 1,
             "traces_per_page": None,
             "color_by": None,
+            "array_name": False,
             "event_layers": None,
         }
         for i, t in enumerate(self.traces):
@@ -389,7 +406,7 @@ class Zip:
                 if actual != fdefault:
                     raise ValueError(
                         f"Zip.traces[{i}].{fname}={actual!r} is meaningless "
-                        f"within a Zip; only `color` and `label` apply."
+                        f"within a Zip; only `color` applies."
                     )
 
 
@@ -606,25 +623,27 @@ def view(
     order_acc: list[tuple[str, int]] = []
     event_layers_rendered: list | None = None
 
-    # Prefix is used to namespace trace names when multiple xarray Configs
-    # contribute traces; same logic as before, but scoped to xr-source Configs.
-    xr_configs = [c for c in data_list if isinstance(c, (TraceConfig, HeatmapConfig))]
-    use_prefix = len(xr_configs) > 1
-    all_named = all(getattr(c.data, "name", None) for c in xr_configs)
-
-    def _prefix_for(cfg, i):
-        if isinstance(cfg, TraceConfig) and isinstance(cfg.label, str):
-            return cfg.label
-        if isinstance(cfg, HeatmapConfig) and isinstance(cfg.label, str):
-            return cfg.label
-        if use_prefix:
-            return str(cfg.data.name) if all_named else f"arr{i}"
-        return ""
+    def _resolve_array_name(cfg) -> str:
+        v = cfg.array_name
+        if v is False:
+            return ""
+        if v is True:
+            name = getattr(cfg.data, "name", None)
+            if not name:
+                raise ValueError(
+                    f"{type(cfg).__name__}(array_name=True) requires "
+                    f"data.name; set the DataArray's name or pass an "
+                    f"explicit string."
+                )
+            return str(name)
+        return str(v)
 
     for i, item in enumerate(data_list):
         if isinstance(item, Zip):
             das = [t.data for t in item.traces]
-            overlay_groups = convert_xarray_inputs_overlay(das, item.on)
+            overlay_groups = convert_xarray_inputs_overlay(
+                das, item.on, name_prefix=_resolve_array_name(item)
+            )
             overlay_colors = item.colors
         elif isinstance(item, RasterConfig):
             new_ms = dataframe_to_raster_series(
@@ -656,7 +675,14 @@ def view(
             for j in range(len(new_ms)):
                 order_acc.append(("raster", base + j))
         elif isinstance(item, HeatmapConfig):
-            prefix = _prefix_for(item, i)
+            # Callable array_name is plumbed straight through; everything
+            # else resolves to a string prefix here so dataarray_to_arrays
+            # only sees the two cases it knows about.
+            resolved_array_name = (
+                item.array_name
+                if callable(item.array_name)
+                else _resolve_array_name(item)
+            )
             new_arrays = dataarray_to_arrays(
                 item.data,
                 split_on=item.split_on,
@@ -665,8 +691,7 @@ def view(
                 vmin=item.vmin,
                 vmax=item.vmax,
                 decim_method=item.decim_method,
-                name_prefix=prefix,
-                label=item.label,
+                array_name=resolved_array_name,
             )
             base = len(array_list)
             array_list.extend(new_arrays)
@@ -674,7 +699,7 @@ def view(
                 order_acc.append(("array", base + j))
         else:  # TraceConfig
             cfg = item
-            prefix = _prefix_for(cfg, i)
+            prefix = _resolve_array_name(cfg)
             if cfg.mode == "dense":
                 tuples, order_vals, trace_labels, color_vals = convert_xarray_inputs_with_order(
                     cfg.data,
@@ -684,9 +709,7 @@ def view(
                     color_by=cfg.color_by,
                 )
                 series_objs = [Series(n, t, y) for n, t, y in tuples]
-                group_name = (
-                    cfg.label if isinstance(cfg.label, str) else None
-                ) or prefix or cfg.data.name or f"dense_{i}"
+                group_name = prefix or (str(cfg.data.name) if cfg.data.name else f"dense_{i}")
                 dense_idx = len(dense_list)
                 dense_list.append(DenseGroup(
                     name=str(group_name),
