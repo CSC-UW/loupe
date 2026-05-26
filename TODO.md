@@ -22,8 +22,6 @@
 
 #### Dense mode
 
-- [ ] It should be possible with multiple dense-mode `TraceConfig`s to scale each subplot independently, without having to use the "Dense view controls" menu.
-  - `Option + Scroll` scales all subplots together. `Option + Shift + scroll` vertically scrolls the focused subplot. Maybe `Option + Control + Scroll`, if it is not bound?
 - [ ] When dense traces are colored by a key (e.g. anatomy), there should be an easy way to view the legend.
 
 ### RasterConfig
