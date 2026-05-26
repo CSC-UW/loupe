@@ -229,12 +229,12 @@ class RasterConfig:
     Parameters
     ----------
     data : pl.DataFrame
-        Polars DataFrame of events.  Must contain *time_by* and *y_by*.
-    time_by : str
-        Column containing event timestamps in seconds (default ``"time"``).
-    y_by : str
-        Column whose values identify the raster row for each event
-        (default ``"source_id"``).
+        Polars DataFrame of events.  Must contain *time_col* and *order_by*.
+    time_col : str
+        Column containing event timestamps in seconds.  Required.
+    order_by : str
+        Column whose values identify the raster row for each event (rows are
+        sorted by unique values of this column).  Required.
     split_by : str, list[str] or None
         Column(s) used to split this DataFrame into separate raster
         subplots.  ``None`` (default) puts all events in a single subplot.
@@ -272,8 +272,8 @@ class RasterConfig:
     """
 
     data: "pl.DataFrame"
-    time_by: str = "time"
-    y_by: str = "source_id"
+    time_col: str
+    order_by: str
     split_by: "str | list[str] | None" = None
     alpha_by: str | None = None
     array_name: "str | Callable[..., str]" = ""
@@ -287,7 +287,8 @@ class RasterConfig:
         cls,
         path: "str | list[str]",
         *,
-        time_by: str = "time",
+        time_col: str,
+        order_by: str,
         **raster_kwargs,
     ) -> "RasterConfig":
         """Load one or more parquet files into a DataFrame and wrap it in a
@@ -297,12 +298,13 @@ class RasterConfig:
         ----------
         path : str or list[str]
             Path(s) to parquet file(s).  Multiple paths are concatenated.
-        time_by : str
-            Time column name (default ``"time"``).  Files using ``"t_sec"``
-            are auto-renamed for backward compatibility.
+        time_col : str
+            Time column name.  Files using ``"t_sec"`` are auto-renamed to
+            *time_col* for backward compatibility.
+        order_by : str
+            Column whose values identify the raster row for each event.
         **raster_kwargs
-            Forwarded to :class:`RasterConfig` (``y_by``, ``split_by``,
-            ``alpha_by``, …).
+            Forwarded to :class:`RasterConfig` (``split_by``, ``alpha_by``, …).
 
         Returns
         -------
@@ -310,8 +312,8 @@ class RasterConfig:
         """
         from loupe.df_loader import load_dataframe_from_parquet
 
-        df = load_dataframe_from_parquet(path, time_by=time_by)
-        return cls(data=df, time_by=time_by, **raster_kwargs)
+        df = load_dataframe_from_parquet(path, time_col=time_col)
+        return cls(data=df, time_col=time_col, order_by=order_by, **raster_kwargs)
 
 
 @dataclass
@@ -426,7 +428,8 @@ def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
     """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
 
     Raster rendering (``RasterSeries.color``) expects exactly 3 channels —
-    the alpha is supplied separately per event via ``alpha_by``.
+    the alpha is supplied separately per event via ``alpha_by``.  Returns
+    an ``(r, g, b)`` tuple normalized to integers in ``0..255``.
     """
     if isinstance(c, str):
         s = c.strip().lstrip("#")
@@ -521,14 +524,15 @@ def view(
 
     DataFrame raster::
 
-        view(RasterConfig(ev, y_by="source_id", split_by="dmd",
-                          alpha_by="snr_denoised"))
+        view(RasterConfig(ev, time_col="time", order_by="source_id",
+                          split_by="dmd", alpha_by="snr_denoised"))
 
     Mixed layout (list order = top-to-bottom)::
 
         view([
             TraceConfig(traces),
-            RasterConfig(events, split_by="dmd"),
+            RasterConfig(events, time_col="time", order_by="source_id",
+                         split_by="dmd"),
             HeatmapConfig(dff, split_by="dend-ID", order_by="pos"),
         ])
 
@@ -676,8 +680,8 @@ def view(
         elif isinstance(item, RasterConfig):
             new_ms = dataframe_to_raster_series(
                 item.data,
-                time_by=item.time_by,
-                y_by=item.y_by,
+                time_col=item.time_col,
+                order_by=item.order_by,
                 split_by=item.split_by,
                 alpha_by=item.alpha_by,
                 array_name=item.array_name,

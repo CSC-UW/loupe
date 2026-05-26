@@ -50,8 +50,8 @@ def _call_with_optional_subdf(fn: Callable, group_val, sub_df) -> str:
 def dataframe_to_raster_series(
     df: pl.DataFrame,
     *,
-    time_by: str = "time",
-    y_by: str = "source_id",
+    time_col: str,
+    order_by: str,
     split_by: str | list[str] | None = None,
     alpha_by: str | None = None,
     array_name: "str | Callable[..., str]" = "",
@@ -70,10 +70,10 @@ def dataframe_to_raster_series(
     Parameters
     ----------
     df : pl.DataFrame
-        Must contain *time_by* and *y_by* columns at minimum.
-    time_by : str
+        Must contain *time_col* and *order_by* columns at minimum.
+    time_col : str
         Column containing event timestamps in seconds.
-    y_by : str
+    order_by : str
         Column whose values identify the raster row for each event (e.g.
         ``"source_id"``).  Unique values are mapped to contiguous 0-based
         integer indices within each group.
@@ -123,7 +123,7 @@ def dataframe_to_raster_series(
 
     # ---- validate columns ---------------------------------------------------
     missing = []
-    for col in (time_by, y_by):
+    for col in (time_col, order_by):
         if col not in df.columns:
             missing.append(col)
     if split_by is not None:
@@ -263,12 +263,12 @@ def dataframe_to_raster_series(
             gdf = df
 
         # timestamps
-        timestamps = gdf[time_by].to_numpy().astype(np.float64)
+        timestamps = gdf[time_col].to_numpy().astype(np.float64)
 
         # y-values: map unique sorted values to contiguous 0-based ints
-        unique_y = np.sort(gdf[y_by].unique().to_numpy())
+        unique_y = np.sort(gdf[order_by].unique().to_numpy())
         y_map = {v: i for i, v in enumerate(unique_y)}
-        raw_y = gdf[y_by].to_numpy()
+        raw_y = gdf[order_by].to_numpy()
         yvals = np.array([y_map[v] for v in raw_y], dtype=np.intp)
         n_rows = len(unique_y)
 
@@ -340,7 +340,7 @@ def dataframe_to_raster_series(
 
 def load_dataframe_from_parquet(
     path: str | list[str],
-    time_by: str = "time",
+    time_col: str = "time",
 ) -> "pl.DataFrame":
     """Load one or more parquet files into a single Polars DataFrame.
 
@@ -348,7 +348,7 @@ def load_dataframe_from_parquet(
     ----------
     path : str or list[str]
         Path(s) to parquet file(s).  Multiple paths are concatenated.
-    time_by : str
+    time_col : str
         Expected time column name.  If the file uses ``"t_sec"`` instead,
         it is automatically renamed for backward compatibility.
 
@@ -365,7 +365,7 @@ def load_dataframe_from_parquet(
     df = pl.concat(frames) if len(frames) > 1 else frames[0]
 
     # Backward-compat: older files may use "t_sec"
-    if "t_sec" in df.columns and time_by not in df.columns:
-        df = df.rename({"t_sec": time_by})
+    if "t_sec" in df.columns and time_col not in df.columns:
+        df = df.rename({"t_sec": time_col})
 
     return df

@@ -3788,8 +3788,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         self,
         data,
         *,
-        time_by: str = "time",
-        y_by: str = "source_id",
+        time_col: str,
+        order_by: str,
         split_by: str | list[str] | None = None,
         alpha_by: str | None = None,
         array_name: str = "",
@@ -3802,10 +3802,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         ----------
         data : pl.DataFrame, list[pl.DataFrame], or str
             In-memory DataFrame(s), or a path to a parquet file.
-        time_by : str
-            Column with event timestamps (seconds).
-        y_by : str
-            Column for raster row assignment.
+        time_col : str
+            Column with event timestamps (seconds).  Required.
+        order_by : str
+            Column for raster row assignment.  Required.
         split_by : str or list[str] or None
             Column(s) to split into separate subplots.
         alpha_by : str or None
@@ -3825,7 +3825,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
 
         if isinstance(data, str):
-            data = load_dataframe_from_parquet(data, time_by=time_by)
+            data = load_dataframe_from_parquet(data, time_col=time_col)
 
         if not isinstance(data, list):
             data = [data]
@@ -3835,8 +3835,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             all_ms.extend(
                 dataframe_to_raster_series(
                     mdf,
-                    time_by=time_by,
-                    y_by=y_by,
+                    time_col=time_col,
+                    order_by=order_by,
                     split_by=split_by,
                     alpha_by=alpha_by,
                     array_name=array_name,
