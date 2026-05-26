@@ -30,6 +30,26 @@ _DEFAULT_COLORS: list[tuple[int, int, int]] = [
 ]
 
 
+def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
+    """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
+
+    Raster rendering (``RasterSeries.color``) expects exactly 3 channels —
+    the alpha is supplied separately per event via ``alpha_by``.  Returns
+    an ``(r, g, b)`` tuple normalized to integers in ``0..255``.
+    """
+    if isinstance(c, str):
+        s = c.strip().lstrip("#")
+        if len(s) in (6, 8):
+            try:
+                return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+            except ValueError:
+                pass
+        raise ValueError(f"Cannot parse raster color: {c!r}")
+    if isinstance(c, (tuple, list)) and len(c) >= 3:
+        return (int(c[0]), int(c[1]), int(c[2]))
+    raise ValueError(f"Cannot parse raster color: {c!r}")
+
+
 def _call_with_optional_subdf(fn: Callable, group_val, sub_df) -> str:
     """Call *fn* with ``(group_val, sub_df)`` or ``(group_val,)``.
 
@@ -118,8 +138,6 @@ def dataframe_to_raster_series(
         RASTER_NA_COLOR,
         RasterSeries,
     )
-    # Lazy import for the color parser to avoid a circular import at module load.
-    from loupe import _parse_raster_color
 
     # ---- validate columns ---------------------------------------------------
     missing = []
