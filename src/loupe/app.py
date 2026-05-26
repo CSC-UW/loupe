@@ -343,9 +343,12 @@ class SelectableViewBox(pg.ViewBox):
 
 
 class DenseViewBox(SelectableViewBox):
-    """ViewBox for dense plots — Alt+wheel gain, Shift+Alt+wheel vertical scroll."""
+    """ViewBox for dense plots — Alt+wheel gain (all groups),
+    Ctrl+Alt+wheel gain (hovered group only),
+    Shift+Alt+wheel vertical scroll."""
 
     sigWheelGainAdjust = QtCore.Signal(int)
+    sigWheelGainAdjustFocused = QtCore.Signal(int)
     sigWheelVerticalSmooth = QtCore.Signal(int)
 
     def wheelEvent(self, ev, axis=None):
@@ -355,6 +358,16 @@ class DenseViewBox(SelectableViewBox):
             mods = QtCore.Qt.KeyboardModifier.NoModifier
         alt = bool(mods & QtCore.Qt.KeyboardModifier.AltModifier)
         shift = bool(mods & QtCore.Qt.KeyboardModifier.ShiftModifier)
+        # Accept both ControlModifier (Ctrl on Linux/Win, Cmd on macOS) and
+        # MetaModifier (the macOS ⌃ Control key with Qt's default swap), so
+        # the macOS-keycap "Control" key works as the user expects.
+        ctrl = bool(
+            mods
+            & (
+                QtCore.Qt.KeyboardModifier.ControlModifier
+                | QtCore.Qt.KeyboardModifier.MetaModifier
+            )
+        )
         if alt:
             dy = 0
             if hasattr(ev, "delta"):
@@ -371,6 +384,8 @@ class DenseViewBox(SelectableViewBox):
             direction = 1 if dy > 0 else -1
             if shift:
                 self.sigWheelVerticalSmooth.emit(direction)
+            elif ctrl:
+                self.sigWheelGainAdjustFocused.emit(direction)
             else:
                 self.sigWheelGainAdjust.emit(direction)
             ev.accept()
@@ -4872,6 +4887,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         vb.sigWheelGainAdjust.connect(
             lambda d: self._adjust_dense_gain(1.2 if d > 0 else 1 / 1.2)
         )
+        vb.sigWheelGainAdjustFocused.connect(
+            lambda d: self._adjust_dense_gain_focused(1.2 if d > 0 else 1 / 1.2)
+        )
         vb.sigWheelVerticalSmooth.connect(self._on_dense_vertical_smooth)
 
         plt = HoverablePlotItem(viewBox=vb)
@@ -5229,13 +5247,29 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._sync_dense_vscrollbar_from_yrange(gi)
 
     def _adjust_dense_gain(self, factor: float):
-        """Scale gain for all dense groups (or hovered group) by *factor*."""
+        """Scale gain for all dense groups by *factor*."""
         if not self.dense_groups:
             return
         for group in self.dense_groups:
             group.gain = max(0.001, group.gain * factor)
         self._refresh_dense_curves()
         self._update_status(f"Dense gain: {self.dense_groups[0].gain:.2f}x")
+
+    def _adjust_dense_gain_focused(self, factor: float):
+        """Scale gain for the hovered dense group only by *factor*."""
+        if not self.dense_groups or self.hovered_plot is None:
+            return
+        gi = None
+        for i, plt in enumerate(self.dense_plots):
+            if plt is self.hovered_plot:
+                gi = i
+                break
+        if gi is None:
+            return
+        group = self.dense_groups[gi]
+        group.gain = max(0.001, group.gain * factor)
+        self._refresh_dense_curves()
+        self._update_status(f"Dense gain [{group.name}]: {group.gain:.2f}x")
 
     def _refresh_raster_plots(self):
         """Update raster raster plots for current window."""

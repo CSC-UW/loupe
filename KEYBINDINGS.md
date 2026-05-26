@@ -60,7 +60,8 @@ A few notes:
 
 | Shortcut | Action | Context / Notes |
 | --- | --- | --- |
-| Alt + wheel | Adjust trace gain (amplitude scaling) | Dense mode plots only. |
+| Alt + wheel | Adjust trace gain (amplitude scaling) for all dense subplots | Dense mode plots only. |
+| Ctrl + Alt + wheel | Adjust trace gain for the hovered dense subplot only | Dense mode plots only. On macOS, ⌘ or ⌃ both work as the Ctrl modifier here. Does nothing when no dense subplot is hovered. |
 | Shift + Alt + wheel | Smooth vertical scroll through traces | ~3 traces per notch. Dense mode plots only. |
 | Ctrl + G | Open Dense View Controls dialog | Gain slider, step, traces per page. |
 
