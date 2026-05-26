@@ -21,6 +21,7 @@ A few notes:
 | Mouse wheel | Page left/right one full window | |
 | Shift + wheel | Smooth scroll window | Fraction of window length, configurable via View → Adjust Smooth Scroll Speed…. |
 | Ctrl + wheel | Cursor scrub within current window | Like dragging the cursor slider. |
+| F11 | Toggle fullscreen | Also available as View → Fullscreen. |
 
 ### Playback
 

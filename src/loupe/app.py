@@ -1817,8 +1817,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         v = QtWidgets.QVBoxLayout(central)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
         top = QtWidgets.QHBoxLayout()
+        top.setContentsMargins(4, 2, 4, 2)
+        top.setSpacing(6)
         v.addLayout(top)
         top.addWidget(QtWidgets.QLabel("Window (s):"))
         self.window_spin = QtWidgets.QDoubleSpinBox()
@@ -1843,6 +1847,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         leftl = QtWidgets.QVBoxLayout(left)
         leftl.setContentsMargins(0, 0, 0, 0)
         self.plot_area = pg.GraphicsLayoutWidget()
+        self.plot_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.plot_area.ci.layout.setContentsMargins(0, 0, 0, 0)
         self.plot_area.ci.layout.setVerticalSpacing(2)
         self.plot_scroll_area = QtWidgets.QScrollArea()
         self.plot_scroll_area.setWidgetResizable(True)
@@ -2067,6 +2073,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         scroll_speed_action = QtGui.QAction("Adjust Smooth Scroll Speed...", self)
         scroll_speed_action.triggered.connect(self._adjust_scroll_speed)
         mview.addAction(scroll_speed_action)
+
+        self.action_fullscreen = QtGui.QAction("Fullscreen", self)
+        self.action_fullscreen.setCheckable(True)
+        self.action_fullscreen.setShortcut(QtGui.QKeySequence("F11"))
+        self.action_fullscreen.toggled.connect(self._toggle_fullscreen)
+        mview.addAction(self.action_fullscreen)
 
         # ----- Group 2: Hypnogram -----
         mview.addSeparator()
@@ -6315,6 +6327,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.is_playing = False
             self.playback_timer.stop()
             self._update_status("Playback stopped.")
+
+    def _toggle_fullscreen(self, checked: bool) -> None:
+        if checked:
+            self.showFullScreen()
+        else:
+            self.showNormal()
 
     def _toggle_playback(self):
         """Toggles video playback on or off."""
