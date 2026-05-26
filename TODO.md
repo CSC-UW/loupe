@@ -41,9 +41,9 @@
 
 - [ ] Make "TraceConfig", "HeatmapConfig", and "RasterConfig" APIs as consistent as possible.
   - [ ] "color" and "colors" kwargs are confusing. Consider renaming, e.g. to match Seaborn conventions ("hue", "palette", etc.).
-- [ ] Consider whether the README should be re-organized around plot/view types, rather than supported data formats. Data formats should still be covered, but in the context of plot types
-  - An usage example for every plot type should be provided.
-  - A markdown file with increased detail for each view, including performance/dev notes, could be linked to from the README.
+- [x] Consider whether the README should be re-organized around plot/view types, rather than supported data formats. Data formats should still be covered, but in the context of plot types
+  - [x] An usage example for every plot type should be provided.
+  - [x] A markdown file with increased detail for each view, including performance/dev notes, could be linked to from the README.
 - [ ] `app.py` is getting huge, consider refactoring for agent friendliness.
 - [ ] When displaying very long pieces of data, scientific notation should not be used for the time axis labels. 36000 seconds should display as 36000, not 3.6e4, or 36 kiloseconds.
 - [ ] If no video is provided, the space used for the video viewer should be used for something else, e.g. the label / hypnogram views.
