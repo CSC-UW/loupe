@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loupe.configs import (
+    GlobalEventsConfig,
     HeatmapConfig,
     RasterConfig,
     TraceConfig,
@@ -32,6 +33,8 @@ def view(
     window_len: float = 10.0,
     # Video sources
     videos: "VideoConfig | list[VideoConfig] | None" = None,
+    # Global event markers (vertical lines across every pane)
+    global_events: "GlobalEventsConfig | None" = None,
     # Interval-label loading
     interval_labels: "pl.DataFrame | str | Path | None" = None,
     interval_label_schema: IntervalLabelSchema | None = None,
@@ -64,6 +67,12 @@ def view(
         list.  Both ``video_path`` and ``frame_times_path`` may be lists
         of equal length, in which case the files are loaded as one
         continuous (concatenated) video — see :class:`VideoConfig`.
+    global_events : GlobalEventsConfig, optional
+        Vertical event-marker lines drawn across every plot pane on top
+        of all other layers (including label shading).  Per-class styling
+        via :attr:`GlobalEventsConfig.style_events_on` /
+        :attr:`GlobalEventsConfig.style_kwargs`; live-editable via the
+        View → "Style Global Events…" menu entry.
     interval_labels : pl.DataFrame, str, or Path, optional
         Initial interval labels.  Either a polars DataFrame (requires
         ``interval_label_schema``) or a path to a ``.csv``, ``.htsv``,
@@ -463,6 +472,49 @@ def view(
                     f"videos must contain VideoConfig instances, got {type(v).__name__}"
                 )
 
+    if global_events is not None:
+        if not isinstance(global_events, GlobalEventsConfig):
+            raise TypeError(
+                f"global_events= must be a GlobalEventsConfig, "
+                f"got {type(global_events).__name__}."
+            )
+        ge_cols = list(global_events.data.columns)
+        if global_events.event_times_column not in ge_cols:
+            raise ValueError(
+                f"GlobalEventsConfig.event_times_column="
+                f"{global_events.event_times_column!r} not found in DataFrame "
+                f"columns {ge_cols!r}."
+            )
+        if global_events.style_events_on is not None:
+            if global_events.style_events_on not in ge_cols:
+                raise ValueError(
+                    f"GlobalEventsConfig.style_events_on="
+                    f"{global_events.style_events_on!r} not found in DataFrame "
+                    f"columns {ge_cols!r}."
+                )
+            if global_events.style_kwargs is not None:
+                uniques = set(
+                    global_events.data[global_events.style_events_on]
+                    .unique()
+                    .to_list()
+                )
+                stray = set(global_events.style_kwargs) - uniques
+                if stray:
+                    import warnings
+                    warnings.warn(
+                        f"GlobalEventsConfig.style_kwargs has keys not present "
+                        f"in data[{global_events.style_events_on!r}].unique(): "
+                        f"{sorted(stray, key=repr)!r}.",
+                        stacklevel=2,
+                    )
+        elif global_events.style_kwargs is not None:
+            import warnings
+            warnings.warn(
+                "GlobalEventsConfig.style_kwargs is ignored when "
+                "style_events_on is None.",
+                stacklevel=2,
+            )
+
     reporter.phase("Building main window")
     w = LoupeApp(
         xr_series=xr_series_out,
@@ -477,6 +529,7 @@ def view(
         interval_label_set=interval_label_set,
         interval_label_alpha=interval_label_alpha,
         video_configs=video_configs,
+        global_events=global_events,
         reporter=reporter,
         **kwargs,
     )

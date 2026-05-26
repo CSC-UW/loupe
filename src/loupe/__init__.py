@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from loupe.configs import (
+    GlobalEventsConfig,
     HeatmapConfig,
     RasterConfig,
     SampleMarkers,
@@ -15,6 +16,7 @@ from loupe.state_config import StateConfig, load_state_config
 from loupe.view import view
 
 __all__ = [
+    "GlobalEventsConfig",
     "HeatmapConfig",
     "IntervalLabelSchema",
     "IntervalLabelSet",

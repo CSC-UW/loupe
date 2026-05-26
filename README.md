@@ -215,6 +215,51 @@ Used by `TraceConfig`, `HeatmapConfig`, and `Zip`.
 - Optional per‑series colors accept `#RRGGBB[AA]`, `0xRRGGBB`, or `R,G,B[,A]`.
 - These are loaded via the legacy GUI loader (File → Load Traces).
 
+#### Global event markers
+
+Vertical event-marker lines drawn across every plot pane (trace, dense, heatmap, raster) on top of all other layers — including label shading — for time-locked annotations like stimulus onsets, behavioral markers, or sleep-stage transitions. Pass a `GlobalEventsConfig` via the `global_events=` kwarg on `view()`:
+
+```python
+import polars as pl
+from loupe import view, TraceConfig, GlobalEventsConfig
+
+events = pl.DataFrame({
+    "time": [5.0, 12.5, 20.0, 33.3, 47.1],
+    "kind": ["stim", "lick", "stim", "blink", "lick"],
+})
+
+# Single style applied to every event
+view(TraceConfig(da), global_events=GlobalEventsConfig(events))
+
+# Per-class styling — each unique value of `kind` gets a distinct style
+view(
+    TraceConfig(da),
+    global_events=GlobalEventsConfig(
+        events,
+        style_events_on="kind",
+        style_kwargs={
+            "stim":  {"line_color": "#ff8800", "line_width": 2.0},
+            "lick":  {"line_color": (100, 200, 255), "line_style": "dashed"},
+            "blink": {"line_alpha": 100},                  # keep cycle defaults
+        },
+    ),
+)
+```
+
+`GlobalEventsConfig` fields:
+- `data` — polars DataFrame with one row per event.
+- `event_times_column` (default `"time"`) — column with event times in seconds.
+- `style_events_on` (optional) — column whose unique values group events into styled classes. When unset, every event uses a single style.
+- `style_kwargs` (optional) — `{class_value: {…style overrides…}}` mapping. Unspecified classes auto-cycle through distinct line styles (solid → dashed → dotted → dashdot → dashdotdot) on light gray, then cycle through a small color palette before any style repeats. Ignored (with a warning) when `style_events_on` is `None`.
+
+Per-class style fields:
+- `line_color` — RGB(A) tuple or `"#RRGGBB"` hex string.
+- `line_style` — `"solid"`, `"dashed"`, `"dotted"`, `"dashdot"`, or `"dashdotdot"`.
+- `line_width` — pen width in pixels (default `1.5`).
+- `line_alpha` — `0–255` (default `200`).
+
+Colors, line styles, widths, and alphas can be edited live from the menu bar at **View → Style Global Events…** — the menu entry only appears when `global_events=` was passed. Markers stay on top of label shading by design, so they remain visible even with full-opacity hypnogram regions.
+
 #### Interval labels
 
 Loupe loads and saves interval labels via a small registry of formats and an `IntervalLabelSchema` that tells it which user‑named columns mean start, end, duration, label, note, and which extras to display. Rows are half‑open intervals `[start, end)`.

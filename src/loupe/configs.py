@@ -411,3 +411,45 @@ class Zip:
                         f"Zip.traces[{i}].{fname}={actual!r} is meaningless "
                         f"within a Zip; only `color` applies."
                     )
+
+
+@dataclass
+class GlobalEventsConfig:
+    """Vertical event-marker lines drawn across every plot pane in :func:`view`.
+
+    Pass via the ``global_events=`` kwarg on :func:`view` to overlay
+    time-locked event markers (stimulus onsets, behavioral events, manually
+    noted transitions, etc.) on top of every trace / dense / heatmap / raster
+    pane.  Drawn as the topmost layer so they remain visible on top of
+    label shading.  Pen color, line style, width, and alpha are editable
+    live via the "Style Global Events…" entry in the View menu.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        DataFrame with one row per event.  Must contain *event_times_column*.
+        Additional columns may be referenced via *style_events_on*.
+    event_times_column : str
+        Column with event times in seconds (default ``"time"``).
+    style_events_on : str or None
+        Column whose values group events into styled classes.  ``None``
+        (default) renders every event with a single style.
+    style_kwargs : dict or None
+        Per-class style overrides keyed by unique values of
+        *style_events_on*.  Each value is a dict with any of:
+        ``line_color``, ``line_style``, ``line_width``, ``line_alpha``.
+        Unspecified classes fall back to an auto-generated palette that
+        cycles through distinct line styles first, then adds colors.
+        Ignored (with a warning) when *style_events_on* is ``None``.
+
+        ``line_style`` values: ``"solid"``, ``"dashed"``, ``"dotted"``,
+        ``"dashdot"``, ``"dashdotdot"``.
+
+        ``line_color`` accepts an ``(R, G, B)`` tuple or a ``"#RRGGBB"``
+        hex string.  ``line_alpha`` is an integer in ``0..255``.
+    """
+
+    data: "pl.DataFrame"
+    event_times_column: str = "time"
+    style_events_on: str | None = None
+    style_kwargs: dict | None = None

@@ -103,6 +103,55 @@ RASTER_MAX_CATEGORIES = 32
 RASTER_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
 
 
+# ---------------- Global event marker styling ----------------
+
+_GLOBAL_EVENT_LINE_STYLE_TO_QT: dict[str, QtCore.Qt.PenStyle] = {
+    "solid":      QtCore.Qt.PenStyle.SolidLine,
+    "dashed":     QtCore.Qt.PenStyle.DashLine,
+    "dotted":     QtCore.Qt.PenStyle.DotLine,
+    "dashdot":    QtCore.Qt.PenStyle.DashDotLine,
+    "dashdotdot": QtCore.Qt.PenStyle.DashDotDotLine,
+}
+_GLOBAL_EVENT_STYLE_ORDER: list[str] = [
+    "solid", "dashed", "dotted", "dashdot", "dashdotdot",
+]
+_GLOBAL_EVENT_COLOR_CYCLE: list[tuple[int, int, int]] = [
+    (230, 230, 230),  # light gray (most visible on dark bg)
+    (180, 230, 255),  # light cyan
+    (255, 230, 180),  # light cream
+    (200, 255, 200),  # light green
+    (255, 200, 200),  # light pink
+    (230, 180, 255),  # light lavender
+]
+_GLOBAL_EVENT_SINGLE_DEFAULT: dict = {
+    "line_color": (230, 230, 230),
+    "line_style": "solid",
+    "line_width": 1.5,
+    "line_alpha": 200,
+}
+_GLOBAL_EVENT_VALID_STYLE_KEYS: frozenset = frozenset(
+    {"line_color", "line_style", "line_width", "line_alpha"}
+)
+# Z-value sits above label regions, curves, images, sample-marker scatters,
+# and the hypnogram window marker.
+_GLOBAL_EVENT_Z: int = 100
+
+
+def _parse_global_event_color(c) -> tuple[int, int, int]:
+    """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple."""
+    if isinstance(c, str):
+        s = c.strip().lstrip("#")
+        if len(s) in (6, 8):
+            try:
+                return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+            except ValueError:
+                pass
+        raise ValueError(f"Cannot parse global-event line_color: {c!r}")
+    if isinstance(c, (tuple, list)) and len(c) >= 3:
+        return (int(c[0]), int(c[1]), int(c[2]))
+    raise ValueError(f"Cannot parse global-event line_color: {c!r}")
+
+
 # ---------------- Main window ----------------
 
 
@@ -159,6 +208,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         interval_label_set: IntervalLabelSet | None = None,
         # Initial interval-label-overlay alpha multiplier (0.0 – 1.0). None → 1.0.
         interval_label_alpha: float | None = None,
+        # Global event markers: vertical lines drawn across every pane.
+        global_events=None,
         # Optional ProgressReporter for launch-time progress.
         reporter=None,
     ):
@@ -297,6 +348,18 @@ class LoupeApp(QtWidgets.QMainWindow):
         if interval_label_set is None:
             interval_label_set = IntervalLabelSet.empty()
         self.interval_label_set: IntervalLabelSet = interval_label_set
+
+        # Global event markers (vertical lines drawn across every pane).
+        # _resolved_event_styles keys are unique values from
+        # global_events.style_events_on (or None for the single-style case).
+        # _global_event_lines_by_class maps the same keys to the list of
+        # InfiniteLine objects belonging to that class — enables live restyle
+        # via the "Style Global Events…" dialog.
+        self.global_events = global_events
+        self._resolved_event_styles: dict = {}
+        self._global_event_lines_by_class: dict = {}
+        if self.global_events is not None:
+            self._resolve_global_event_styles()
 
         # Visual bookkeeping keyed by row_id (stable across edits/merges).
         self._interval_label_visuals: dict[IntervalLabelKey, IntervalLabelVisualBundle] = {}
@@ -843,6 +906,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         )
         mview.addAction(adjust_sample_markers_action)
 
+        if self.global_events is not None:
+            style_global_events_action = QtGui.QAction(
+                "Style Global Events...", self
+            )
+            style_global_events_action.triggered.connect(
+                self._adjust_global_events_style
+            )
+            mview.addAction(style_global_events_action)
+
         # ----- Group 5: Heatmap plots -----
         mview.addSeparator()
 
@@ -1215,6 +1287,122 @@ class LoupeApp(QtWidgets.QMainWindow):
             wrap = QtWidgets.QWidget()
             wrap.setLayout(alpha_row)
             grid.addWidget(wrap, row, 4)
+
+        outer.addLayout(grid)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        btns.rejected.connect(dlg.reject)
+        btns.accepted.connect(dlg.accept)
+        outer.addWidget(btns)
+
+        dlg.exec()
+
+    def _adjust_global_events_style(self):
+        """View-menu handler: live-edit color, line style, width, and alpha
+        per global-events class."""
+        if self.global_events is None or not self._resolved_event_styles:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Style Global Events",
+                "No global event markers loaded.\n\n"
+                "Pass global_events=GlobalEventsConfig(...) to view() to add markers.",
+            )
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Style Global Events")
+        outer = QtWidgets.QVBoxLayout(dlg)
+
+        intro = QtWidgets.QLabel("Changes apply live. Close the dialog when done.")
+        outer.addWidget(intro)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(12)
+        for col, header in enumerate(["Class", "Color", "Style", "Width", "Alpha"]):
+            lbl = QtWidgets.QLabel(header)
+            lbl.setStyleSheet("font-weight: bold;")
+            grid.addWidget(lbl, 0, col)
+
+        def _make_color_button(class_val) -> QtWidgets.QPushButton:
+            btn = QtWidgets.QPushButton()
+            btn.setFixedWidth(60)
+
+            def _refresh_swatch():
+                r, g, b = _parse_global_event_color(
+                    self._resolved_event_styles[class_val]["line_color"]
+                )
+                btn.setStyleSheet(
+                    f"background-color: rgb({r},{g},{b}); border: 1px solid #888;"
+                )
+
+            def _on_click():
+                cur = _parse_global_event_color(
+                    self._resolved_event_styles[class_val]["line_color"]
+                )
+                picked = QtWidgets.QColorDialog.getColor(
+                    QtGui.QColor(*cur), dlg, f"Color for {class_val!r}"
+                )
+                if picked.isValid():
+                    self._resolved_event_styles[class_val]["line_color"] = (
+                        picked.red(), picked.green(), picked.blue()
+                    )
+                    _refresh_swatch()
+                    self._apply_global_event_class_style(class_val)
+
+            btn.clicked.connect(_on_click)
+            _refresh_swatch()
+            return btn
+
+        for row_idx, (class_val, style) in enumerate(
+            self._resolved_event_styles.items(), start=1,
+        ):
+            label_text = "(all events)" if class_val is None else repr(class_val)
+            grid.addWidget(QtWidgets.QLabel(label_text), row_idx, 0)
+
+            grid.addWidget(_make_color_button(class_val), row_idx, 1)
+
+            style_combo = QtWidgets.QComboBox()
+            style_combo.addItems(_GLOBAL_EVENT_STYLE_ORDER)
+            style_combo.setCurrentText(style["line_style"])
+
+            def _on_style(text, cv=class_val):
+                self._resolved_event_styles[cv]["line_style"] = text
+                self._apply_global_event_class_style(cv)
+
+            style_combo.currentTextChanged.connect(_on_style)
+            grid.addWidget(style_combo, row_idx, 2)
+
+            width_spin = QtWidgets.QDoubleSpinBox()
+            width_spin.setRange(0.5, 8.0)
+            width_spin.setSingleStep(0.25)
+            width_spin.setDecimals(2)
+            width_spin.setValue(float(style["line_width"]))
+
+            def _on_width(v, cv=class_val):
+                self._resolved_event_styles[cv]["line_width"] = float(v)
+                self._apply_global_event_class_style(cv)
+
+            width_spin.valueChanged.connect(_on_width)
+            grid.addWidget(width_spin, row_idx, 3)
+
+            alpha_row = QtWidgets.QHBoxLayout()
+            alpha_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            alpha_slider.setRange(0, 255)
+            alpha_slider.setValue(int(style["line_alpha"]))
+            alpha_lbl = QtWidgets.QLabel(f"{int(style['line_alpha'])}")
+            alpha_lbl.setFixedWidth(32)
+
+            def _on_alpha(v, cv=class_val, lbl=alpha_lbl):
+                self._resolved_event_styles[cv]["line_alpha"] = int(v)
+                lbl.setText(str(int(v)))
+                self._apply_global_event_class_style(cv)
+
+            alpha_slider.valueChanged.connect(_on_alpha)
+            alpha_row.addWidget(alpha_slider)
+            alpha_row.addWidget(alpha_lbl)
+            wrap = QtWidgets.QWidget()
+            wrap.setLayout(alpha_row)
+            grid.addWidget(wrap, row_idx, 4)
 
         outer.addLayout(grid)
 
@@ -2349,6 +2537,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_trace_visibility()
         if len(self.interval_label_set) > 0:
             self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
+        self._sync_global_event_visuals(force_rebuild=True)
 
     # Default overlay color palette
     _DEFAULT_OVERLAY_COLORS = [
@@ -2476,6 +2665,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_trace_visibility()
         if len(self.interval_label_set) > 0:
             self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
+        self._sync_global_event_visuals(force_rebuild=True)
 
     def set_xarray(self, data, filter_dict=None):
         """Load xarray DataArray(s) into the viewer.
@@ -2826,6 +3016,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._update_hypnogram_extents()
         if len(self.interval_label_set) > 0:
             self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
+        self._sync_global_event_visuals(force_rebuild=True)
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _rebuild_all_plots(self):
@@ -2888,6 +3079,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_x_range()
         self._update_nav_slider_from_window()
         self._sync_interval_label_visuals(force_rebuild=True, refresh_summary=False)
+        self._sync_global_event_visuals(force_rebuild=True)
         QtCore.QTimer.singleShot(0, self._align_left_axes)
 
     def _create_all_plots(self):
@@ -4671,6 +4863,174 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._clear_window_interval_label_visuals()
         self._clear_hypnogram_interval_label_visuals()
 
+    # ---------------- Global event marker visuals ----------------
+
+    def _resolve_global_event_styles(self) -> None:
+        """Populate :attr:`_resolved_event_styles` from the user config.
+
+        Keyed by class value (or the sentinel ``None`` for the single-style
+        case).  Each value is a fully-resolved style dict
+        ``{line_color, line_style, line_width, line_alpha}``.
+
+        Auto-defaults cycle through distinct line styles first, then add
+        colors — a 6-color × 5-style palette covers 30 unique classes
+        before any combination repeats.
+        """
+        import warnings
+
+        cfg = self.global_events
+        if cfg is None:
+            self._resolved_event_styles = {}
+            return
+
+        def _validate_style(style: dict, ctx: str) -> dict:
+            unknown = set(style) - _GLOBAL_EVENT_VALID_STYLE_KEYS
+            if unknown:
+                warnings.warn(
+                    f"GlobalEventsConfig.style_kwargs[{ctx}] has unknown keys "
+                    f"{sorted(unknown)!r}; valid keys: "
+                    f"{sorted(_GLOBAL_EVENT_VALID_STYLE_KEYS)!r}.",
+                    stacklevel=2,
+                )
+            if "line_style" in style:
+                ls = style["line_style"]
+                if ls not in _GLOBAL_EVENT_LINE_STYLE_TO_QT:
+                    raise ValueError(
+                        f"GlobalEventsConfig.style_kwargs[{ctx}].line_style="
+                        f"{ls!r} is not one of "
+                        f"{sorted(_GLOBAL_EVENT_LINE_STYLE_TO_QT)!r}."
+                    )
+            out = {k: v for k, v in style.items() if k in _GLOBAL_EVENT_VALID_STYLE_KEYS}
+            if "line_color" in out:
+                out["line_color"] = _parse_global_event_color(out["line_color"])
+            return out
+
+        if cfg.style_events_on is None:
+            self._resolved_event_styles = {
+                None: dict(_GLOBAL_EVENT_SINGLE_DEFAULT)
+            }
+            return
+
+        try:
+            uniques = sorted(
+                cfg.data[cfg.style_events_on].unique().to_list(),
+                key=lambda v: (v is None, repr(v)),
+            )
+        except Exception:
+            uniques = list(cfg.data[cfg.style_events_on].unique().to_list())
+
+        n_styles = len(_GLOBAL_EVENT_STYLE_ORDER)
+        n_colors = len(_GLOBAL_EVENT_COLOR_CYCLE)
+        user_kwargs = cfg.style_kwargs or {}
+        resolved: dict = {}
+        for i, val in enumerate(uniques):
+            style_idx = i % n_styles
+            color_idx = (i // n_styles) % n_colors
+            base = {
+                "line_color": _GLOBAL_EVENT_COLOR_CYCLE[color_idx],
+                "line_style": _GLOBAL_EVENT_STYLE_ORDER[style_idx],
+                "line_width": 1.5,
+                "line_alpha": 200,
+            }
+            if val in user_kwargs:
+                override = _validate_style(user_kwargs[val], repr(val))
+                base.update(override)
+            resolved[val] = base
+        self._resolved_event_styles = resolved
+
+    def _global_event_pen(self, style: dict) -> QtGui.QPen:
+        """Build a :class:`QtGui.QPen` from a resolved style dict."""
+        r, g, b = _parse_global_event_color(style["line_color"])
+        a = int(max(0, min(255, style["line_alpha"])))
+        qcolor = QtGui.QColor(r, g, b, a)
+        pen = pg.mkPen(qcolor, width=float(style["line_width"]))
+        pen.setStyle(_GLOBAL_EVENT_LINE_STYLE_TO_QT[style["line_style"]])
+        # Cosmetic ensures the dash pattern stays visually crisp regardless
+        # of view transform; otherwise dashed lines can disappear on zoom.
+        pen.setCosmetic(True)
+        return pen
+
+    def _global_event_panes(self) -> list[pg.PlotItem]:
+        """Return every visible plot pane an event marker should appear on."""
+        panes: list[pg.PlotItem] = []
+        for i, plt in enumerate(self.plots):
+            if self._is_trace_plot_visible(i):
+                panes.append(plt)
+        panes.extend(self.dense_plots)
+        for i, plt in enumerate(self.raster_plots):
+            if self._is_raster_plot_visible(i):
+                panes.append(plt)
+        for i, plt in enumerate(self.heatmap_plots):
+            if self._is_heatmap_plot_visible(i):
+                panes.append(plt)
+        return panes
+
+    def _sync_global_event_visuals(self, *, force_rebuild: bool = False) -> None:
+        """Render/refresh vertical event-marker lines across every pane.
+
+        Lines are grouped by class in
+        :attr:`_global_event_lines_by_class` so the Style dialog can
+        restyle them en masse.  Called after every plot rebuild.
+        """
+        if self.global_events is None:
+            if force_rebuild:
+                self._clear_global_event_visuals()
+            return
+
+        if force_rebuild or not self._global_event_lines_by_class:
+            self._clear_global_event_visuals()
+        else:
+            return
+
+        cfg = self.global_events
+        df = cfg.data
+        times_all = df[cfg.event_times_column].to_numpy()
+
+        if cfg.style_events_on is None:
+            groups: dict = {None: times_all}
+        else:
+            classes = df[cfg.style_events_on].to_numpy()
+            groups = {}
+            for val in self._resolved_event_styles:
+                mask = classes == val
+                if mask.any():
+                    groups[val] = times_all[mask]
+
+        panes = self._global_event_panes()
+        if not panes:
+            return
+
+        for class_val, times in groups.items():
+            style = self._resolved_event_styles.get(class_val)
+            if style is None:
+                continue
+            pen = self._global_event_pen(style)
+            bucket = self._global_event_lines_by_class.setdefault(class_val, [])
+            for t in times:
+                for pane in panes:
+                    ln = pg.InfiniteLine(
+                        pos=float(t), angle=90, movable=False, pen=pen,
+                    )
+                    ln.setZValue(_GLOBAL_EVENT_Z)
+                    pane.addItem(ln)
+                    bucket.append(ln)
+
+    def _clear_global_event_visuals(self) -> None:
+        """Remove every InfiniteLine produced by global events."""
+        for bucket in self._global_event_lines_by_class.values():
+            for ln in bucket:
+                self._remove_graphics_item(ln)
+        self._global_event_lines_by_class.clear()
+
+    def _apply_global_event_class_style(self, class_val) -> None:
+        """Restyle every line for one class after a dialog change."""
+        style = self._resolved_event_styles.get(class_val)
+        if style is None:
+            return
+        pen = self._global_event_pen(style)
+        for ln in self._global_event_lines_by_class.get(class_val, []):
+            ln.setPen(pen)
+
     def _refresh_interval_label_summary(self, force: bool = False) -> None:
         panel = getattr(self, "interval_label_summary_panel", None)
         if panel is None:
@@ -5585,6 +5945,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                     refresh_summary=False,
                     force_rebuild_window=True,
                 )
+            self._sync_global_event_visuals(force_rebuild=True)
             QtCore.QTimer.singleShot(0, self._align_left_axes)
         except Exception:
             import traceback
