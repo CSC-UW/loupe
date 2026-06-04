@@ -258,6 +258,24 @@ class RasterConfig:
         *palette* when both are set.  Ignored when *hue* is set.
     alpha_range : tuple[float, float]
         ``(min_alpha, max_alpha)`` for normalizing *alpha_by* values.
+    horizontal_separators : list or None
+        Values in *order_by* space at which to draw a thin horizontal
+        separator line plus a small vertical gap, purely as a visual border
+        (e.g. to delimit units recorded on different probes that share one
+        raster).  Each value ``v`` draws a separator just *below* the row
+        whose *order_by* value is ``v`` (rows with ``order_by >= v`` form the
+        block above the line).  Values below all rows, above all rows, or
+        landing on an existing boundary are silently ignored.  Composes with
+        *split_by*: each subplot resolves the values against its own rows, so
+        a value only produces a separator in subplots whose rows straddle it.
+        ``None`` (default) draws no separators and leaves the layout
+        byte-identical to before.
+    separator_params : dict or None
+        Optional styling for the separators.  Recognized keys: ``"gap"``
+        (vertical gap height in row-units, default ``0.6``), ``"color"``
+        (hex string or RGB(A) tuple, default gray ``(120, 120, 120)``), and
+        ``"width"`` (line width in pixels, default ``1.0``).  Unknown keys
+        emit a warning.  Ignored unless *horizontal_separators* is set.
     """
 
     data: "pl.DataFrame"
@@ -270,6 +288,8 @@ class RasterConfig:
     palette: "dict | list | tuple | None" = None
     color: "str | tuple | None" = None
     alpha_range: tuple[float, float] = (0.3, 1.0)
+    horizontal_separators: "list | None" = None
+    separator_params: "dict | None" = None
 
     @classmethod
     def from_parquet(

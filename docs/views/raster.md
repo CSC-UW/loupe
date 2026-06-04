@@ -18,6 +18,8 @@ Defined in `src/loupe/__init__.py:225-316`.
 | `color` | `None` | Single color override (`"#RRGGBB"` or `(R,G,B)`). Takes precedence over `palette`. Ignored when `hue` is set (warns). |
 | `alpha_range` | `(0.3, 1.0)` | `(min, max)` alpha bounds when `alpha_by` is set. |
 | `array_name` | `""` | Subplot label prefix. `""` (default) leaves grouped subplots labeled by raw group values. A non-empty string is used verbatim. A callable `(group_val, sub_df) -> str` returns the full subplot name. Multi-column groups join with `"-"` (e.g. `"imec0-CA1-SR"`). |
+| `horizontal_separators` | `None` | Values in `order_by` space at which to draw a thin horizontal line plus a small vertical gap — a purely visual border (e.g. to delimit units from different probes in one raster). Each value `v` draws the line just below the row whose `order_by` value is `v`. Resolved per subplot under `split_by`; out-of-range / on-boundary values are ignored. |
+| `separator_params` | `None` | Optional styling dict for the separators: `"gap"` (row-units, default `0.6`), `"color"` (hex / RGB(A), default gray `(120,120,120)`), `"width"` (px, default `1.0`). Unknown keys warn. Ignored unless `horizontal_separators` is set. |
 
 ## Loader
 
@@ -49,6 +51,23 @@ view(RasterConfig(
     palette={"dmd0": "#ff8888", "dmd1": "#88ccff"},
 ))
 ```
+
+## Horizontal separators
+
+Pass `horizontal_separators` to insert a small vertical gap plus a thin horizontal line at one or more y-axis positions, so a single raster subplot can be visually divided into blocks — for example, units recorded on different probes within one brain region. The values are in `order_by` space: a value `v` puts the line just *below* the row whose `order_by` value is `v` (rows with `order_by >= v` form the block above the line).
+
+```python
+view(RasterConfig(
+    ev,
+    time_col="time",
+    order_by="unit_id",
+    split_by="region",                 # one brain region per subplot…
+    horizontal_separators=[64, 128],   # …each split into per-probe blocks
+    separator_params={"gap": 0.6, "color": "#888888", "width": 1.0},
+))
+```
+
+The feature is purely cosmetic — it shifts row *positions* apart to open the gap, but does not change the data, the row ordering, or `n_rows`. It composes with `split_by`: each subplot resolves the values against its own rows, so a value only produces a separator in subplots whose rows straddle it. Values below all rows, above all rows, or landing exactly on an existing block boundary are silently ignored. Leaving `horizontal_separators` unset keeps the layout byte-identical to before.
 
 ## Runtime controls
 

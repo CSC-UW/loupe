@@ -108,3 +108,139 @@ def test_color_warns_over_palette():
     ms = w.raster_series[0]
     assert ms.color == (160, 32, 240)
     w.close()
+
+
+# ---------------------------------------------------------------------------
+# horizontal_separators
+# ---------------------------------------------------------------------------
+
+
+def _rows_df(rows, per_row: int = 5, grp: str | None = None, seed: int = 0):
+    """Build an events DataFrame in which every value in *rows* is a present
+    raster row (so ``unique(source_id) == sorted(set(rows))``)."""
+    rng = np.random.default_rng(seed)
+    src = np.repeat(list(rows), per_row)
+    cols = {
+        "time": np.sort(rng.uniform(0, 30, len(src))),
+        "source_id": src.astype(np.int64),
+    }
+    if grp is not None:
+        cols["grp"] = np.array([grp] * len(src))
+    return pl.DataFrame(cols)
+
+
+def test_separators_disabled_is_byte_identical():
+    # Without the arg, nothing about the legacy layout changes.
+    w = view(
+        RasterConfig(_rows_df(range(10)), time_col="time", order_by="source_id"),
+        state_definitions=_EXAMPLE_STATE_DEFS,
+    )
+    ms = w.raster_series[0]
+    assert np.issubdtype(ms.yvals.dtype, np.integer)
+    assert ms.separator_lines is None
+    assert ms.y_extent is None
+    assert ms.separator_color is None and ms.separator_width is None
+    # Registry is populated (one entry per subplot) but holds no lines.
+    assert len(w.raster_separator_lines) == len(w.raster_series)
+    assert w.raster_separator_lines[0] == []
+    w.close()
+
+
+def test_separators_shift_and_lines():
+    # 10 rows (source_id 0..9), one separator at value 5, default gap 0.6.
+    w = view(
+        RasterConfig(
+            _rows_df(range(10)),
+            time_col="time",
+            order_by="source_id",
+            horizontal_separators=[5],
+        ),
+        state_definitions=_EXAMPLE_STATE_DEFS,
+    )
+    ms = w.raster_series[0]
+    assert np.issubdtype(ms.yvals.dtype, np.floating)
+    assert ms.separator_lines == pytest.approx([5.3])  # 5 + 0.6/2
+    assert ms.y_extent == pytest.approx(10.6)          # 10 rows + one 0.6 gap
+    assert float(ms.yvals.max()) == pytest.approx(9.6)  # top row shifted by 0.6
+    # No event row-center lands inside the empty gap band [5.0, 5.6].
+    centers = ms.yvals + 0.5
+    assert not np.any((centers > 5.0) & (centers < 5.6))
+    # The rendered line handles match the recorded positions.
+    handles = w.raster_separator_lines[0]
+    assert len(handles) == 1
+    assert isinstance(handles[0], pg.InfiniteLine)
+    w.close()
+
+
+def test_separators_respect_split_by():
+    # Group "A" straddles value 5; group "B" (rows 0..2) does not.
+    df = pl.concat([_rows_df(range(10), grp="A"), _rows_df(range(3), grp="B")])
+    w = view(
+        RasterConfig(
+            df,
+            time_col="time",
+            order_by="source_id",
+            split_by="grp",
+            horizontal_separators=[5],
+        ),
+        state_definitions=_EXAMPLE_STATE_DEFS,
+    )
+    by_rows = {ms.n_rows: ms for ms in w.raster_series}
+    assert by_rows[10].separator_lines == pytest.approx([5.3])  # straddling group
+    assert by_rows[3].separator_lines is None                   # non-straddling group
+    assert np.issubdtype(by_rows[3].yvals.dtype, np.integer)
+    w.close()
+
+
+def test_separators_out_of_range_noop():
+    # Below-min (-1), above-max (100), and equal-to-min (0) all resolve to
+    # boundary 0 or n_rows, which are dropped -> behaves exactly as disabled.
+    w = view(
+        RasterConfig(
+            _rows_df(range(4)),
+            time_col="time",
+            order_by="source_id",
+            horizontal_separators=[-1, 100, 0],
+        ),
+        state_definitions=_EXAMPLE_STATE_DEFS,
+    )
+    ms = w.raster_series[0]
+    assert np.issubdtype(ms.yvals.dtype, np.integer)
+    assert ms.separator_lines is None and ms.y_extent is None
+    assert w.raster_separator_lines[0] == []
+    w.close()
+
+
+def test_separator_params_override():
+    w = view(
+        RasterConfig(
+            _rows_df(range(10)),
+            time_col="time",
+            order_by="source_id",
+            horizontal_separators=[5],
+            separator_params={"gap": 1.0, "color": "#ff0000", "width": 2.5},
+        ),
+        state_definitions=_EXAMPLE_STATE_DEFS,
+    )
+    ms = w.raster_series[0]
+    assert ms.separator_lines == pytest.approx([5.5])  # 5 + 1.0/2
+    assert ms.y_extent == pytest.approx(11.0)          # 10 rows + one 1.0 gap
+    assert ms.separator_color == (255, 0, 0)
+    assert ms.separator_width == 2.5
+    assert len(w.raster_separator_lines[0]) == len(ms.separator_lines)
+    w.close()
+
+
+def test_separator_params_unknown_key_warns():
+    with pytest.warns(UserWarning, match="unknown key"):
+        w = view(
+            RasterConfig(
+                _rows_df(range(6)),
+                time_col="time",
+                order_by="source_id",
+                horizontal_separators=[3],
+                separator_params={"bogus": 1},
+            ),
+            state_definitions=_EXAMPLE_STATE_DEFS,
+        )
+    w.close()

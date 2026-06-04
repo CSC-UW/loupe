@@ -103,6 +103,13 @@ RASTER_MAX_CATEGORIES = 32
 RASTER_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
 
 
+def _raster_extent(ms) -> float:
+    """Total vertical extent of a raster in row-units, including any gaps
+    opened by horizontal separators.  Falls back to the logical row count
+    ``n_rows`` when no separators are present (the legacy behavior)."""
+    return ms.y_extent if ms.y_extent is not None else ms.n_rows
+
+
 # ---------------- Global event marker styling ----------------
 
 _GLOBAL_EVENT_LINE_STYLE_TO_QT: dict[str, QtCore.Qt.PenStyle] = {
@@ -268,15 +275,17 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_items: list[pg.ScatterPlotItem | None] = []
         self.raster_cur_lines: list[pg.InfiniteLine] = []
         self.raster_sel_regions: list[pg.LinearRegionItem] = []
+        # One inner list of horizontal-separator InfiniteLines per raster subplot.
+        self.raster_separator_lines: list[list[pg.InfiniteLine]] = []
         # Shape: [raster_idx][category_idx][alpha_level] -> PlotDataItem / QPen.
         # For non-categorical raster series the outer category dim is length 1.
         self._raster_line_items: list[list[list[pg.PlotDataItem]]] = []
         self._raster_pens: list[list[list[QtGui.QPen]]] = []
         # Raster rendering settings
         self.raster_event_height = (
-            0.1  # distance from center in each direction (0.1-0.5)
+            0.2  # distance from center in each direction (0.1-0.5)
         )
-        self.raster_event_thickness = 1  # pen width in pixels
+        self.raster_event_thickness = 2  # pen width in pixels
         self.scale_raster_proportionally = True  # toggled via View menu
         self.raster_brightness = (
             1.0  # brightness multiplier for alpha values (0.2 to 3.0)
@@ -2127,9 +2136,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                     if self.scale_raster_proportionally and ms:
                         BASE_HEIGHT_PER_ROW = 12
                         preferred = max(
-                            MIN_HEIGHT, int(ms.n_rows * BASE_HEIGHT_PER_ROW * factor)
+                            MIN_HEIGHT,
+                            int(_raster_extent(ms) * BASE_HEIGHT_PER_ROW * factor),
                         )
-                        stretch = max(1, int(ms.n_rows * factor * 10))
+                        stretch = max(1, int(_raster_extent(ms) * factor * 10))
                     else:
                         preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
                         stretch = max(1, int(factor * 100))
@@ -2482,6 +2492,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_items.clear()
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
+        self.raster_separator_lines.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
         self.heatmap_plots.clear()
@@ -2633,6 +2644,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_items.clear()
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
+        self.raster_separator_lines.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
 
@@ -2938,6 +2950,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_items.clear()
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
+        self.raster_separator_lines.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
 
@@ -2961,10 +2974,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.showGrid(x=True, y=False, alpha=0.15)
             plt.enableAutoRange("x", False)
             plt.enableAutoRange("y", False)
-            plt.setYRange(-0.5, ms.n_rows - 0.5, padding=0.02)
+            plt.setYRange(-0.5, _raster_extent(ms) - 0.5, padding=0.02)
 
             left_axis = plt.getAxis("left")
-            left_axis.setTicks([[(0, "0"), (ms.n_rows - 1, str(ms.n_rows - 1))]])
+            left_axis.setTicks([[(0, "0"), (_raster_extent(ms) - 1, str(ms.n_rows - 1))]])
             try:
                 lf = QtGui.QFont()
                 lf.setPointSize(9)
@@ -2998,6 +3011,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_items.append(None)
             self.raster_cur_lines.append(cur_line)
             self.raster_sel_regions.append(sel_region)
+            self.raster_separator_lines.append(
+                self._add_raster_separator_lines(plt, ms)
+            )
             self._raster_line_items.append(line_items)
             self._raster_pens.append(pens)
 
@@ -3045,6 +3061,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_items.clear()
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
+        self.raster_separator_lines.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
         self.heatmap_plots.clear()
@@ -3267,11 +3284,11 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.enableAutoRange("y", False)
 
             # Set Y range to show all rows
-            plt.setYRange(-0.5, ms.n_rows - 0.5, padding=0.02)
+            plt.setYRange(-0.5, _raster_extent(ms) - 0.5, padding=0.02)
 
             # Configure Y-axis: only show min and max tick values
             left_axis = plt.getAxis("left")
-            left_axis.setTicks([[(0, "0"), (ms.n_rows - 1, str(ms.n_rows - 1))]])
+            left_axis.setTicks([[(0, "0"), (_raster_extent(ms) - 1, str(ms.n_rows - 1))]])
             try:
                 lf = QtGui.QFont()
                 lf.setPointSize(9)
@@ -3305,6 +3322,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_items.append(None)
             self.raster_cur_lines.append(cur_line)
             self.raster_sel_regions.append(sel_region)
+            self.raster_separator_lines.append(
+                self._add_raster_separator_lines(plt, ms)
+            )
             self._raster_line_items.append(line_items)
             self._raster_pens.append(pens)
 
@@ -3566,6 +3586,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_items.append(None)
             self.raster_cur_lines.append(cur_line)
             self.raster_sel_regions.append(sel_region)
+            self.raster_separator_lines.append(
+                self._add_raster_separator_lines(plt, ms)
+            )
             self._raster_line_items.append(line_items)
             self._raster_pens.append(pens)
 
@@ -3581,6 +3604,27 @@ class LoupeApp(QtWidgets.QMainWindow):
             row_idx += 1
 
         self._apply_custom_plot_heights()
+
+    def _add_raster_separator_lines(self, plt, ms) -> list:
+        """Draw the horizontal separator lines for one raster subplot.
+
+        Returns the created ``pg.InfiniteLine`` handles (empty list when the
+        series has no separators).  The lines sit in the empty gap bands opened
+        by the row-position shift applied in ``dataframe_to_raster_series``.
+        """
+        handles: list = []
+        if not ms.separator_lines:
+            return handles
+        color = ms.separator_color if ms.separator_color is not None else (120, 120, 120)
+        width = ms.separator_width if ms.separator_width is not None else 1.0
+        for ypos in ms.separator_lines:
+            line = pg.InfiniteLine(
+                pos=ypos, angle=0, movable=False, pen=pg.mkPen(color, width=width)
+            )
+            line.setZValue(-5)  # above the background grid, below the event ticks
+            plt.addItem(line)
+            handles.append(line)
+        return handles
 
     def _build_raster_pens(self, ms: RasterSeries) -> list[list[QtGui.QPen]]:
         """Build one row of 11 alpha-graded pens per category color.

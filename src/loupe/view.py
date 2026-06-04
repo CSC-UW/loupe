@@ -279,6 +279,8 @@ def view(
                 palette=item.palette,
                 alpha_range=item.alpha_range,
                 hue=item.hue,
+                horizontal_separators=item.horizontal_separators,
+                separator_params=item.separator_params,
                 reporter=reporter,
             )
             if item.hue is not None:

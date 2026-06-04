@@ -47,14 +47,21 @@ class RasterSeries:
 
     name: str
     timestamps: np.ndarray  # 1D array of event times (seconds)
-    yvals: np.ndarray  # 1D array of integer row indices (0 to N_rows-1)
+    yvals: np.ndarray  # 1D array of row positions; integer 0..n_rows-1, or float
+    # once horizontal separators shift rows apart (see separator_lines).
     alphas: np.ndarray  # 1D array of alpha values (0.0 to 1.0)
     color: tuple  # (R, G, B) fallback color used when category_index is None
-    n_rows: int  # number of unique rows (max(yvals) + 1)
+    n_rows: int  # logical number of unique rows (NOT max(yvals)+1 when separators exist)
     # Per-event categorical coloring. Both fields must be set together or both
     # left as None; None preserves the legacy single-color fast path.
     category_index: np.ndarray | None = None  # (N,) int16, parallel to timestamps
     category_colors: list[tuple[int, int, int]] | None = None  # one RGB per category index
+    # Horizontal separators (opt-in via RasterConfig.horizontal_separators). All
+    # left as None preserves the legacy no-gap layout exactly.
+    separator_lines: list[float] | None = None  # y-positions of horizontal separator lines
+    y_extent: float | None = None  # total vertical extent incl. gaps; None means n_rows
+    separator_color: "tuple | str | None" = None  # resolved line color; None -> app default
+    separator_width: float | None = None  # line width in px; None -> app default
 
 
 @dataclass

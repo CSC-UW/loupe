@@ -30,6 +30,11 @@ _DEFAULT_COLORS: list[tuple[int, int, int]] = [
 ]
 
 
+# Default styling for RasterConfig.horizontal_separators, overridable per-call
+# via RasterConfig.separator_params.  `gap` is in row-units (one row == 1.0).
+_SEPARATOR_DEFAULTS: dict = {"gap": 0.6, "color": (120, 120, 120), "width": 1.0}
+
+
 def _parse_raster_color(c: "str | tuple") -> tuple[int, int, int]:
     """Normalize a hex string or RGB(A) tuple to an ``(r, g, b)`` 3-tuple.
 
@@ -83,6 +88,8 @@ def dataframe_to_raster_series(
     ) = None,
     alpha_range: tuple[float, float] = (0.3, 1.0),
     hue: str | None = None,
+    horizontal_separators: list | None = None,
+    separator_params: dict | None = None,
     reporter=None,
 ) -> list:
     """Convert a Polars DataFrame into one or more RasterSeries for raster display.
@@ -127,6 +134,17 @@ def dataframe_to_raster_series(
         Column whose values determine per-event color.  When set, each event
         is colored according to its value in this column rather than by the
         per-group *palette*.
+    horizontal_separators : list or None
+        Values in *order_by* space at which to insert a small vertical gap and
+        a horizontal separator line (drawn just below the row whose *order_by*
+        value equals the given value).  Resolved per group, so a value only
+        produces a separator in subplots whose rows straddle it.  Out-of-range
+        or on-boundary values are ignored.  ``None`` leaves the layout
+        unchanged (integer ``yvals``).
+    separator_params : dict or None
+        Optional styling: keys ``"gap"`` (row-units, default ``0.6``),
+        ``"color"`` (hex/RGB(A), default ``(120, 120, 120)``), ``"width"``
+        (pixels, default ``1.0``).  Unknown keys warn.
 
     Returns
     -------
@@ -262,6 +280,22 @@ def dataframe_to_raster_series(
         # single tuple
         return palette  # type: ignore[return-value]
 
+    # ---- resolve separator styling (once for all groups) --------------------
+    sep_values = sep_gap = sep_color = sep_width = None
+    if horizontal_separators:
+        params = {**_SEPARATOR_DEFAULTS, **(separator_params or {})}
+        unknown = set(params) - set(_SEPARATOR_DEFAULTS)
+        if unknown:
+            warnings.warn(
+                f"separator_params has unknown key(s) {sorted(unknown)}; "
+                f"recognized keys are {sorted(_SEPARATOR_DEFAULTS)}.",
+                stacklevel=2,
+            )
+        sep_values = np.asarray(horizontal_separators)
+        sep_gap = float(params["gap"])
+        sep_color = _parse_raster_color(params["color"])
+        sep_width = float(params["width"])
+
     # ---- build RasterSeries per group ---------------------------------------
     result: list = []
     n_groups = len(groups)
@@ -289,6 +323,24 @@ def dataframe_to_raster_series(
         raw_y = gdf[order_by].to_numpy()
         yvals = np.array([y_map[v] for v in raw_y], dtype=np.intp)
         n_rows = len(unique_y)
+
+        # horizontal separators: shift rows apart to open a gap before each
+        # boundary and record the line y-positions.  Done before the time-sort
+        # below so the shifted positions get reordered along with everything
+        # else.  Left untouched (integer yvals) when nothing resolves.
+        sep_lines = None
+        y_extent = None
+        if sep_values is not None:
+            b = np.searchsorted(unique_y, sep_values, side="left")
+            b = np.unique(b[(b > 0) & (b < n_rows)])
+            if b.size:
+                yvals = yvals.astype(np.float64) + sep_gap * np.searchsorted(
+                    b, yvals, side="right"
+                )
+                sep_lines = [
+                    float(b[k]) + sep_gap * k + sep_gap / 2.0 for k in range(b.size)
+                ]
+                y_extent = float(n_rows) + sep_gap * b.size
 
         # alphas
         if alpha_by is not None:
@@ -345,6 +397,10 @@ def dataframe_to_raster_series(
                 n_rows=n_rows,
                 category_index=cat_idx,
                 category_colors=shared_category_colors if cat_idx is not None else None,
+                separator_lines=sep_lines,
+                y_extent=y_extent,
+                separator_color=sep_color if sep_lines is not None else None,
+                separator_width=sep_width if sep_lines is not None else None,
             )
         )
 
