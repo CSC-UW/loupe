@@ -102,6 +102,13 @@ RASTER_MAX_CATEGORIES = 32
 # is per-event, not part of the base color).
 RASTER_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
 
+# Left y-axis gutter (pixels). All subplots share one width so their spines
+# form a single vertical line. The width is auto-fit to the widest tick label
+# at startup (see LoupeApp._align_left_axes), then locked, so autoscale
+# relabeling causes no horizontal jitter. These bound that measured value.
+LEFT_AXIS_WIDTH_FLOOR = 50  # never narrower than this
+LEFT_AXIS_WIDTH_PAD = 6  # headroom added to the measured max
+
 
 def _raster_extent(ms) -> float:
     """Total vertical extent of a raster in row-units, including any gaps
@@ -209,6 +216,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         subplot_order=None,
         # Sample-aligned marker overlays for stacked-subplots traces.
         sample_markers: list[SampleMarkers] | None = None,
+        # Per-stacked-trace bool flags: draw a minimal bottom-boundary line.
+        bottom_spines: list | None = None,
         # State definitions (keymap + label colors)
         state_config: StateConfig | None = None,
         # Interval-label data
@@ -241,12 +250,22 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves: list[pg.PlotDataItem] = []
         self.plot_cur_lines: list[pg.InfiniteLine] = []
         self.plot_sel_regions: list[pg.LinearRegionItem] = []
+        # Optional minimal bottom-boundary line per trace subplot (or None when
+        # disabled). Parallel to self.plots / self.series by index.
+        self.plot_bottom_spines: list = []
         self.hovered_plot = None  # *** FIX 2: Track which plot is hovered ***
+
+        # Locked uniform left-axis width (px). None until auto-fit measures it
+        # on the first painted layout; reset to None on full rebuilds so new
+        # content re-fits. See _align_left_axes.
+        self._left_axis_width: int | None = None
 
         # Sample-aligned marker overlays — outer index = series index,
         # inner index = marker-set index (matches self.sample_markers order).
         self.sample_markers: list[SampleMarkers] = list(sample_markers) if sample_markers else []
         self.sample_marker_scatters: list[list[pg.ScatterPlotItem]] = []
+        # Per-series add_bottom_spine flags (indexed by stacked-trace index).
+        self.series_bottom_spine: list = list(bottom_spines) if bottom_spines else []
 
         # Overlay mode
         self.overlay_mode: bool = False
@@ -2176,6 +2195,11 @@ class LoupeApp(QtWidgets.QMainWindow):
                 layout.setRowMinimumHeight(row, MIN_HEIGHT)
                 layout.setRowStretchFactor(row, stretch)
 
+            # Re-assert the uniform left-axis width now that heights/visibility
+            # changed, so widths never diverge between this pass and the next
+            # deferred _align_left_axes.
+            self._align_left_axes()
+
         except Exception:
             import traceback
 
@@ -2196,17 +2220,21 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._apply_custom_plot_heights()
 
     def _configure_plot_for_height(self, plt, factor, is_raster=False):
-        """Configure plot axis visibility based on height factor."""
+        """Configure plot axis tick-label visibility based on height factor.
+
+        Left-axis *width* is owned solely by :meth:`_align_left_axes` (one
+        uniform width for every subplot), so this method must not touch it —
+        otherwise it would re-introduce divergent widths and break spine
+        alignment. A very small plot keeps the shared gutter with a blank label
+        area, which stays aligned.
+        """
         try:
-            # For very small plots (below 0.2x), hide axis labels to save space
+            # For very small plots (below 0.2x), hide axis labels to save space.
             if factor < 0.2:
                 plt.getAxis("left").setStyle(showValues=False)
-                plt.getAxis("left").setWidth(15)
                 plt.setLabel("left", "")
             else:
                 plt.getAxis("left").setStyle(showValues=True)
-                plt.getAxis("left").setWidth(None)  # Auto width
-                # Restore label if needed (we don't store original, so this is best effort)
         except Exception:
             pass
 
@@ -2475,8 +2503,11 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._clear_all_interval_label_visuals()
         self.plot_area.clear()
+        # New plot set: re-fit the uniform left-axis width from scratch.
+        self._left_axis_width = None
         self.plots.clear()
         self.curves.clear()
+        self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
@@ -2634,8 +2665,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Clear existing plots
         self._clear_all_interval_label_visuals()
         self.plot_area.clear()
+        # New plot set: re-fit the uniform left-axis width from scratch.
+        self._left_axis_width = None
         self.plots.clear()
         self.curves.clear()
+        self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
         self._plot_to_curves.clear()
         self.plot_cur_lines.clear()
@@ -3044,8 +3078,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Clear and rebuild
         self._clear_all_interval_label_visuals()
         self.plot_area.clear()
+        # New plot set: re-fit the uniform left-axis width from scratch.
+        self._left_axis_width = None
         self.plots.clear()
         self.curves.clear()
+        self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
@@ -3205,6 +3242,29 @@ class LoupeApp(QtWidgets.QMainWindow):
             sel_region.hide()
             plt.addItem(sel_region)
             sel_region.sigRegionChanged.connect(self._on_active_region_dragged)
+
+            # Optional minimal bottom-boundary line. Skipped on the bottom-most
+            # subplot, which already shows the full time axis. Pinned to the
+            # current y-min and re-pinned on y-range changes so it stays flush
+            # with the bottom under both fixed and auto scaling; adds no layout
+            # height, so stacking stays as tight as without it.
+            bottom_spine = None
+            want_spine = (
+                idx < len(self.series_bottom_spine)
+                and bool(self.series_bottom_spine[idx])
+                and not is_last
+            )
+            if want_spine:
+                bottom_spine = pg.InfiniteLine(
+                    angle=0, movable=False, pen=pg.mkPen((255, 255, 255), width=1)
+                )
+                bottom_spine.setZValue(-4)
+                plt.addItem(bottom_spine)
+                vb.sigYRangeChanged.connect(
+                    lambda *_, _vb=vb, _sp=bottom_spine: self._pin_bottom_spine(_vb, _sp)
+                )
+                self._pin_bottom_spine(vb, bottom_spine)
+            self.plot_bottom_spines.append(bottom_spine)
 
             self.plots.append(plt)
             self.curves.append(curve)
@@ -5724,21 +5784,55 @@ class LoupeApp(QtWidgets.QMainWindow):
         if getattr(self, "compact_heatmaps_to_fit", False) and self.heatmap_series:
             QtCore.QTimer.singleShot(70, self._apply_custom_plot_heights)
 
-    def _align_left_axes(self):
+    def _pin_bottom_spine(self, vb, spine) -> None:
+        """Keep a trace subplot's bottom-boundary line flush with the bottom of
+        the current y-range. Inset by ~1px (in data units) so the line is not
+        clipped by the viewbox's bottom edge. Connected to ``sigYRangeChanged``
+        so it tracks both autoscale and fixed-range plots."""
         try:
-            all_plots = list(self.plots) + list(self.dense_plots) + list(self.raster_plots)
+            y0, y1 = vb.viewRange()[1]
+            inset = (y1 - y0) / max(1, vb.height())
+            spine.setPos(y0 + inset)
+        except Exception:
+            pass
+
+    def _align_left_axes(self):
+        """Give every subplot the same left-axis width so the y-spines form one
+        straight vertical line across the whole stack.
+
+        The width auto-fits the widest tick label across *all* plot types
+        (traces, dense, raster, heatmap) once the layout has painted, then locks
+        into ``self._left_axis_width``. Later calls only re-apply the locked
+        value, so autoscale relabeling never shifts the spines. The lock is
+        reset to ``None`` on full rebuilds (``set_series`` / ``_rebuild_all_plots``)
+        so new content re-fits.
+        """
+        try:
+            all_plots = (
+                list(self.plots)
+                + list(self.dense_plots)
+                + list(self.raster_plots)
+                + list(self.heatmap_plots)
+            )
             if not all_plots:
                 return
-            widths = []
+            if self._left_axis_width is None:
+                # Auto-fit: measure natural (auto) widths once the layout has
+                # painted, then lock. Axes are in pyqtgraph's default auto-width
+                # mode at this point because nothing else sets their width.
+                try:
+                    painted = self.plot_area.viewport().height() > 0
+                except Exception:
+                    painted = False
+                widths = [int(plt.getAxis("left").width()) for plt in all_plots]
+                if not painted or not widths or max(widths) < 20:
+                    # Layout not settled yet; a later deferred call will lock it.
+                    return
+                self._left_axis_width = (
+                    max(max(widths), LEFT_AXIS_WIDTH_FLOOR) + LEFT_AXIS_WIDTH_PAD
+                )
             for plt in all_plots:
-                ax = plt.getAxis("left")
-                widths.append(int(ax.width()))
-            if not widths:
-                return
-            target = max(max(widths), 55)
-            for plt in all_plots:
-                ax = plt.getAxis("left")
-                ax.setWidth(int(target))
+                plt.getAxis("left").setWidth(int(self._left_axis_width))
         except Exception:
             pass
 

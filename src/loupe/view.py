@@ -235,6 +235,8 @@ def view(
     xr_series: list[Series] = []
     stacked_colors_acc: list = []
     any_stacked_color = False
+    bottom_spines_acc: list = []
+    any_bottom_spine = False
     dense_list: list[DenseGroup] = []
     heatmap_list: list[HeatmapSeries] = []
     raster_list = []
@@ -375,6 +377,9 @@ def view(
                     stacked_colors_acc.append(cfg.color)
                     if cfg.color is not None:
                         any_stacked_color = True
+                    bottom_spines_acc.append(cfg.add_bottom_spine)
+                    if cfg.add_bottom_spine:
+                        any_bottom_spine = True
                     order_acc.append(("ts", base))
                     base += 1
                 if cfg.sample_markers is not None:
@@ -461,6 +466,8 @@ def view(
         kwargs["colors"] = stacked_colors
     if config_subplot_order is not None and "subplot_order" not in kwargs:
         kwargs["subplot_order"] = config_subplot_order
+    if any_bottom_spine and "bottom_spines" not in kwargs:
+        kwargs["bottom_spines"] = bottom_spines_acc
 
     if videos is None:
         video_configs = []

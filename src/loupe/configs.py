@@ -104,6 +104,13 @@ class TraceConfig:
         :class:`TraceConfig` per window may carry sample markers, and no
         :class:`HeatmapConfig` / :class:`RasterConfig` / :class:`Zip` may
         appear alongside.
+    add_bottom_spine : bool
+        When ``True`` (stacked-subplots mode only), draw a minimal horizontal
+        line at the bottom of each subplot produced by this DataArray, marking
+        the subplot boundary.  Purely a visual guide: it has no ticks or labels
+        and adds no vertical space, so the tight stacking is unchanged.  The
+        line is skipped on the bottom-most subplot, which already shows the full
+        time axis.
     """
 
     data: "xr.DataArray"
@@ -118,6 +125,7 @@ class TraceConfig:
     color: "str | tuple | None" = None
     array_name: bool | str = False
     sample_markers: "list[SampleMarkers] | None" = None
+    add_bottom_spine: bool = False
 
     @classmethod
     def from_path(
