@@ -91,13 +91,25 @@ IntervalLabelKey = int
 
 @dataclass
 class IntervalLabelVisualBundle:
-    """Graphics items used to display a single labelled interval in plot scenes."""
+    """Graphics items used to display a single labelled interval in plot scenes.
+
+    ``start`` / ``end`` / ``label`` record the geometry and state name the
+    region items are currently drawn at. The incremental visual sync keys
+    bundles by the (merge-stable) ``row_id``, so when an edit shrinks or moves
+    a surviving row in place (e.g. a partial overwrite splits an existing
+    epoch but keeps its ``row_id``), these fields let the sync detect that the
+    already-drawn region is stale and reposition/recolor it instead of leaving
+    it covering its old span.
+    """
 
     plot_regions: list[tuple[int, pg.LinearRegionItem]]
     raster_regions: list[tuple[int, pg.LinearRegionItem]]
     dense_regions: list[tuple[int, pg.LinearRegionItem]]
     hypnogram_region: pg.LinearRegionItem | None
     heatmap_regions: list[tuple[int, pg.LinearRegionItem]] = field(default_factory=list)
+    start: float = 0.0
+    end: float = 0.0
+    label: str = ""
 
 
 @dataclass

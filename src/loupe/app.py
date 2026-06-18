@@ -392,6 +392,13 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Visual bookkeeping keyed by row_id (stable across edits/merges).
         self._interval_label_visuals: dict[IntervalLabelKey, IntervalLabelVisualBundle] = {}
         self._hypnogram_interval_label_visuals: dict[IntervalLabelKey, pg.LinearRegionItem] = {}
+        # Drawn (start, end, label) for each hypnogram region, so the sync can
+        # detect a surviving row whose geometry/label changed in place (the
+        # hypnogram regions are bare LinearRegionItems with no bundle to carry
+        # this, unlike the window visuals above).
+        self._hypnogram_interval_label_drawn: dict[
+            IntervalLabelKey, tuple[float, float, str]
+        ] = {}
         # Mirror the IntervalLabelSet's row_ids/starts/ends so visual sync code can
         # index into them before the GUI runs its first _finalize_interval_label_change.
         self._interval_label_keys_in_order: list[IntervalLabelKey] = [
@@ -1450,31 +1457,22 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _refresh_interval_label_alpha(self) -> None:
         """Re-apply current interval_label_alpha_multiplier to all existing label regions."""
-        for (_a, _b, name), bundle in self._interval_label_visuals.items():
-            color = self._interval_label_brush_color(name)
-            brush = pg.mkBrush(*color)
-            pen = pg.mkPen(*color)
-            for _i, reg in bundle.plot_regions:
-                reg.setBrush(brush)
-                for line in reg.lines:
-                    line.setPen(pen)
-            for _i, reg in bundle.dense_regions:
-                reg.setBrush(brush)
-                for line in reg.lines:
-                    line.setPen(pen)
-            for _i, reg in bundle.raster_regions:
-                reg.setBrush(brush)
-                for line in reg.lines:
-                    line.setPen(pen)
-            for _i, reg in bundle.heatmap_regions:
-                reg.setBrush(brush)
-                for line in reg.lines:
-                    line.setPen(pen)
-        for (_a, _b, name), region in self._hypnogram_interval_label_visuals.items():
-            color = self._interval_label_brush_color(name)
-            region.setBrush(pg.mkBrush(*color))
-            for line in region.lines:
-                line.setPen(pg.mkPen(*color))
+        # Visuals are keyed by row_id (an int), so the label name lives on the
+        # bundle / drawn-state — not in the dict key.
+        for bundle in self._interval_label_visuals.values():
+            color = self._interval_label_brush_color(bundle.label)
+            for regions in (
+                bundle.plot_regions,
+                bundle.dense_regions,
+                bundle.raster_regions,
+                bundle.heatmap_regions,
+            ):
+                for _i, reg in regions:
+                    self._set_region_color(reg, color)
+        for key, region in self._hypnogram_interval_label_visuals.items():
+            drawn = self._hypnogram_interval_label_drawn.get(key)
+            name = drawn[2] if drawn is not None else ""
+            self._set_region_color(region, self._interval_label_brush_color(name))
 
     def _adjust_interval_label_alpha(self):
         """Show a dialog to adjust label overlay alpha (transparency)."""
@@ -4913,7 +4911,50 @@ class LoupeApp(QtWidgets.QMainWindow):
             dense_regions=dense_regions,
             hypnogram_region=None,
             heatmap_regions=heatmap_regions,
+            start=a,
+            end=b,
+            label=name,
         )
+
+    @staticmethod
+    def _set_region_color(reg: pg.LinearRegionItem, color: tuple) -> None:
+        """Apply an RGBA ``color`` to a region's fill and boundary lines."""
+        reg.setBrush(pg.mkBrush(*color))
+        pen = pg.mkPen(*color)
+        for line in reg.lines:
+            line.setPen(pen)
+
+    def _update_window_interval_label_visual(
+        self, bundle: IntervalLabelVisualBundle, row
+    ) -> None:
+        """Reposition/recolor an existing bundle in place if ``row``'s geometry
+        or label changed since the bundle was drawn.
+
+        Keyed-by-row_id sync removes vanished rows and adds brand-new ones, but
+        a row whose ``row_id`` survives an edit while its span shrinks/moves (a
+        partial overwrite splitting an epoch, or ``merge_adjacent`` extending a
+        neighbour) keeps its bundle. Without this, the region would keep drawing
+        its stale span — the doubled/overlapping overlays. Cheap no-op (just
+        three comparisons) in the common navigation case where nothing changed.
+        """
+        a, b, name = float(row.start), float(row.end), str(row.label)
+        geom_changed = bundle.start != a or bundle.end != b
+        label_changed = bundle.label != name
+        if not (geom_changed or label_changed):
+            return
+        color = self._interval_label_brush_color(name) if label_changed else None
+        for regions in (
+            bundle.plot_regions,
+            bundle.dense_regions,
+            bundle.raster_regions,
+            bundle.heatmap_regions,
+        ):
+            for _i, reg in regions:
+                if geom_changed:
+                    reg.setRegion((a, b))
+                if color is not None:
+                    self._set_region_color(reg, color)
+        bundle.start, bundle.end, bundle.label = a, b, name
 
     def _remove_window_interval_label_visual(self, key: IntervalLabelKey) -> None:
         bundle = self._interval_label_visuals.pop(key, None)
@@ -4948,8 +4989,27 @@ class LoupeApp(QtWidgets.QMainWindow):
         region.setZValue(-10)
         self.hypnogram_plot.addItem(region)
         self._hypnogram_interval_label_visuals[key] = region
+        self._hypnogram_interval_label_drawn[key] = (a, b, name)
+
+    def _update_hypnogram_interval_label_visual(self, key: IntervalLabelKey, row) -> None:
+        """Reposition/recolor an existing hypnogram region if ``row`` changed
+        in place. Mirror of :meth:`_update_window_interval_label_visual` for the
+        bare LinearRegionItems tracked in the hypnogram dict."""
+        region = self._hypnogram_interval_label_visuals.get(key)
+        if region is None:
+            return
+        a, b, name = float(row.start), float(row.end), str(row.label)
+        drawn = self._hypnogram_interval_label_drawn.get(key)
+        if drawn == (a, b, name):
+            return
+        if drawn is None or drawn[0] != a or drawn[1] != b:
+            region.setRegion((a, b))
+        if drawn is None or drawn[2] != name:
+            self._set_region_color(region, self._interval_label_brush_color(name))
+        self._hypnogram_interval_label_drawn[key] = (a, b, name)
 
     def _remove_hypnogram_interval_label_visual(self, key: IntervalLabelKey) -> None:
+        self._hypnogram_interval_label_drawn.pop(key, None)
         region = self._hypnogram_interval_label_visuals.pop(key, None)
         if region is None:
             return
@@ -4962,6 +5022,7 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _clear_hypnogram_interval_label_visuals(self) -> None:
         for key in list(self._hypnogram_interval_label_visuals):
             self._remove_hypnogram_interval_label_visual(key)
+        self._hypnogram_interval_label_drawn.clear()
 
     def _clear_all_interval_label_visuals(self) -> None:
         self._clear_window_interval_label_visuals()
@@ -5152,8 +5213,11 @@ class LoupeApp(QtWidgets.QMainWindow):
                     self._remove_hypnogram_interval_label_visual(key)
 
         for row in self.interval_label_set:
-            if self._interval_label_key(row) not in self._hypnogram_interval_label_visuals:
+            key = self._interval_label_key(row)
+            if key not in self._hypnogram_interval_label_visuals:
                 self._add_hypnogram_interval_label_visual(row)
+            else:
+                self._update_hypnogram_interval_label_visual(key, row)
 
     def _sync_window_interval_label_visuals(self, *, force_rebuild: bool = False) -> None:
         if force_rebuild or not self._has_visible_window_interval_label_targets():
@@ -5168,8 +5232,14 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self._remove_window_interval_label_visual(key)
 
         for key, row in visible_entries:
-            if key not in self._interval_label_visuals:
+            bundle = self._interval_label_visuals.get(key)
+            if bundle is None:
                 self._add_window_interval_label_visual(row)
+            else:
+                # Surviving row whose span/label may have changed in place
+                # (partial overwrite / merge) — reposition it instead of
+                # leaving a stale region behind.
+                self._update_window_interval_label_visual(bundle, row)
 
     def _sync_interval_label_visuals(
         self,
