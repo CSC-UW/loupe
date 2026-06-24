@@ -206,6 +206,50 @@ See [docs/views/video.md](docs/views/video.md) for the full parameter reference,
 
 ---
 
+### Live parameter tuning (Tuner)
+
+When the data you're viewing is *computed* from a function with scalar parameters
+(a matched filter's `tau`, an event-detection threshold, a denoising strength),
+you can tune those parameters from inside Loupe and watch the affected curves
+redraw in near-real-time — no re-running the cell.
+
+Wrap the parameter in a `Param` and the computation in `tunable(...)`, then put
+the result in any `TraceConfig` `data=` or `overlay_arrays=` slot:
+
+```python
+%gui qt6
+from loupe import view, TraceConfig, Param, tunable
+import wisco_slap as wis
+
+raw_ls = ls.sel(syn_id=example_syns)
+tau = Param(0.15, 0.01, 1.0, name="tau")          # default, min, max
+
+view(TraceConfig(
+    data=raw_ls,
+    overlay_arrays=[tunable(wis.scope.pro.ls_to_matched_filter, raw_ls, tau_s=tau)],
+))
+```
+
+A **Tuner** dock opens automatically (toggle with `Ctrl+T` or View → Tuner). Drag
+the `tau` slider and the matched-filter overlay recomputes live. Afterwards
+`tau.value` holds your chosen number, ready to paste back into your pipeline —
+or click **Copy values** for a `{name: value, …}` dict of every param.
+
+- `Param(default, min=None, max=None, step=None, name=None)` renders a slider +
+  spin box; `IntParam`, `BoolParam`, `ChoiceParam(choices=…)` pick the matching
+  widget. Without `min`/`max` you get a spin box only.
+- The wrapped function must be **pure** (it is called on every change). Reuse the
+  *same* `Param` instance across several `tunable(...)` calls to drive them all
+  from one slider.
+- A bare zero-arg `lambda` that reads `Param` values also works
+  (`overlay_arrays=[lambda: f(raw, k=k.value)]`), but `tunable(...)` is the
+  reliable, recommended form.
+- This checkpoint tunes **stacked traces and their overlays**; tuning event
+  rasters, heatmaps, and dense mode renders with the initial values for now (a
+  warning is printed) and is coming next.
+
+---
+
 ### Data inputs
 
 Inputs that aren't tied to a single plot type.

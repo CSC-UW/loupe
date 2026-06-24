@@ -241,6 +241,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         interval_label_overlays: bool = True,
         # Global event markers: vertical lines drawn across every pane.
         global_events=None,
+        # Tuner: live parameter-tuning bindings + params (built by loupe.view).
+        tuner_bindings: list | None = None,
+        tuner_params: list | None = None,
         # Optional ProgressReporter for launch-time progress.
         reporter=None,
     ):
@@ -484,6 +487,19 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._flush_deferred_view_refresh
         )
         self._deferred_view_refresh_needs_nav_slider = False
+
+        # Tuner (live parameter tuning). Bindings link each tunable config slot
+        # to the runtime containers it produced; params are the unique knobs.
+        # A single-shot timer coalesces rapid slider drags into one recompute.
+        self._tuner_bindings = list(tuner_bindings) if tuner_bindings else []
+        self._tuner_params = list(tuner_params) if tuner_params else []
+        self._pending_dirty_param_ids: set[int] = set()
+        self._tuner_dock = None
+        self._tuner_action = None
+        self._tuner_debounce_ms = 90
+        self._tuner_refresh_timer = QtCore.QTimer(self)
+        self._tuner_refresh_timer.setSingleShot(True)
+        self._tuner_refresh_timer.timeout.connect(self._flush_tuner)
         # Playback speed (1.0 = real time)
         self.playback_speed = 1.0
         # Index into self.video_slots that clocks frame-by-frame stepping
@@ -627,6 +643,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             elif not (xr_series or dense_groups or heatmap_series):
                 self._update_time_range_from_raster()
                 self._create_raster_only_plots()
+
+        # Tuner: auto-open the panel when a config declared tunable params.
+        if self._tuner_params:
+            self._show_tuner_panel()
 
     def eventFilter(self, obj, ev):
         try:
@@ -1070,6 +1090,19 @@ class LoupeApp(QtWidgets.QMainWindow):
         heatmap_ctrl_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+H"))
         heatmap_ctrl_action.triggered.connect(self._show_heatmap_controls_dialog)
         mview.addAction(heatmap_ctrl_action)
+
+        # ----- Tuner (live parameter tuning) -----
+        mview.addSeparator()
+
+        self._tuner_action = QtGui.QAction("Tuner", self)
+        self._tuner_action.setCheckable(True)
+        self._tuner_action.setShortcut(QtGui.QKeySequence("Ctrl+T"))
+        self._tuner_action.setEnabled(bool(self._tuner_params))
+        self._tuner_action.setToolTip(
+            "Live parameter tuner — enabled when a config uses loupe.tunable()."
+        )
+        self._tuner_action.toggled.connect(self._toggle_tuner_panel)
+        mview.addAction(self._tuner_action)
 
         # ----- Group 6: Subplot layout -----
         mview.addSeparator()
@@ -4887,6 +4920,161 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._heatmap_ctrl_dialog.show()
         self._heatmap_ctrl_dialog.raise_()
         self._heatmap_ctrl_dialog.activateWindow()
+
+    # ===================== Tuner (live parameter tuning) =====================
+
+    def _toggle_tuner_panel(self, checked: bool) -> None:
+        """Show / hide the Tuner dock from the View → Tuner menu action."""
+        if checked:
+            self._show_tuner_panel()
+        elif self._tuner_dock is not None:
+            self._tuner_dock.hide()
+
+    def _show_tuner_panel(self) -> None:
+        """Create the Tuner dock once and show it for the current params."""
+        if not self._tuner_params:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Tuner",
+                "No tunable parameters in this view. Wrap a computation with "
+                "loupe.tunable() and pass a loupe.Param into a TraceConfig "
+                "data= or overlay_arrays= slot.",
+            )
+            return
+        if self._tuner_dock is None:
+            from loupe.tuner_panel import TunerDock
+
+            self._tuner_dock = TunerDock(self, self._tuner_params)
+            self.addDockWidget(
+                QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._tuner_dock
+            )
+            self._tuner_dock.visibilityChanged.connect(
+                self._on_tuner_dock_visibility_changed
+            )
+        self._tuner_dock.show()
+        self._tuner_dock.raise_()
+        self._sync_tuner_action_checked(True)
+
+    def _on_tuner_dock_visibility_changed(self, visible: bool) -> None:
+        """Keep the menu checkmark in sync when the dock is closed via its X."""
+        self._sync_tuner_action_checked(bool(visible))
+
+    def _sync_tuner_action_checked(self, checked: bool) -> None:
+        if self._tuner_action is not None:
+            self._tuner_action.blockSignals(True)
+            self._tuner_action.setChecked(checked)
+            self._tuner_action.blockSignals(False)
+
+    def _on_tuner_param_changed(self, param) -> None:
+        """Called by the Tuner panel after a control sets ``param.value``.
+
+        Records the moved param and arms the debounce timer so a flurry of
+        slider ticks collapses into a single recompute.
+        """
+        self._pending_dirty_param_ids.add(id(param))
+        if not self._tuner_refresh_timer.isActive():
+            self._tuner_refresh_timer.start(self._tuner_debounce_ms)
+
+    def _flush_tuner(self) -> None:
+        """Recompute every binding that depends on a moved param, then refresh.
+
+        Runs on the debounce timer (also callable directly in tests). One
+        ``_refresh_curves`` at the end pushes all updated arrays to screen.
+        """
+        dirty_ids = self._pending_dirty_param_ids
+        self._pending_dirty_param_ids = set()
+        if not dirty_ids:
+            return
+        touched_trace_idxs: set[int] = set()
+        for b in self._tuner_bindings:
+            if any(id(p) in dirty_ids for p in b.params):
+                try:
+                    self._apply_binding(b, touched_trace_idxs)
+                except Exception as exc:  # keep the GUI alive on a bad recompute
+                    self._update_status(f"Tuner: recompute failed — {exc}")
+        self._refresh_curves()
+        # Re-fit Y on touched stacked subplots so a tuned amplitude stays framed.
+        if self.fixed_scale:
+            for idx in touched_trace_idxs:
+                self._refit_trace_yrange(idx)
+
+    def _apply_binding(self, b, touched_trace_idxs: set[int]) -> None:
+        """Re-evaluate one Tunable and write fresh data into the runtime
+        containers it owns, in place (registry parallelism is preserved)."""
+        from loupe.xr_loader import (
+            convert_overlay_arrays_aligned_with,
+            convert_xarray_inputs_with_order,
+        )
+
+        cfg = b.cfg
+        if b.kind == "trace_stacked":
+            fresh = b.tunable()
+            tuples, _, _, _ = convert_xarray_inputs_with_order(
+                fresh, order_by=cfg.order_by, descending=cfg.descending,
+                hue=cfg.hue,
+            )
+            idxs = range(b.series_slice.start, b.series_slice.stop)
+            if len(tuples) != len(idxs):
+                # The recompute changed the trace count (structural). Live
+                # update of trace count isn't supported in this checkpoint —
+                # swapping a different-length block would shift every other
+                # registry index. Leave the prior render and tell the user.
+                self._update_status(
+                    f"Tuner: recompute changed trace count "
+                    f"({len(idxs)} → {len(tuples)}); not supported live — "
+                    f"re-run view() to apply. Tune scalars that preserve shape."
+                )
+                return
+            for li, gi in enumerate(idxs):
+                _name, t, y = tuples[li]
+                self.series[gi].t = t
+                self.series[gi].y = y
+                touched_trace_idxs.add(gi)
+        elif b.kind == "trace_overlay":
+            fresh = b.tunable()
+            aligned = convert_overlay_arrays_aligned_with(
+                b.host_data, [fresh], order_by=cfg.order_by,
+                descending=cfg.descending,
+            )  # [1][n_host] of (t, y)
+            col = aligned[0]
+            for li, gi in enumerate(range(b.overlay_host_slice.start,
+                                          b.overlay_host_slice.stop)):
+                if (gi < len(self.overlay_series)
+                        and b.overlay_k < len(self.overlay_series[gi])):
+                    oc = self.overlay_series[gi][b.overlay_k]
+                    oc.t, oc.y = col[li]
+                    touched_trace_idxs.add(gi)
+        else:
+            raise NotImplementedError(
+                f"Tuner binding kind {b.kind!r} is not supported yet."
+            )
+
+    def _refit_trace_yrange(self, idx: int) -> None:
+        """Recompute a stacked subplot's fixed Y-range from its (newly tuned)
+        main + overlay data, mirroring the build-time 1–99 percentile logic."""
+        if not (0 <= idx < len(self.plots)) or idx >= len(self.series):
+            return
+        try:
+            y = np.asarray(self.series[idx].y, dtype=float)
+            if idx < len(self.overlay_series) and self.overlay_series[idx]:
+                y = np.concatenate(
+                    [y]
+                    + [
+                        np.asarray(oc.y, dtype=float)
+                        for oc in self.overlay_series[idx]
+                    ]
+                )
+            lo = float(np.nanpercentile(y, 1.0))
+            hi = float(np.nanpercentile(y, 99.0))
+            if not np.isfinite(lo) or not np.isfinite(hi):
+                return
+            if hi <= lo:
+                hi = lo + 1.0
+            pad = 0.05 * (hi - lo)
+            self.plots[idx].enableAutoRange("y", False)
+            self.plots[idx].setYRange(lo - pad, hi + pad, padding=0)
+        except Exception:
+            pass
 
     def _on_plot_hovered(self, plot, is_hovered):
         if is_hovered:

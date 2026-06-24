@@ -20,6 +20,7 @@ from loupe.configs import (
 )
 from loupe.interval_labels import IntervalLabelSchema, IntervalLabelSet
 from loupe.state_config import load_state_config
+from loupe.tuner import Binding, Tunable, _wrap_callable, collect_params
 
 if TYPE_CHECKING:
     import polars as pl
@@ -271,13 +272,31 @@ def view(
     overlay_series_acc: list[list] = []
     overlay_main_names_acc: list = []
     any_overlays = False
+    # Tuner: bindings linking each tunable config slot to the runtime
+    # containers it produced, captured as we convert below.
+    bindings: list[Binding] = []
 
-    def _resolve_array_name(cfg) -> str:
+    def _resolve(raw):
+        """Evaluate a possibly-tunable config slot to a concrete array.
+
+        Returns ``(concrete, tunable_or_None)``. A :class:`Tunable` is called;
+        a bare zero-arg callable is wrapped (so its params are discovered) and
+        called; a concrete array (DataArray / DataFrame / ndarray — none of
+        which are callable) is returned unchanged with ``None``.
+        """
+        if isinstance(raw, Tunable):
+            return raw(), raw
+        if callable(raw):
+            t = _wrap_callable(raw)
+            return t(), t
+        return raw, None
+
+    def _resolve_array_name(cfg, data) -> str:
         v = cfg.array_name
         if v is False:
             return ""
         if v is True:
-            name = getattr(cfg.data, "name", None)
+            name = getattr(data, "name", None)
             if not name:
                 raise ValueError(
                     f"{type(cfg).__name__}(array_name=True) requires "
@@ -291,15 +310,29 @@ def view(
     for i, item in enumerate(data_list):
         reporter.item(i, len(data_list), detail=type(item).__name__)
         if isinstance(item, Zip):
+            if any(callable(t.data) for t in item.traces):
+                raise NotImplementedError(
+                    "Tuner: tuning a Tunable/callable inside Zip is not yet "
+                    "supported. Pass concrete DataArrays in Zip traces."
+                )
             das = [t.data for t in item.traces]
             overlay_groups = convert_xarray_inputs_overlay(
-                das, item.on, name_prefix=_resolve_array_name(item),
+                das, item.on, name_prefix=_resolve_array_name(item, None),
                 reporter=reporter,
             )
             overlay_colors = item.colors
         elif isinstance(item, RasterConfig):
+            raster_data, raster_tun = _resolve(item.data)
+            if raster_tun is not None:
+                import warnings
+                warnings.warn(
+                    "Tuner: tuning RasterConfig.data (event detection) is not "
+                    "yet supported; rendering with the initial parameter "
+                    "values. Slider control will land in a later checkpoint.",
+                    stacklevel=2,
+                )
             new_ms = dataframe_to_raster_series(
-                item.data,
+                raster_data,
                 time_col=item.time_col,
                 order_by=item.order_by,
                 split_by=item.split_by,
@@ -336,16 +369,25 @@ def view(
             for j in range(len(new_ms)):
                 order_acc.append(("raster", base + j))
         elif isinstance(item, HeatmapConfig):
+            heatmap_data, heatmap_tun = _resolve(item.data)
+            if heatmap_tun is not None:
+                import warnings
+                warnings.warn(
+                    "Tuner: tuning HeatmapConfig.data is not yet supported; "
+                    "rendering with the initial parameter values. Slider "
+                    "control will land in a later checkpoint.",
+                    stacklevel=2,
+                )
             # Callable array_name is plumbed straight through; everything
             # else resolves to a string prefix here so dataarray_to_heatmaps
             # only sees the two cases it knows about.
             resolved_array_name = (
                 item.array_name
                 if callable(item.array_name)
-                else _resolve_array_name(item)
+                else _resolve_array_name(item, heatmap_data)
             )
             new_heatmaps = dataarray_to_heatmaps(
-                item.data,
+                heatmap_data,
                 split_by=item.split_by,
                 order_by=item.order_by,
                 descending=item.descending,
@@ -362,14 +404,24 @@ def view(
                 order_acc.append(("heatmap", base + j))
         else:  # TraceConfig
             cfg = item
-            prefix = _resolve_array_name(cfg)
+            data_concrete, data_tun = _resolve(cfg.data)
+            prefix = _resolve_array_name(cfg, data_concrete)
             if cfg.overlay_arrays is not None and cfg.mode != "stacked-subplots":
                 raise ValueError(
                     "TraceConfig.overlay_arrays require mode='stacked-subplots'."
                 )
             if cfg.mode == "dense":
+                if data_tun is not None:
+                    import warnings
+                    warnings.warn(
+                        "Tuner: tuning a dense-mode TraceConfig.data is not yet "
+                        "supported; rendering with the initial parameter "
+                        "values. Slider control will land in a later "
+                        "checkpoint (use mode='stacked-subplots' to tune now).",
+                        stacklevel=2,
+                    )
                 tuples, order_vals, trace_labels, color_vals = convert_xarray_inputs_with_order(
-                    cfg.data,
+                    data_concrete,
                     order_by=cfg.order_by,
                     descending=cfg.descending,
                     name_prefix=prefix,
@@ -377,7 +429,11 @@ def view(
                     reporter=reporter,
                 )
                 series_objs = [Series(n, t, y) for n, t, y in tuples]
-                group_name = prefix or (str(cfg.data.name) if cfg.data.name else f"dense_{i}")
+                group_name = prefix or (
+                    str(data_concrete.name)
+                    if data_concrete.name
+                    else f"dense_{i}"
+                )
                 # Sample markers attach to the group. The same sort permutation
                 # is applied here as for the data (both go through
                 # _compute_trace_sort_index), so bool_per_series[si] lines up
@@ -386,7 +442,7 @@ def view(
                 dense_markers: list = []
                 if cfg.sample_markers is not None:
                     bool_per_marker = convert_event_arrays_aligned_with(
-                        cfg.data,
+                        data_concrete,
                         [m.bool_array for m in cfg.sample_markers],
                         order_by=cfg.order_by,
                         descending=cfg.descending,
@@ -419,7 +475,7 @@ def view(
                 order_acc.append(("dense", dense_idx))
             elif cfg.mode == "stacked-subplots":
                 tuples, _, _, _ = convert_xarray_inputs_with_order(
-                    cfg.data,
+                    data_concrete,
                     order_by=cfg.order_by,
                     descending=cfg.descending,
                     name_prefix=prefix,
@@ -438,17 +494,33 @@ def view(
                         any_bottom_spine = True
                     order_acc.append(("ts", base))
                     base += 1
+                # Tuner: this TraceConfig owns the contiguous host-series block
+                # [host_slice]; record a binding if its data is tunable.
+                host_slice = slice(
+                    len(xr_series) - len(new_series), len(xr_series)
+                )
+                if data_tun is not None:
+                    bindings.append(Binding(
+                        kind="trace_stacked", tunable=data_tun, cfg=cfg,
+                        series_slice=host_slice,
+                    ))
                 if cfg.overlay_arrays:
+                    resolved_overlays = []
+                    overlay_tuns = []
+                    for ov in cfg.overlay_arrays:
+                        ov_concrete, ov_tun = _resolve(ov)
+                        resolved_overlays.append(ov_concrete)
+                        overlay_tuns.append(ov_tun)
                     aligned = convert_overlay_arrays_aligned_with(
-                        cfg.data,
-                        cfg.overlay_arrays,
+                        data_concrete,
+                        resolved_overlays,
                         order_by=cfg.order_by,
                         descending=cfg.descending,
                     )  # [n_overlay][n_series] of (t, y)
-                    n_overlay = len(cfg.overlay_arrays)
+                    n_overlay = len(resolved_overlays)
                     ov_names = [
                         str(a.name) if getattr(a, "name", None) else f"overlay {k}"
-                        for k, a in enumerate(cfg.overlay_arrays)
+                        for k, a in enumerate(resolved_overlays)
                     ]
                     palette = LoupeApp._DEFAULT_OVERLAY_COLORS
                     if cfg.overlay_colors is not None:
@@ -462,8 +534,8 @@ def view(
                             palette[k % len(palette)] for k in range(n_overlay)
                         ]
                     main_name = (
-                        str(cfg.data.name)
-                        if getattr(cfg.data, "name", None)
+                        str(data_concrete.name)
+                        if getattr(data_concrete, "name", None)
                         else ""
                     )
                     for si, s in enumerate(new_series):
@@ -478,13 +550,23 @@ def view(
                         ])
                         overlay_main_names_acc.append(main_name or s.name or "trace")
                     any_overlays = True
+                    # Tuner: record a binding for each tunable overlay column so
+                    # it recomputes live; host_data carries the resolved host
+                    # array used to re-align overlays on recompute.
+                    for k, ov_tun in enumerate(overlay_tuns):
+                        if ov_tun is not None:
+                            bindings.append(Binding(
+                                kind="trace_overlay", tunable=ov_tun, cfg=cfg,
+                                overlay_host_slice=host_slice, overlay_k=k,
+                                host_data=data_concrete,
+                            ))
                 else:
                     for _s in new_series:
                         overlay_series_acc.append([])
                         overlay_main_names_acc.append(None)
                 if cfg.sample_markers is not None:
                     bool_per_marker = convert_event_arrays_aligned_with(
-                        cfg.data,
+                        data_concrete,
                         [m.bool_array for m in cfg.sample_markers],
                         order_by=cfg.order_by,
                         descending=cfg.descending,
@@ -637,6 +719,8 @@ def view(
         interval_label_overlays=interval_label_overlays,
         video_configs=video_configs,
         global_events=global_events,
+        tuner_bindings=bindings or None,
+        tuner_params=collect_params(bindings) or None,
         reporter=reporter,
         **kwargs,
     )

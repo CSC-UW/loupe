@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     import xarray as xr
     from matplotlib.colors import Colormap
 
+    from loupe.tuner import Tunable
+
 
 @dataclass
 class SampleMarkers:
@@ -72,8 +74,11 @@ class TraceConfig:
 
     Parameters
     ----------
-    data : xr.DataArray
-        The DataArray to display.
+    data : xr.DataArray or Tunable
+        The DataArray to display.  May instead be a :func:`loupe.tunable`
+        wrapper (or a bare zero-arg callable returning a DataArray) whose
+        scalar :class:`loupe.Param` arguments become live sliders in the
+        Tuner panel — the trace then recomputes as you tune.
     mode : str
         ``"stacked-subplots"`` (default) for one subplot per trace, or
         ``"dense"`` for EEG-style offset traces on a single axis.
@@ -125,7 +130,11 @@ class TraceConfig:
         so the overlays follow the same ``order_by`` / ``descending`` ordering
         as the host.  Each overlay gets a distinct color (see
         *overlay_colors*) and a legend entry from its ``.name``.
-        Stacked-subplots mode only.
+        Stacked-subplots mode only.  Any entry may be a :func:`loupe.tunable`
+        wrapper (or bare zero-arg callable) instead of a concrete DataArray, so
+        the overlay recomputes live as you drag the matching slider in the
+        Tuner panel — this is the canonical tuning target (e.g. a matched
+        filter over a raw trace).
     overlay_colors : list or None
         One color per entry in *overlay_arrays* — hex strings (``"#ff0000"``)
         or RGB(A) tuples.  ``None`` (default) cycles a built-in distinct
@@ -140,7 +149,7 @@ class TraceConfig:
         time axis.
     """
 
-    data: "xr.DataArray"
+    data: "xr.DataArray | Tunable | Callable"
     mode: str = "stacked-subplots"
     order_by: str | None = None
     descending: bool = False
@@ -152,7 +161,7 @@ class TraceConfig:
     color: "str | tuple | None" = None
     array_name: bool | str = False
     sample_markers: "list[SampleMarkers] | None" = None
-    overlay_arrays: "list[xr.DataArray] | None" = None
+    overlay_arrays: "list[xr.DataArray | Tunable | Callable] | None" = None
     overlay_colors: "list | None" = None
     add_bottom_spine: bool = False
 
