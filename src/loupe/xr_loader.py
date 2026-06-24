@@ -439,6 +439,90 @@ def convert_event_arrays_aligned_with(
     return out
 
 
+def convert_overlay_arrays_aligned_with(
+    da: xr.DataArray,
+    overlay_arrays: list[xr.DataArray],
+    *,
+    order_by: str | None,
+    descending: bool,
+) -> list[list[tuple[np.ndarray, np.ndarray]]]:
+    """Flatten each overlay DataArray into per-series ``(t, y)`` aligned 1:1
+    with the series produced by
+    ``convert_xarray_inputs_with_order(da, order_by=..., descending=...)``.
+
+    Unlike :func:`convert_event_arrays_aligned_with` (which casts to bool and
+    reindexes onto *da*'s time), this keeps each overlay's own float values and
+    its own time axis — overlays are sliced to the view window independently of
+    the host. Only the non-time dims are reindexed to *da*'s coordinate order,
+    then the same stable-sort permutation is applied, so overlay trace *i* lines
+    up with host subplot *i*.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Reference (host) DataArray. Must have a ``'time'`` dimension.
+    overlay_arrays : list[xr.DataArray]
+        DataArrays to overlay. Each must have a ``'time'`` dim and share *da*'s
+        non-time dims (missing non-time coords are filled with NaN).
+    order_by, descending
+        Same values used for *da* in ``convert_xarray_inputs_with_order``.
+
+    Returns
+    -------
+    list[list[tuple[np.ndarray, np.ndarray]]]
+        Shape ``[n_overlay][n_series]``. Each leaf is a ``(t_1d, y_1d)`` pair.
+    """
+    import xarray as xr  # lazy
+
+    if "time" not in da.dims:
+        raise ValueError(
+            f"DataArray must have a 'time' dimension. Found dims: {da.dims}"
+        )
+
+    non_time_dims = [d for d in da.dims if d != "time"]
+    n_series = int(np.prod([da.sizes[d] for d in non_time_dims]) or 1)
+    sort_idx = _compute_trace_sort_index(
+        da, order_by=order_by, descending=descending, n_traces=n_series
+    )
+
+    out: list[list[tuple[np.ndarray, np.ndarray]]] = []
+    for layer_i, arr in enumerate(overlay_arrays):
+        if not isinstance(arr, xr.DataArray):
+            raise TypeError(
+                f"overlay_arrays[{layer_i}] must be an xr.DataArray, "
+                f"got {type(arr).__name__}"
+            )
+        if "time" not in arr.dims:
+            raise ValueError(
+                f"overlay_arrays[{layer_i}] must have a 'time' dimension. "
+                f"Found dims: {arr.dims}"
+            )
+        missing = [d for d in non_time_dims if d not in arr.dims]
+        if missing:
+            raise ValueError(
+                f"overlay_arrays[{layer_i}] is missing dims {missing}; expected "
+                f"dims compatible with the host {da.dims}, got {arr.dims}"
+            )
+        # Align non-time dims to the host's coord order (so trace flattening
+        # matches), but leave the time dim as the overlay's own axis.
+        if non_time_dims:
+            arr = arr.reindex(
+                {d: da.coords[d] for d in non_time_dims}, fill_value=np.nan
+            )
+        tuples = dataarray_to_series(arr)
+        per_series = [(t, np.asarray(y, dtype=float)) for _, t, y in tuples]
+        if len(per_series) != n_series:
+            raise ValueError(
+                f"overlay_arrays[{layer_i}] flattened to {len(per_series)} "
+                f"trace(s); the host produced {n_series}. Overlay arrays must "
+                f"share the host's non-time dimensions."
+            )
+        if sort_idx is not None and len(sort_idx) == len(per_series):
+            per_series = [per_series[i] for i in sort_idx]
+        out.append(per_series)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Heatmap conversion
 # ---------------------------------------------------------------------------

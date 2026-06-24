@@ -42,6 +42,24 @@ class SampleMarkers:
 
 
 @dataclass
+class OverlayCurve:
+    """One overlay trace drawn on a stacked-subplots host series' subplot.
+
+    Built from :attr:`loupe.configs.TraceConfig.overlay_arrays`. There is one
+    per (overlay array, host series); :attr:`LoupeApp.overlay_series` holds a
+    ``list[OverlayCurve]`` per host series, indexed the same as
+    :attr:`LoupeApp.series`. ``t`` / ``y`` are 1-D and need not share the host
+    series' time axis — each is sliced independently to the current window on
+    scroll.
+    """
+
+    name: str
+    color: "tuple | str"
+    t: np.ndarray
+    y: np.ndarray
+
+
+@dataclass
 class RasterSeries:
     """Holds data for a raster subplot."""
 

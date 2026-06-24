@@ -73,6 +73,18 @@ Key parameters:
 | `color` | `None` | Single color override for all traces. |
 | `array_name` | `False` | Prefix on trace names (see deep-dive doc). |
 | `sample_markers` | `None` | List of `SampleMarkers` (spike/event overlays). |
+| `overlay_arrays` | `None` | Extra DataArrays drawn on the same axes as this trace. |
+| `overlay_colors` | `None` | Per-overlay colors; `None` cycles a distinct palette. |
+
+`overlay_arrays` co-plots one or more extra DataArrays *on the host trace's own subplot* (not new subplots). Each must share the host's non-time dims; with a multi-trace host, overlay *i* lands on subplot *i*. Unlike `Zip`, this composes freely with other `TraceConfig`s in the same window — overlay only the trace you want:
+
+```python
+# overlay a rolling-std band onto the spike trace only
+view([
+    TraceConfig(dff),
+    TraceConfig(spks, overlay_arrays=[deconv_std]),  # both share `time`
+])
+```
 
 Runtime: `Ctrl+D` for per-trace Y autorange/min/max; `Ctrl+1`/`Ctrl+2` to Y-zoom the hovered plot. Stacked mode supports `sample_markers` for sample-aligned overlays (single-config-per-window constraint).
 

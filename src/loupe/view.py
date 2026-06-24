@@ -141,11 +141,13 @@ def view(
     from loupe.series import (
         DenseGroup,
         HeatmapSeries,
+        OverlayCurve,
         SampleMarkers as _RenderedSampleMarkers,
         Series,
     )
     from loupe.xr_loader import (
         convert_event_arrays_aligned_with,
+        convert_overlay_arrays_aligned_with,
         convert_xarray_inputs_overlay,
         convert_xarray_inputs_with_order,
         dataarray_to_heatmaps,
@@ -244,6 +246,12 @@ def view(
     overlay_colors: list | None = None
     order_acc: list[tuple[str, int]] = []
     sample_markers_rendered: list | None = None
+    # Per-stacked-series overlay curves (parallel to xr_series). Each entry is
+    # a list[OverlayCurve] ([] when that series carries no overlays); the
+    # parallel name list holds the host's legend label (None when no overlays).
+    overlay_series_acc: list[list] = []
+    overlay_main_names_acc: list = []
+    any_overlays = False
 
     def _resolve_array_name(cfg) -> str:
         v = cfg.array_name
@@ -336,6 +344,10 @@ def view(
         else:  # TraceConfig
             cfg = item
             prefix = _resolve_array_name(cfg)
+            if cfg.overlay_arrays is not None and cfg.mode != "stacked-subplots":
+                raise ValueError(
+                    "TraceConfig.overlay_arrays require mode='stacked-subplots'."
+                )
             if cfg.mode == "dense":
                 tuples, order_vals, trace_labels, color_vals = convert_xarray_inputs_with_order(
                     cfg.data,
@@ -382,6 +394,50 @@ def view(
                         any_bottom_spine = True
                     order_acc.append(("ts", base))
                     base += 1
+                if cfg.overlay_arrays:
+                    aligned = convert_overlay_arrays_aligned_with(
+                        cfg.data,
+                        cfg.overlay_arrays,
+                        order_by=cfg.order_by,
+                        descending=cfg.descending,
+                    )  # [n_overlay][n_series] of (t, y)
+                    n_overlay = len(cfg.overlay_arrays)
+                    ov_names = [
+                        str(a.name) if getattr(a, "name", None) else f"overlay {k}"
+                        for k, a in enumerate(cfg.overlay_arrays)
+                    ]
+                    palette = LoupeApp._DEFAULT_OVERLAY_COLORS
+                    if cfg.overlay_colors is not None:
+                        ov_colors = list(cfg.overlay_colors)
+                        ov_colors += [
+                            palette[k % len(palette)]
+                            for k in range(len(ov_colors), n_overlay)
+                        ]
+                    else:
+                        ov_colors = [
+                            palette[k % len(palette)] for k in range(n_overlay)
+                        ]
+                    main_name = (
+                        str(cfg.data.name)
+                        if getattr(cfg.data, "name", None)
+                        else ""
+                    )
+                    for si, s in enumerate(new_series):
+                        overlay_series_acc.append([
+                            OverlayCurve(
+                                name=ov_names[k],
+                                color=ov_colors[k],
+                                t=aligned[k][si][0],
+                                y=aligned[k][si][1],
+                            )
+                            for k in range(n_overlay)
+                        ])
+                        overlay_main_names_acc.append(main_name or s.name or "trace")
+                    any_overlays = True
+                else:
+                    for _s in new_series:
+                        overlay_series_acc.append([])
+                        overlay_main_names_acc.append(None)
                 if cfg.sample_markers is not None:
                     bool_per_marker = convert_event_arrays_aligned_with(
                         cfg.data,
@@ -534,6 +590,8 @@ def view(
         heatmap_series=heatmap_series,
         window_len=window_len,
         sample_markers=sample_markers_rendered,
+        overlay_series=overlay_series_acc if any_overlays else None,
+        overlay_main_names=overlay_main_names_acc if any_overlays else None,
         state_config=state_config,
         interval_label_set=interval_label_set,
         interval_label_alpha=interval_label_alpha,

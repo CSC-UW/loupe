@@ -104,6 +104,21 @@ class TraceConfig:
         :class:`TraceConfig` per window may carry sample markers, and no
         :class:`HeatmapConfig` / :class:`RasterConfig` / :class:`Zip` may
         appear alongside.
+    overlay_arrays : list[xr.DataArray] or None
+        Extra DataArrays to draw *on the same axes* as this TraceConfig's own
+        trace(s), rather than in their own subplots.  Each overlay array must
+        share ``data``'s dimensions (same non-time dims; the time axis may
+        differ and is sliced independently).  When ``data`` produces several
+        traces (a non-time dim), overlay trace *i* is drawn onto subplot *i*,
+        so the overlays follow the same ``order_by`` / ``descending`` ordering
+        as the host.  Each overlay gets a distinct color (see
+        *overlay_colors*) and a legend entry from its ``.name``.
+        Stacked-subplots mode only.
+    overlay_colors : list or None
+        One color per entry in *overlay_arrays* — hex strings (``"#ff0000"``)
+        or RGB(A) tuples.  ``None`` (default) cycles a built-in distinct
+        palette.  A short list is extended from the palette.  Ignored when
+        *overlay_arrays* is unset.
     add_bottom_spine : bool
         When ``True`` (stacked-subplots mode only), draw a minimal horizontal
         line at the bottom of each subplot produced by this DataArray, marking
@@ -125,6 +140,8 @@ class TraceConfig:
     color: "str | tuple | None" = None
     array_name: bool | str = False
     sample_markers: "list[SampleMarkers] | None" = None
+    overlay_arrays: "list[xr.DataArray] | None" = None
+    overlay_colors: "list | None" = None
     add_bottom_spine: bool = False
 
     @classmethod
@@ -425,6 +442,8 @@ class Zip:
             "palette": None,
             "array_name": False,
             "sample_markers": None,
+            "overlay_arrays": None,
+            "overlay_colors": None,
         }
         for i, t in enumerate(self.traces):
             if not isinstance(t, TraceConfig):

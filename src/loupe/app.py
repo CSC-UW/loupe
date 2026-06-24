@@ -216,6 +216,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         subplot_order=None,
         # Sample-aligned marker overlays for stacked-subplots traces.
         sample_markers: list[SampleMarkers] | None = None,
+        # Per-stacked-series overlay curves (parallel to xr_series). Each entry
+        # is a list[OverlayCurve] drawn on that host series' subplot.
+        overlay_series: list | None = None,
+        # Per-stacked-series host legend label (parallel to xr_series); None for
+        # series without overlays (keeps their legend empty as before).
+        overlay_main_names: list | None = None,
         # Per-stacked-trace bool flags: draw a minimal bottom-boundary line.
         bottom_spines: list | None = None,
         # State definitions (keymap + label colors)
@@ -264,6 +270,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         # inner index = marker-set index (matches self.sample_markers order).
         self.sample_markers: list[SampleMarkers] = list(sample_markers) if sample_markers else []
         self.sample_marker_scatters: list[list[pg.ScatterPlotItem]] = []
+        # Per-host-series overlay curves (parallel to self.series). Outer index =
+        # host series index; inner = OverlayCurve drawn on that subplot. The
+        # *_items list holds the matching pyqtgraph PlotDataItems after build.
+        self.overlay_series: list[list] = list(overlay_series) if overlay_series else []
+        self.overlay_main_names: list = list(overlay_main_names) if overlay_main_names else []
+        self.overlay_curve_items: list[list[pg.PlotDataItem]] = []
         # Per-series add_bottom_spine flags (indexed by stacked-trace index).
         self.series_bottom_spine: list = list(bottom_spines) if bottom_spines else []
 
@@ -2507,6 +2519,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves.clear()
         self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
+        self.overlay_curve_items.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
@@ -2669,6 +2682,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves.clear()
         self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
+        self.overlay_curve_items.clear()
         self._plot_to_curves.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
@@ -3082,6 +3096,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.curves.clear()
         self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
+        self.overlay_curve_items.clear()
         self.plot_cur_lines.clear()
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
@@ -3213,11 +3228,35 @@ class LoupeApp(QtWidgets.QMainWindow):
             else:
                 pen_color = (255, 255, 255)
             pen = pg.mkPen(pen_color, width=1)
-            curve = pg.PlotDataItem([], [], pen=pen, antialias=False)
+            # Name the host curve only when it carries overlays, so its legend
+            # distinguishes host vs. overlay; otherwise leave it unnamed (no
+            # legend entry, preserving the pre-overlay look).
+            host_name = (
+                self.overlay_main_names[idx]
+                if idx < len(self.overlay_main_names)
+                else None
+            )
+            curve = pg.PlotDataItem(
+                [], [], pen=pen, name=host_name, antialias=False
+            )
             plt.addItem(curve)
             # NB: must follow addItem(), which resets these to the PlotItem defaults.
             curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
+
+            # Overlay curves drawn on the same subplot (TraceConfig.overlay_arrays).
+            overlay_items_for_series: list[pg.PlotDataItem] = []
+            if idx < len(self.overlay_series):
+                for oc in self.overlay_series[idx]:
+                    o_pen = pg.mkPen(oc.color, width=1)
+                    o_curve = pg.PlotDataItem(
+                        [], [], pen=o_pen, name=oc.name, antialias=False
+                    )
+                    plt.addItem(o_curve)
+                    o_curve.setDownsampling(auto=True, method="peak")
+                    o_curve.setClipToView(True)
+                    overlay_items_for_series.append(o_curve)
+            self.overlay_curve_items.append(overlay_items_for_series)
 
             scatters_for_series: list[pg.ScatterPlotItem] = []
             for marker in self.sample_markers:
@@ -3281,6 +3320,14 @@ class LoupeApp(QtWidgets.QMainWindow):
             if self.fixed_scale:
                 try:
                     y = np.asarray(s.y, dtype=float)
+                    if idx < len(self.overlay_series) and self.overlay_series[idx]:
+                        y = np.concatenate(
+                            [y]
+                            + [
+                                np.asarray(oc.y, dtype=float)
+                                for oc in self.overlay_series[idx]
+                            ]
+                        )
                     lo = float(np.nanpercentile(y, 1.0))
                     hi = float(np.nanpercentile(y, 99.0))
                     if not np.isfinite(lo) or not np.isfinite(hi):
@@ -5812,6 +5859,18 @@ class LoupeApp(QtWidgets.QMainWindow):
                 t_slice = s.t[i0:i1]
                 y_slice = s.y[i0:i1]
                 curve.setData(t_slice, y_slice, _callSync="off")
+                # overlay_curve_items is 1:1 with self.series (empty list when a
+                # series has no overlays); a non-empty entry implies a matching
+                # self.overlay_series[idx], so this never indexes out of range.
+                if idx < len(self.overlay_curve_items) and self.overlay_curve_items[idx]:
+                    for oc, o_curve in zip(
+                        self.overlay_series[idx], self.overlay_curve_items[idx]
+                    ):
+                        j0 = max(0, np.searchsorted(oc.t, t0) - 1)
+                        j1 = min(len(oc.t), np.searchsorted(oc.t, t1) + 1)
+                        o_curve.setData(
+                            oc.t[j0:j1], oc.y[j0:j1], _callSync="off"
+                        )
                 if self.sample_markers and idx < len(self.sample_marker_scatters):
                     for marker_idx, marker in enumerate(self.sample_markers):
                         mask = marker.bool_per_series[idx][i0:i1]

@@ -17,6 +17,8 @@ Defined in `src/loupe/__init__.py:69-169`.
 | `color` | `None` | Single color applied to every trace from this DataArray. Overrides `hue` / `palette`. |
 | `array_name` | `False` | `False` prepends nothing; `True` uses `data.name` (raises if unset); a string is used verbatim as the prefix. |
 | `sample_markers` | `None` | Optional list of `SampleMarkers` overlays. See "Sample markers" below. |
+| `overlay_arrays` | `None` | Extra DataArrays drawn on this trace's own axes. See "Overlay arrays" below. |
+| `overlay_colors` | `None` | Per-overlay colors (hex / RGB(A) tuples); `None` cycles a distinct palette. |
 | `gain`, `step`, `traces_per_page` | — | Dense-mode only; ignored here. |
 
 ## Loader
@@ -62,6 +64,35 @@ Marker defaults:
 - At most one `TraceConfig` per window may carry sample markers.
 - A `TraceConfig` with sample markers cannot coexist with `HeatmapConfig`, `RasterConfig`, or `Zip`, nor with another `TraceConfig` of any kind.
 
+## Overlay arrays
+
+Draw one or more extra DataArrays *on the same axes* as a trace, instead of in their own subplots — e.g. a denoised trace, a rolling-noise band, or a fit over the raw signal:
+
+```python
+from loupe import TraceConfig, view
+
+# spks and deconv_std both have only a `time` dim
+view([
+    TraceConfig(dff),
+    TraceConfig(spks, overlay_arrays=[deconv_std]),   # overlay only on this trace
+])
+```
+
+Each overlay array must share the host's **non-time** dims (the time axis may differ — overlays are sliced to the window independently). When the host produces several traces (a non-time dim like `syn_id`), the overlays are flattened and sorted the same way, so overlay trace _i_ is drawn onto subplot _i_:
+
+```python
+# dff and thresholds are both (syn_id, time); each synapse subplot gets its threshold
+view(TraceConfig(dff, order_by="pos", overlay_arrays=[thresholds]))
+```
+
+Colors: each overlay gets a distinct color from a built-in palette (the same one `Zip` uses); pass `overlay_colors=["#ff0000", (0,255,0)]` to control them (a short list is extended from the palette). The host curve takes a legend entry named after its DataArray's `.name` (falling back to the trace label), and each overlay is labelled by its own `.name`.
+
+### Constraints
+
+- `overlay_arrays` requires `mode="stacked-subplots"`.
+- Under fixed-scale (`fixed_scale=True`), the per-subplot Y-range is computed from the host **and** its overlays so nothing is clipped; under auto-range the subplot fits all curves automatically.
+- Unlike `Zip`, overlays compose freely with other `TraceConfig`s / `HeatmapConfig`s / rasters in the same window — they are a property of one trace, not a window mode.
+
 ## Runtime controls
 
 | Action | Binding |
@@ -78,3 +109,4 @@ See [KEYBINDINGS.md](../../KEYBINDINGS.md) for the full list.
 - Data conversion: `loupe.xr_loader.convert_xarray_inputs_with_order` (`src/loupe/__init__.py:770`).
 - Rendering: `LoupeApp._refresh_curves`, `LoupeApp._apply_x_range`.
 - Sample-marker overlay: `loupe.xr_loader.convert_event_arrays_aligned_with` (`src/loupe/__init__.py:788`).
+- Overlay arrays: `loupe.xr_loader.convert_overlay_arrays_aligned_with`; rendered as extra `PlotDataItem`s in `LoupeApp.overlay_curve_items`, refreshed in `LoupeApp._refresh_curves`.
