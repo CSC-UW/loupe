@@ -65,6 +65,7 @@ from loupe.label_panel import (
     IntervalLabelSummaryWidget,
     StateComboDelegate,
 )
+from loupe.label_strip import LabelBandRenderer
 from loupe.series import (
     DenseGroup,
     HeatmapSeries,
@@ -108,6 +109,11 @@ RASTER_NA_COLOR: tuple[int, int, int] = (160, 160, 160)
 # relabeling causes no horizontal jitter. These bound that measured value.
 LEFT_AXIS_WIDTH_FLOOR = 50  # never narrower than this
 LEFT_AXIS_WIDTH_PAD = 6  # headroom added to the measured max
+
+# Height (pixels) of the pinned label strip — a thin, windowed color band of
+# the interval labels kept above the scrolling plot stack (see
+# LoupeApp._build_ui / _toggle_label_strip_visibility).
+LABEL_STRIP_HEIGHT = 24
 
 
 def _raster_extent(ms) -> float:
@@ -230,6 +236,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         interval_label_set: IntervalLabelSet | None = None,
         # Initial interval-label-overlay alpha multiplier (0.0 – 1.0). None → 1.0.
         interval_label_alpha: float | None = None,
+        # Whether to shade labels across the subplots. False leaves the pinned
+        # label strip / hypnogram as the only label display (toggle: Ctrl+Shift+L).
+        interval_label_overlays: bool = True,
         # Global event markers: vertical lines drawn across every pane.
         global_events=None,
         # Optional ProgressReporter for launch-time progress.
@@ -342,6 +351,10 @@ class LoupeApp(QtWidgets.QMainWindow):
                     f"got {interval_label_alpha!r}"
                 )
             self.interval_label_alpha_multiplier = float(interval_label_alpha)
+        # Whether label spans are shaded across the subplots. When off, the
+        # pinned label strip and hypnogram remain the label display. Independent
+        # of the alpha multiplier so the strip stays visible. Toggle: Ctrl+Shift+L.
+        self.interval_label_overlays_enabled = bool(interval_label_overlays)
         # Custom height factors for individual plot height control (1.0 = default)
         self.plot_height_factors: list[float] = []  # one per time series plot
         self.raster_height_factors: list[float] = []  # one per raster plot
@@ -482,6 +495,16 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._hypnogram_window_marker_lines: list[pg.InfiniteLine] = []
         self.hypnogram_zoomed = False
         self.hypnogram_zoom_padding = 30.0
+
+        # Pinned label strip (windowed interval-label color band above the plots)
+        self.label_strip_widget = None
+        self.label_strip_plot = None
+        self.label_strip_renderer = None
+        self.label_strip_visible = True
+        # Right-side spacer width (px) keeping the strip flush with col-0 plots
+        # past the dense scrollbar column / outer scrollbar. See
+        # _align_label_strip_right_edge.
+        self._label_strip_right_width = 0
 
         # Right panel layout references (used in _build_ui)
         self.right_layout = None
@@ -667,6 +690,41 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_scroll_area.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+
+        # Pinned label strip: a thin, windowed color band of the interval
+        # labels, kept *above the scroll area* so it stays visible while paging
+        # vertically through channels. It mirrors the hypnogram band but follows
+        # the current view window (x-range driven by _apply_x_range_core) and
+        # aligns to the trace time axis. The left axis is retained purely as an
+        # invisible spacer so the band's data region lines up with the subplots'
+        # y-spine gutter — its width is kept in sync by _align_left_axes. The
+        # bottom axis is hidden because the bottom-most subplot owns the shared
+        # time ruler. PlotItem layout margins are left at pyqtgraph defaults so
+        # the band's left edge matches the subplots' (which also keep defaults).
+        self.label_strip_widget = pg.PlotWidget()
+        self.label_strip_widget.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.label_strip_widget.setFixedHeight(LABEL_STRIP_HEIGHT)
+        lsp = self.label_strip_widget.getPlotItem()
+        lsp.showGrid(x=False, y=False)
+        lsp.setMenuEnabled(False)
+        lsp.setMouseEnabled(x=False, y=False)
+        lsp.hideButtons()
+        lsp.hideAxis("bottom")
+        lsp.enableAutoRange("x", False)
+        lsp.enableAutoRange("y", False)
+        lsp.setYRange(0, 1, padding=0)
+        left_spacer = lsp.getAxis("left")
+        left_spacer.setStyle(showValues=False, tickLength=0)
+        left_spacer.setWidth(LEFT_AXIS_WIDTH_FLOOR + LEFT_AXIS_WIDTH_PAD)
+        self.label_strip_plot = lsp
+        self.label_strip_renderer = LabelBandRenderer(
+            lsp,
+            entries_provider=self._visible_interval_label_entries,
+            color_provider=self._interval_label_brush_color,
+        )
+        self.label_strip_widget.setVisible(self.label_strip_visible)
+        leftl.insertWidget(0, self.label_strip_widget)
+
         leftl.addWidget(self.plot_scroll_area, 1)
         splitter.addWidget(left)
 
@@ -897,6 +955,20 @@ class LoupeApp(QtWidgets.QMainWindow):
         toggle_hyp_zoom_action.setShortcut(QtGui.QKeySequence("Z"))
         toggle_hyp_zoom_action.triggered.connect(self._toggle_hypnogram_zoom)
         mview.addAction(toggle_hyp_zoom_action)
+
+        toggle_label_strip_action = QtGui.QAction("Toggle Label Strip", self)
+        toggle_label_strip_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
+        toggle_label_strip_action.triggered.connect(
+            self._toggle_label_strip_visibility
+        )
+        mview.addAction(toggle_label_strip_action)
+
+        toggle_label_overlays_action = QtGui.QAction("Toggle Label Overlays", self)
+        toggle_label_overlays_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
+        toggle_label_overlays_action.triggered.connect(
+            self._toggle_interval_label_overlays
+        )
+        mview.addAction(toggle_label_overlays_action)
 
         # ----- Group 3: Trace / time-series plots -----
         mview.addSeparator()
@@ -1515,6 +1587,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             drawn = self._hypnogram_interval_label_drawn.get(key)
             name = drawn[2] if drawn is not None else ""
             self._set_region_color(region, self._interval_label_brush_color(name))
+        if self.label_strip_renderer is not None:
+            self.label_strip_renderer.refresh_colors()
 
     def _adjust_interval_label_alpha(self):
         """Show a dialog to adjust label overlay alpha (transparency)."""
@@ -5334,6 +5408,11 @@ class LoupeApp(QtWidgets.QMainWindow):
                 self._update_hypnogram_interval_label_visual(key, row)
 
     def _sync_window_interval_label_visuals(self, *, force_rebuild: bool = False) -> None:
+        if not self.interval_label_overlays_enabled:
+            # Overlays are off; the strip/hypnogram still show labels. Drop any
+            # regions already drawn and skip (re)building them.
+            self._clear_window_interval_label_visuals()
+            return
         if force_rebuild or not self._has_visible_window_interval_label_targets():
             self._clear_window_interval_label_visuals()
             if not self._has_visible_window_interval_label_targets():
@@ -5366,6 +5445,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._sync_window_interval_label_visuals(
             force_rebuild=force_rebuild or force_rebuild_window
         )
+        # The pinned label strip is windowed like the window visuals, so it
+        # follows the same force flags (rebuilt on layout rebuilds / loads).
+        if self.label_strip_renderer is not None:
+            self.label_strip_renderer.sync(
+                force_rebuild=force_rebuild or force_rebuild_window
+            )
 
         if refresh_summary:
             self._refresh_interval_label_summary()
@@ -5460,6 +5545,20 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _toggle_hypnogram_visibility(self):
         if self.hypnogram_widget is not None:
             self.hypnogram_widget.setVisible(not self.hypnogram_widget.isVisible())
+
+    def _toggle_label_strip_visibility(self):
+        # Toggle the tracked intent (not isVisible(), which also reflects whether
+        # an ancestor is shown) so the flag and widget stay consistent.
+        if self.label_strip_widget is not None:
+            self.label_strip_visible = not self.label_strip_visible
+            self.label_strip_widget.setVisible(self.label_strip_visible)
+
+    def _toggle_interval_label_overlays(self):
+        """Show/hide the label shading drawn across the subplots. The pinned
+        label strip and hypnogram are unaffected."""
+        self.interval_label_overlays_enabled = not self.interval_label_overlays_enabled
+        # force_rebuild redraws when turning back on; the gate clears when off.
+        self._sync_window_interval_label_visuals(force_rebuild=True)
 
     def keyPressEvent(self, ev: QtGui.QKeyEvent):
         # Single-key state hotkeys and `0` clear are intentionally context-
@@ -5827,6 +5926,13 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._refresh_curves()
         self._sync_window_interval_label_visuals()
 
+        # Keep the pinned label strip aligned to (and clipped to) the current
+        # window; its visible label set changes as we pan/zoom/page.
+        if self.label_strip_plot is not None:
+            self.label_strip_plot.setXRange(*xr, padding=0.0)
+            if self.label_strip_renderer is not None:
+                self.label_strip_renderer.sync()
+
         # Update hypnogram window marker to show current window
         self._set_hypnogram_window_marker(float(xr[0]), float(xr[1]))
         # If zoomed, keep hypnogram centered on the current window +/- padding
@@ -6052,8 +6158,88 @@ class LoupeApp(QtWidgets.QMainWindow):
                 )
             for plt in all_plots:
                 plt.getAxis("left").setWidth(int(self._left_axis_width))
+            # Keep the pinned label strip's invisible left-axis spacer the same
+            # width so its data region stays flush with the subplots' y-spines.
+            if self.label_strip_plot is not None:
+                self.label_strip_plot.getAxis("left").setWidth(
+                    int(self._left_axis_width)
+                )
+                self._align_label_strip_right_edge()
         except Exception:
             pass
+
+    def _first_realized_plot(self):
+        """First subplot with a laid-out (non-zero-width) viewbox. All subplots
+        share grid column 0, so any one's right edge marks the col-0 boundary."""
+        for lst in (self.plots, self.dense_plots, self.raster_plots, self.heatmap_plots):
+            for plt in lst:
+                try:
+                    vb = plt.getViewBox()
+                    if vb is not None and vb.width() > 0:
+                        return plt
+                except Exception:
+                    pass
+        return None
+
+    @staticmethod
+    def _data_x_to_global_x(plot_item, x_data) -> float | None:
+        """Global (screen) x of a data x-coordinate within ``plot_item``.
+
+        Works across different GraphicsViews (the strip is its own widget), so
+        the strip and a subplot can be compared even though they live in
+        separate scenes.
+        """
+        try:
+            vb = plot_item.getViewBox()
+            scene = plot_item.scene()
+            if vb is None or scene is None:
+                return None
+            views = scene.views()
+            if not views:
+                return None
+            gv = views[0]
+            pt = vb.mapViewToScene(QtCore.QPointF(float(x_data), 0.0))
+            vp = gv.mapFromScene(pt)
+            return float(gv.viewport().mapToGlobal(vp).x())
+        except Exception:
+            return None
+
+    def _align_label_strip_right_edge(self):
+        """Reserve a right-side spacer on the strip so its data region ends at
+        the same x as the subplots.
+
+        The subplots sit in grid column 0; column 1 holds the dense vertical
+        scrollbars, and the outer scroll area adds its own scrollbar when the
+        channels overflow — both narrow the plots' right edge but not the
+        full-width strip, which would otherwise overhang. Rather than hardcode
+        those widths (which appear/disappear with scrollbar visibility), measure
+        the live overhang and convert it into an invisible right-axis spacer.
+        One correction is exact: widening the right axis by ``overhang`` pulls
+        the strip's right edge left by exactly that much.
+        """
+        sp = self.label_strip_plot
+        if sp is None or self.window_len <= 0:
+            return
+        ref = self._first_realized_plot()
+        if ref is None:
+            return
+        x_right = float(self.window_start + self.window_len)
+        ref_x = self._data_x_to_global_x(ref, x_right)
+        strip_x = self._data_x_to_global_x(sp, x_right)
+        if ref_x is None or strip_x is None:
+            return
+        overhang = strip_x - ref_x
+        if abs(overhang) < 1.0:
+            return  # already aligned; avoid sub-pixel churn
+        cur = getattr(self, "_label_strip_right_width", 0)
+        new_w = max(0, min(int(round(cur + overhang)), 80))
+        if new_w == cur:
+            return
+        self._label_strip_right_width = new_w
+        axis = sp.getAxis("right")
+        axis.setStyle(showValues=False, tickLength=0)
+        sp.showAxis("right", new_w > 0)
+        axis.setWidth(new_w)
 
     # ---------- Video size allocation (right panel) ----------
     def _apply_video_stretches(self):

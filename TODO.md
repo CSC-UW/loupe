@@ -30,7 +30,8 @@
 
 ### LabelStripConfig
 
-- [ ] Add the ability to display labels as a subplot aligned to the data window.
+- [x] Add a pinned, windowed **label strip** above the plots (`Ctrl+L`) — a compact, color-only band of the labels, aligned to the data window. Rendering lives in the host-agnostic `LabelBandRenderer` (`label_strip.py`), wired up in `app.py`.
+- [ ] Add an **in-grid** variant: the same band as a narrow, reorderable subplot under e.g. a traces subplot (reuse `LabelBandRenderer` with a grid `PlotItem`; plug into `subplot_order` / height factors / Subplot Control Board). This is what makes "different sets per subplot" (see Labels) feasible.
 
 ## Other
 

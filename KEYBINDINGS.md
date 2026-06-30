@@ -56,6 +56,8 @@ A few notes:
 | Ctrl + D | Open Y-Axis Controls dialog | Per-trace autorange toggle and min/max input. |
 | `z` | Toggle hypnogram zoom | Window ± padding vs. full extent. |
 | `h` | Toggle hypnogram visibility | Frees vertical space for videos. |
+| Ctrl + L | Toggle label strip | Thin color band of the labels, pinned above the plots and aligned to the current window. Stays visible while scrolling channels. |
+| Ctrl + Shift + L | Toggle label overlays | Show/hide the translucent label shading drawn across the subplots. The label strip and hypnogram are unaffected. Start with overlays off via `view(interval_label_overlays=False)`. |
 
 ### Dense view
 

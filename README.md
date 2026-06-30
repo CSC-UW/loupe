@@ -328,6 +328,8 @@ view(TraceConfig(da), interval_labels="labels.htsv",
 
 When `interval_labels_writeback=True`, an extra File → Save Labels (overwrite source) action becomes available (`Ctrl+S`). Without it, the menu item is disabled.
 
+**Viewing labels.** Labels are shown three ways, each independently toggleable: as translucent shaded regions overlaid across every subplot (toggle with `Ctrl+Shift+L`, alpha adjustable via View → Adjust Interval Label Alpha…, or start them off with `view(interval_label_overlays=False)`); collapsed onto the full‑recording hypnogram overview on the right (`h`); and as a compact, color‑only **label strip** pinned above the plots that follows the current window (`Ctrl+L`). The strip is a non‑overlay way to read labels at a glance without shading over the traces — pair it with `interval_label_overlays=False` to rely on the strip alone.
+
 #### State definitions
 
 State hotkeys and per‑state label colors come from any combination of:
@@ -377,6 +379,7 @@ raises `LoupeConfigError` at load time.
 ### UI tour
 
 Left side:
+- Label strip (top): a thin color band of the interval labels for the current window, pinned above the scrolling plot stack so it stays visible while paging through channels. Color‑only (states identified by their colors), aligned to the trace time axis. Toggle with `Ctrl+L` (View → Toggle Label Strip).
 - Multi‑trace panel: stacked subplots (one per trace) and/or dense plots (many traces on one axis), all X‑linked.
 - Dense plots include a vertical scrollbar showing position within the full trace set.
 - Click‑and‑drag inside any plot creates a selection region across all traces.

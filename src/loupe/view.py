@@ -56,6 +56,7 @@ def view(
     keymap: dict | None = None,
     label_colors: dict | None = None,
     interval_label_alpha: float | None = None,
+    interval_label_overlays: bool = True,
     **kwargs,
 ) -> "LoupeApp":
     """Launch the Loupe viewer.
@@ -104,6 +105,10 @@ def view(
         ``state_definitions``.
     interval_label_alpha : float, optional
         Initial interval-label overlay alpha multiplier in ``[0.0, 1.0]``.
+    interval_label_overlays : bool, optional
+        Whether to shade label spans across the subplots. Default True. Pass
+        False to rely on the pinned label strip / hypnogram instead (the
+        overlays can also be toggled at runtime with ``Ctrl+Shift+L``).
     **kwargs
         Forwarded to :class:`LoupeApp` (``fixed_scale``, etc.).
 
@@ -629,6 +634,7 @@ def view(
         state_config=state_config,
         interval_label_set=interval_label_set,
         interval_label_alpha=interval_label_alpha,
+        interval_label_overlays=interval_label_overlays,
         video_configs=video_configs,
         global_events=global_events,
         reporter=reporter,
