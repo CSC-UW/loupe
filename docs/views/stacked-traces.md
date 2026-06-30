@@ -60,9 +60,10 @@ Marker defaults:
 
 ### Constraints
 
-- `sample_markers` requires `mode="stacked-subplots"`.
-- At most one `TraceConfig` per window may carry sample markers.
-- A `TraceConfig` with sample markers cannot coexist with `HeatmapConfig`, `RasterConfig`, or `Zip`, nor with another `TraceConfig` of any kind.
+These constraints apply to **stacked-subplots** markers only. Dense mode also supports `sample_markers`, with none of these restrictions — see [dense-traces.md](dense-traces.md).
+
+- At most one **stacked-subplots** `TraceConfig` per window may carry sample markers.
+- A stacked `TraceConfig` with sample markers cannot coexist with `HeatmapConfig`, `RasterConfig`, or `Zip`, nor with another `TraceConfig` of any kind (including a dense one). To combine stacked traces with dense markers in the same window, attach the markers to the dense config instead.
 
 ## Overlay arrays
 

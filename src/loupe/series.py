@@ -145,3 +145,9 @@ class DenseGroup:
     step: int = 1
     traces_per_page: int | None = None
     hidden_traces: set[int] = field(default_factory=set)
+    # Optional sample-aligned marker overlays for this group. Each entry's
+    # ``bool_per_series`` is indexed by position into ``series`` (the full,
+    # post-sort series list), so it lines up 1:1 with the traces. Rendered as
+    # one aggregated ScatterPlotItem per marker set (see
+    # ``LoupeApp.dense_marker_scatters``).
+    sample_markers: list[SampleMarkers] = field(default_factory=list)

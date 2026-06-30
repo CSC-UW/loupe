@@ -290,6 +290,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.dense_groups: list[DenseGroup] = []
         self.dense_plots: list[pg.PlotItem] = []
         self.dense_curves: list[list[pg.PlotDataItem]] = []
+        # One aggregated ScatterPlotItem per marker set per group (index-parallel
+        # with dense_plots / dense_curves). Inner index = marker-set index, in
+        # DenseGroup.sample_markers order. Aggregating across all visible traces
+        # into one item per set keeps scene-item and draw-call count independent
+        # of trace count (see _refresh_dense_curves).
+        self.dense_marker_scatters: list[list[pg.ScatterPlotItem]] = []
         self.dense_cur_lines: list[pg.InfiniteLine] = []
         self.dense_sel_regions: list[pg.LinearRegionItem] = []
         self.dense_interval_label_regions: list[list[pg.LinearRegionItem]] = []
@@ -1238,14 +1244,39 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         dlg.exec()
 
+    def _sample_marker_registry(self) -> list[dict]:
+        """Unified list of every editable marker set — stacked and dense.
+
+        Each entry exposes the runtime ``SampleMarkers`` object (mutated live by
+        the dialog) plus an ``apply`` callback that pushes the current style to
+        the matching on-screen scatter items, and a ``source`` label. Stacked
+        markers come first, then one entry per dense group's marker sets."""
+        entries: list[dict] = []
+        for i, marker in enumerate(self.sample_markers):
+            entries.append({
+                "marker": marker,
+                "source": "stacked",
+                "apply": (lambda idx=i: self._apply_sample_marker_style(idx)),
+            })
+        for gi, group in enumerate(self.dense_groups):
+            for mi, marker in enumerate(group.sample_markers):
+                entries.append({
+                    "marker": marker,
+                    "source": f"dense: {group.name}",
+                    "apply": (lambda g=gi, m=mi: self._apply_dense_marker_style(g, m)),
+                })
+        return entries
+
     def _adjust_sample_marker_properties(self):
         """View-menu handler: live-edit color, size, and opacity per sample-marker set."""
-        if not self.sample_markers:
+        entries = self._sample_marker_registry()
+        if not entries:
             QtWidgets.QMessageBox.information(
                 self,
                 "Sample Marker Properties",
                 "No sample markers loaded.\n\n"
-                "Pass bool_event_arrays= to view() to add markers.",
+                "Pass sample_markers=[SampleMarkers(...)] to a TraceConfig to "
+                "add markers.",
             )
             return
 
@@ -1260,48 +1291,47 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(12)
-        for col, header in enumerate(["#", "Symbol", "Color", "Size", "Opacity"]):
+        for col, header in enumerate(["#", "Source", "Symbol", "Color", "Size", "Opacity"]):
             lbl = QtWidgets.QLabel(header)
             lbl.setStyleSheet("font-weight: bold;")
             grid.addWidget(lbl, 0, col)
 
-        def _make_color_button(marker_idx: int) -> QtWidgets.QPushButton:
-            marker = self.sample_markers[marker_idx]
+        def _make_color_button(entry: dict) -> QtWidgets.QPushButton:
+            marker = entry["marker"]
             btn = QtWidgets.QPushButton()
             btn.setFixedWidth(60)
 
             def _refresh_swatch():
-                qc = pg.mkColor(self.sample_markers[marker_idx].color)
+                qc = pg.mkColor(marker.color)
                 btn.setStyleSheet(
                     f"background-color: {qc.name()}; border: 1px solid #888;"
                 )
 
             def _on_click():
-                cur = pg.mkColor(self.sample_markers[marker_idx].color)
+                cur = pg.mkColor(marker.color)
                 qc0 = QtGui.QColor(cur.red(), cur.green(), cur.blue())
-                picked = QtWidgets.QColorDialog.getColor(
-                    qc0, dlg, f"Marker {marker_idx} Color"
-                )
+                picked = QtWidgets.QColorDialog.getColor(qc0, dlg, "Marker Color")
                 if picked.isValid():
-                    self.sample_markers[marker_idx].color = (
-                        picked.red(), picked.green(), picked.blue()
-                    )
+                    marker.color = (picked.red(), picked.green(), picked.blue())
                     _refresh_swatch()
-                    self._apply_sample_marker_style(marker_idx)
+                    entry["apply"]()
 
             btn.clicked.connect(_on_click)
             _refresh_swatch()
             return btn
 
-        for li, marker in enumerate(self.sample_markers):
+        for li, entry in enumerate(entries):
+            marker = entry["marker"]
             row = li + 1
             grid.addWidget(QtWidgets.QLabel(str(li)), row, 0)
 
+            grid.addWidget(QtWidgets.QLabel(entry["source"]), row, 1)
+
             symbol_lbl = QtWidgets.QLabel(marker.marker)
             symbol_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            grid.addWidget(symbol_lbl, row, 1)
+            grid.addWidget(symbol_lbl, row, 2)
 
-            grid.addWidget(_make_color_button(li), row, 2)
+            grid.addWidget(_make_color_button(entry), row, 3)
 
             size_spin = QtWidgets.QDoubleSpinBox()
             size_spin.setRange(2.0, 40.0)
@@ -1309,12 +1339,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             size_spin.setDecimals(1)
             size_spin.setValue(float(marker.size))
             size_spin.valueChanged.connect(
-                lambda v, idx=li: (
-                    setattr(self.sample_markers[idx], "size", float(v)),
-                    self._apply_sample_marker_style(idx),
+                lambda v, m=marker, e=entry: (
+                    setattr(m, "size", float(v)),
+                    e["apply"](),
                 )
             )
-            grid.addWidget(size_spin, row, 3)
+            grid.addWidget(size_spin, row, 4)
 
             alpha_row = QtWidgets.QHBoxLayout()
             alpha_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1323,17 +1353,17 @@ class LoupeApp(QtWidgets.QMainWindow):
             alpha_lbl = QtWidgets.QLabel(f"{int(marker.alpha)}")
             alpha_lbl.setFixedWidth(32)
             alpha_slider.valueChanged.connect(
-                lambda v, idx=li, lbl=alpha_lbl: (
-                    setattr(self.sample_markers[idx], "alpha", int(v)),
+                lambda v, m=marker, e=entry, lbl=alpha_lbl: (
+                    setattr(m, "alpha", int(v)),
                     lbl.setText(str(int(v))),
-                    self._apply_sample_marker_style(idx),
+                    e["apply"](),
                 )
             )
             alpha_row.addWidget(alpha_slider)
             alpha_row.addWidget(alpha_lbl)
             wrap = QtWidgets.QWidget()
             wrap.setLayout(alpha_row)
-            grid.addWidget(wrap, row, 4)
+            grid.addWidget(wrap, row, 5)
 
         outer.addLayout(grid)
 
@@ -2524,6 +2554,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
         self.dense_curves.clear()
+        self.dense_marker_scatters.clear()
         self.dense_cur_lines.clear()
         self.dense_sel_regions.clear()
         self.dense_interval_label_regions.clear()
@@ -3101,6 +3132,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.plot_sel_regions.clear()
         self.dense_plots.clear()
         self.dense_curves.clear()
+        self.dense_marker_scatters.clear()
         self.dense_cur_lines.clear()
         self.dense_sel_regions.clear()
         self.dense_interval_label_regions.clear()
@@ -3965,6 +3997,18 @@ class LoupeApp(QtWidgets.QMainWindow):
             curve.setClipToView(True)
             curves.append(curve)
 
+        # One aggregated scatter per marker set, drawn above the curves (z=10).
+        # Populated per-window in _refresh_dense_curves by concatenating the
+        # masked, display-transformed points across all visible traces.
+        marker_scatters: list[pg.ScatterPlotItem] = []
+        for mk in group.sample_markers:
+            sk = _scatter_kwargs_for_marker(mk)
+            sc = pg.ScatterPlotItem(**sk, pxMode=True, antialias=False)
+            sc.setZValue(10)
+            plt.addItem(sc)
+            marker_scatters.append(sc)
+        self.dense_marker_scatters.append(marker_scatters)
+
         # Cursor line
         cur_line = pg.InfiniteLine(
             angle=90, movable=False, pen=pg.mkPen((255, 255, 255, 120))
@@ -4107,6 +4151,13 @@ class LoupeApp(QtWidgets.QMainWindow):
             offsets = self._dense_offsets(gi)
             curves = self.dense_curves[gi]
             means = self._dense_means[gi]
+            # Accumulate marker points across all visible traces into one array
+            # per marker set, then push a single setData per set (one scene item
+            # / draw call regardless of trace count). Reuses the per-trace window
+            # slice and display transform already computed for the curve.
+            mks = group.sample_markers
+            xacc = [[] for _ in mks] if mks else None
+            yacc = [[] for _ in mks] if mks else None
             for li, (si, offset) in enumerate(zip(visible, offsets)):
                 s = group.series[si]
                 i0 = max(0, np.searchsorted(s.t, t0) - 1)
@@ -4114,6 +4165,22 @@ class LoupeApp(QtWidgets.QMainWindow):
                 ts = s.t[i0:i1]
                 ys_display = (s.y[i0:i1] - means[si]) * group.gain + offset
                 curves[li].setData(ts, ys_display, _callSync="off")
+                if mks:
+                    for mi, mk in enumerate(mks):
+                        mask = mk.bool_per_series[si][i0:i1]
+                        if mask.any():
+                            xacc[mi].append(ts[mask])
+                            yacc[mi].append(ys_display[mask])
+            scatters = self.dense_marker_scatters[gi] if gi < len(self.dense_marker_scatters) else []
+            for mi, sc in enumerate(scatters):
+                if xacc is not None and xacc[mi]:
+                    sc.setData(
+                        x=np.concatenate(xacc[mi]),
+                        y=np.concatenate(yacc[mi]),
+                        _callSync="off",
+                    )
+                else:
+                    sc.setData(x=[], y=[], _callSync="off")
 
     def _vertical_page(self, direction: int):
         """Scroll the plot scroll area up/down by one page."""
@@ -5901,6 +5968,29 @@ class LoupeApp(QtWidgets.QMainWindow):
             scat.setSize(sk["size"])
             scat.setPen(sk["pen"] if sk["pen"] is not None else no_pen)
             scat.setBrush(sk["brush"] if sk["brush"] is not None else no_brush)
+
+    def _apply_dense_marker_style(self, group_idx: int, marker_idx: int) -> None:
+        """Push the current style of ``dense_groups[group_idx].sample_markers
+        [marker_idx]`` to its aggregated scatter item. Dense sibling of
+        ``_apply_sample_marker_style``; used by the live-edit dialog."""
+        if not (0 <= group_idx < len(self.dense_groups)):
+            return
+        markers = self.dense_groups[group_idx].sample_markers
+        if not (0 <= marker_idx < len(markers)):
+            return
+        if group_idx >= len(self.dense_marker_scatters):
+            return
+        scatters = self.dense_marker_scatters[group_idx]
+        if marker_idx >= len(scatters):
+            return
+        sk = _scatter_kwargs_for_marker(markers[marker_idx])
+        no_pen = pg.mkPen(0, 0, 0, 0)
+        no_brush = pg.mkBrush(0, 0, 0, 0)
+        scat = scatters[marker_idx]
+        scat.setSymbol(sk["symbol"])
+        scat.setSize(sk["size"])
+        scat.setPen(sk["pen"] if sk["pen"] is not None else no_pen)
+        scat.setBrush(sk["brush"] if sk["brush"] is not None else no_brush)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)

@@ -21,10 +21,16 @@ if TYPE_CHECKING:
 
 @dataclass
 class SampleMarkers:
-    """Marker symbols stamped onto specific samples of a stacked-subplots :class:`TraceConfig`.
+    """Marker symbols stamped onto specific samples of a :class:`TraceConfig`.
 
     Pass one or more in :attr:`TraceConfig.sample_markers` to overlay spike-,
     seizure-, or other sample-aligned markers on the trace they annotate.
+    Supported in both ``mode="stacked-subplots"`` and ``mode="dense"``. In
+    dense mode markers are drawn at the *displayed* y (``(value − mean) × gain
+    + offset``), so they track the traces as gain changes; each marker set is a
+    single color (no hue tinting). Stacked mode allows only one marker-carrying
+    ``TraceConfig`` per window, while dense markers are unrestricted (multiple
+    carriers, free coexistence with heatmaps / rasters / stacked traces).
 
     Parameters
     ----------
@@ -37,8 +43,11 @@ class SampleMarkers:
         ``(R, G, B[, A])`` tuple.
     bool_array : xr.DataArray
         Boolean DataArray whose dims/shape match the parent
-        :class:`TraceConfig`'s ``data``.  ``True`` at sample *i* on trace
-        *j* draws a marker at ``y = trace_value`` at that timepoint.
+        :class:`TraceConfig`'s ``data`` (for an ``N``-trace × ``S``-sample
+        config, an ``(N, S)`` array with the same dims).  ``True`` at sample
+        *i* on trace *j* draws a marker at that trace's value at that
+        timepoint.  Aligned to the traces by coordinate label and the same
+        ``order_by`` / ``descending`` ordering as the data.
     size : float, optional
         Marker size in points.  ``None`` (default) picks 8.0 for ``'o'``
         and 9.0 for other markers.
@@ -100,10 +109,13 @@ class TraceConfig:
         ``array_name="LFP"`` → ``"LFP: CA1-SR"``).
     sample_markers : list[SampleMarkers] or None
         Optional sample-aligned markers drawn on top of the traces produced by
-        this DataArray.  Stacked-subplots mode only; at most one
-        :class:`TraceConfig` per window may carry sample markers, and no
-        :class:`HeatmapConfig` / :class:`RasterConfig` / :class:`Zip` may
-        appear alongside.
+        this DataArray.  Supported in both ``"stacked-subplots"`` and
+        ``"dense"`` mode.  In stacked mode at most one :class:`TraceConfig` per
+        window may carry markers and no :class:`HeatmapConfig` /
+        :class:`RasterConfig` / :class:`Zip` may appear alongside; dense markers
+        have no such restriction (multiple carriers, free coexistence) and are
+        drawn at the displayed y so they track the gain.  See
+        :class:`SampleMarkers`.
     overlay_arrays : list[xr.DataArray] or None
         Extra DataArrays to draw *on the same axes* as this TraceConfig's own
         trace(s), rather than in their own subplots.  Each overlay array must

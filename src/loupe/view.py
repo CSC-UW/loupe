@@ -27,6 +27,18 @@ if TYPE_CHECKING:
     from loupe.app import LoupeApp
 
 
+def _resolve_marker_size_alpha(marker) -> tuple[float, int]:
+    """Resolve a config :class:`SampleMarkers`' ``None`` size/alpha to defaults.
+
+    ``'o'`` (filled circle) → size 8.0, alpha 110 (semi-transparent fill);
+    any other symbol → size 9.0, alpha 255 (solid stroke). Shared by the
+    stacked and dense conversion paths so the two never drift.
+    """
+    size = marker.size if marker.size is not None else (8.0 if marker.marker == "o" else 9.0)
+    alpha = marker.alpha if marker.alpha is not None else (110 if marker.marker == "o" else 255)
+    return float(size), int(alpha)
+
+
 def view(
     data: "TraceConfig | HeatmapConfig | RasterConfig | Zip | list | None" = None,
     *,
@@ -188,35 +200,37 @@ def view(
                 "same window. Move the traces into the Zip, or remove the Zip."
             )
 
-    marker_carrier = next(
-        (
-            x for x in data_list
-            if isinstance(x, TraceConfig) and x.sample_markers is not None
-        ),
-        None,
-    )
-    if marker_carrier is not None:
-        if marker_carrier.mode != "stacked-subplots":
-            raise ValueError(
-                "TraceConfig.sample_markers require mode='stacked-subplots'."
-            )
-        others = [x for x in data_list if x is not marker_carrier]
-        if any(
-            isinstance(x, TraceConfig) and x.sample_markers is not None
-            for x in others
-        ):
-            raise ValueError(
-                "Only one TraceConfig may carry sample_markers per window."
-            )
+    # Sample-marker validation is split by mode. Dense carriers render as one
+    # aggregated ScatterPlotItem per group (independent of trace count), so they
+    # are self-contained: any number may coexist with each other and with
+    # heatmaps / rasters / stacked traces. Stacked carriers keep the original
+    # single-carrier / no-coexistence rules (their markers share global app
+    # state and assume a single TraceConfig).
+    stacked_marker_carriers = [
+        x for x in data_list
+        if isinstance(x, TraceConfig)
+        and x.sample_markers is not None
+        and x.mode == "stacked-subplots"
+    ]
+    if len(stacked_marker_carriers) > 1:
+        raise ValueError(
+            "Only one stacked-subplots TraceConfig may carry sample_markers per "
+            "window."
+        )
+    if stacked_marker_carriers:
+        carrier = stacked_marker_carriers[0]
+        others = [x for x in data_list if x is not carrier]
         if any(isinstance(x, (HeatmapConfig, RasterConfig, Zip)) for x in others):
             raise ValueError(
-                "TraceConfig.sample_markers cannot coexist with HeatmapConfig / "
-                "RasterConfig / Zip in the same window."
+                "A stacked-subplots TraceConfig with sample_markers cannot "
+                "coexist with HeatmapConfig / RasterConfig / Zip in the same "
+                "window. (Dense-mode markers have no such restriction.)"
             )
         if any(isinstance(x, TraceConfig) for x in others):
             raise ValueError(
-                "TraceConfig.sample_markers require a single TraceConfig in the "
-                "data list."
+                "A stacked-subplots TraceConfig with sample_markers must be the "
+                "only TraceConfig in the data list. (Dense-mode markers have no "
+                "such restriction.)"
             )
 
     # ---- Qt application + launch-progress reporter -----------------------
@@ -359,6 +373,30 @@ def view(
                 )
                 series_objs = [Series(n, t, y) for n, t, y in tuples]
                 group_name = prefix or (str(cfg.data.name) if cfg.data.name else f"dense_{i}")
+                # Sample markers attach to the group. The same sort permutation
+                # is applied here as for the data (both go through
+                # _compute_trace_sort_index), so bool_per_series[si] lines up
+                # with series_objs[si]. Rendered as one aggregated scatter per
+                # marker set — see LoupeApp.dense_marker_scatters.
+                dense_markers: list = []
+                if cfg.sample_markers is not None:
+                    bool_per_marker = convert_event_arrays_aligned_with(
+                        cfg.data,
+                        [m.bool_array for m in cfg.sample_markers],
+                        order_by=cfg.order_by,
+                        descending=cfg.descending,
+                    )
+                    for marker, bps in zip(cfg.sample_markers, bool_per_marker):
+                        size, alpha = _resolve_marker_size_alpha(marker)
+                        dense_markers.append(
+                            _RenderedSampleMarkers(
+                                marker=marker.marker,
+                                color=marker.color,
+                                bool_per_series=bps,
+                                size=size,
+                                alpha=alpha,
+                            )
+                        )
                 dense_idx = len(dense_list)
                 dense_list.append(DenseGroup(
                     name=str(group_name),
@@ -371,6 +409,7 @@ def view(
                     gain=cfg.gain,
                     step=cfg.step,
                     traces_per_page=cfg.traces_per_page,
+                    sample_markers=dense_markers,
                 ))
                 order_acc.append(("dense", dense_idx))
             elif cfg.mode == "stacked-subplots":
@@ -447,12 +486,7 @@ def view(
                     )
                     sample_markers_rendered = []
                     for marker, bps in zip(cfg.sample_markers, bool_per_marker):
-                        size = marker.size
-                        if size is None:
-                            size = 8.0 if marker.marker == "o" else 9.0
-                        alpha = marker.alpha
-                        if alpha is None:
-                            alpha = 110 if marker.marker == "o" else 255
+                        size, alpha = _resolve_marker_size_alpha(marker)
                         sample_markers_rendered.append(
                             _RenderedSampleMarkers(
                                 marker=marker.marker,
