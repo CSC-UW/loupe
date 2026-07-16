@@ -214,7 +214,8 @@ you can tune those parameters from inside Loupe and watch the affected curves
 redraw in near-real-time — no re-running the cell.
 
 Wrap the parameter in a `Param` and the computation in `tunable(...)`, then put
-the result in any `TraceConfig` `data=` or `overlay_arrays=` slot:
+the result in a stacked `TraceConfig` `data=` / `overlay_arrays=` slot or a
+stacked `SampleMarkers(..., bool_array=...)` mask:
 
 ```python
 %gui qt6
@@ -244,9 +245,9 @@ or click **Copy values** for a `{name: value, …}` dict of every param.
 - A bare zero-arg `lambda` that reads `Param` values also works
   (`overlay_arrays=[lambda: f(raw, k=k.value)]`), but `tunable(...)` is the
   reliable, recommended form.
-- This checkpoint tunes **stacked traces and their overlays**; tuning event
-  rasters, heatmaps, and dense mode renders with the initial values for now (a
-  warning is printed) and is coming next.
+- This checkpoint tunes **stacked traces, their overlays, and their sample-marker
+  masks**; tuning event rasters, heatmaps, and dense mode renders with the
+  initial values for now (a warning is printed) and is coming next.
 
 ---
 

@@ -18,7 +18,7 @@ import xarray as xr
 from PySide6 import QtWidgets
 
 import loupe.app as _loupe_app
-from loupe import Param, TraceConfig, tunable, view
+from loupe import Param, SampleMarkers, TraceConfig, tunable, view
 
 _EXAMPLE_STATE_DEFS = os.path.join(
     os.path.dirname(_loupe_app.__file__),
@@ -49,6 +49,15 @@ def _ls(ids=(10, 11, 12), n=1500, seed=0):
 def _scale(da, k=1.0):
     """Pure, shape-preserving stand-in for a tunable transform."""
     return da * float(k)
+
+
+def _marker_after(da, t0=0.0):
+    """Boolean marker mask for the portion of a trace at/after ``t0``."""
+    return xr.DataArray(
+        np.broadcast_to(da.time.values >= float(t0), da.shape),
+        dims=da.dims,
+        coords=da.coords,
+    )
 
 
 def _view(cfg):
@@ -89,6 +98,39 @@ def test_no_tunable_means_no_bindings():
     try:
         assert w._tuner_bindings == []
         assert w._tuner_params == []
+    finally:
+        w.close()
+
+
+def test_tunable_sample_marker_captures_binding_and_recomputes():
+    ls = _ls(ids=(10,), n=200)
+    t0 = Param(0.05, 0.0, 0.19, name="marker_t0")
+    w = _view(TraceConfig(
+        data=ls,
+        sample_markers=[
+            SampleMarkers(
+                marker="o",
+                color="#ff00aa",
+                bool_array=tunable(_marker_after, ls, t0=t0),
+            )
+        ],
+    ))
+    try:
+        assert len(w._tuner_bindings) == 1
+        binding = w._tuner_bindings[0]
+        assert binding.kind == "trace_marker"
+        assert binding.marker_k == 0
+        assert w._tuner_params == [t0]
+        before = np.array(w.sample_markers[0].bool_per_series[0], copy=True)
+
+        t0.value = 0.15
+        w._on_tuner_param_changed(t0)
+        w._flush_tuner()
+
+        after = w.sample_markers[0].bool_per_series[0]
+        assert after.sum() < before.sum()
+        x, _ = w.sample_marker_scatters[0][0].getData()
+        assert x is not None and len(x) == int(after.sum())
     finally:
         w.close()
 
@@ -193,19 +235,67 @@ def test_bare_lambda_global_param_discovered_and_tuned():
         w.close()
 
 
-def test_yrange_refits_on_amplitude_growth():
+def test_view_preserved_by_default_on_amplitude_growth():
     ls = _ls()
     k = Param(1.0, 0.1, 10.0, name="k")  # overlay = host * k
     w = _view(TraceConfig(data=ls, overlay_arrays=[tunable(_scale, ls, k=k)]))
     try:
-        assert w.fixed_scale  # default
+        assert w.fixed_scale and w.tuner_preserve_view  # defaults
+        x0, y0 = (tuple(r) for r in w.plots[0].getViewBox().viewRange())
+        k.value = 8.0
+        w._on_tuner_param_changed(k)
+        w._flush_tuner()
+        x1, y1 = (tuple(r) for r in w.plots[0].getViewBox().viewRange())
+        # Default: tuning must NOT move the view, even as the overlay grows 8x.
+        assert x1 == pytest.approx(x0) and y1 == pytest.approx(y0)
+    finally:
+        w.close()
+
+
+def test_yrange_refits_on_amplitude_growth_when_preserve_view_off():
+    ls = _ls()
+    k = Param(1.0, 0.1, 10.0, name="k")  # overlay = host * k
+    w = view(
+        TraceConfig(data=ls, overlay_arrays=[tunable(_scale, ls, k=k)]),
+        state_definitions=_EXAMPLE_STATE_DEFS,
+        tuner_preserve_view=False,
+    )
+    try:
+        assert w.fixed_scale and not w.tuner_preserve_view
         lo0, hi0 = w.plots[0].getViewBox().viewRange()[1]
         k.value = 8.0
         w._on_tuner_param_changed(k)
         w._flush_tuner()
         lo1, hi1 = w.plots[0].getViewBox().viewRange()[1]
-        # The 8x overlay must widen the fixed Y-range substantially.
+        # Legacy behaviour: the 8x overlay widens the fixed Y-range substantially.
         assert (hi1 - lo1) > 2.0 * (hi0 - lo0)
+    finally:
+        w.close()
+
+
+def test_overlay_symbol_renders_points_and_survives_recompute():
+    ls = _ls(ids=(10,), n=400)
+    k = Param(1.0, 0.1, 8.0, name="k")
+    w = _view(TraceConfig(
+        data=ls,
+        overlay_arrays=[tunable(_scale, ls, k=k)],
+        overlay_symbols=["o"],
+        overlay_symbol_sizes=[9.0],
+    ))
+    try:
+        item = w.overlay_curve_items[0][0]
+        # The overlay is a point cloud: symbol set, no connecting line.
+        assert item.opts.get("symbol") == "o"
+        assert item.opts.get("pen") is None
+        before = np.array(w.overlay_series[0][0].y, copy=True)
+        k.value = 3.0
+        w._on_tuner_param_changed(k)
+        w._flush_tuner()
+        np.testing.assert_allclose(
+            w.overlay_series[0][0].y, before * 3.0, rtol=1e-4
+        )
+        # symbol styling is preserved across the live recompute
+        assert item.opts.get("symbol") == "o"
     finally:
         w.close()
 

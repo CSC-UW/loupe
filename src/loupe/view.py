@@ -257,6 +257,8 @@ def view(
     xr_series: list[Series] = []
     stacked_colors_acc: list = []
     any_stacked_color = False
+    stacked_widths_acc: list = []
+    any_stacked_width = False
     bottom_spines_acc: list = []
     any_bottom_spine = False
     dense_list: list[DenseGroup] = []
@@ -441,6 +443,16 @@ def view(
                 # marker set — see LoupeApp.dense_marker_scatters.
                 dense_markers: list = []
                 if cfg.sample_markers is not None:
+                    if any(
+                        isinstance(m.bool_array, Tunable)
+                        or callable(m.bool_array)
+                        for m in cfg.sample_markers
+                    ):
+                        raise NotImplementedError(
+                            "Tuner: live SampleMarkers are currently supported "
+                            "only in mode='stacked-subplots'. Dense-mode marker "
+                            "masks must be concrete DataArrays."
+                        )
                     bool_per_marker = convert_event_arrays_aligned_with(
                         data_concrete,
                         [m.bool_array for m in cfg.sample_markers],
@@ -489,6 +501,9 @@ def view(
                     stacked_colors_acc.append(cfg.color)
                     if cfg.color is not None:
                         any_stacked_color = True
+                    stacked_widths_acc.append(cfg.line_width)
+                    if cfg.line_width != 1.0:
+                        any_stacked_width = True
                     bottom_spines_acc.append(cfg.add_bottom_spine)
                     if cfg.add_bottom_spine:
                         any_bottom_spine = True
@@ -533,6 +548,21 @@ def view(
                         ov_colors = [
                             palette[k % len(palette)] for k in range(n_overlay)
                         ]
+                    if cfg.overlay_line_widths is not None:
+                        ov_widths = list(cfg.overlay_line_widths)
+                        ov_widths += [1.0] * (n_overlay - len(ov_widths))
+                    else:
+                        ov_widths = [1.0] * n_overlay
+                    if cfg.overlay_symbols is not None:
+                        ov_symbols = list(cfg.overlay_symbols)
+                        ov_symbols += [None] * (n_overlay - len(ov_symbols))
+                    else:
+                        ov_symbols = [None] * n_overlay
+                    if cfg.overlay_symbol_sizes is not None:
+                        ov_sym_sizes = list(cfg.overlay_symbol_sizes)
+                        ov_sym_sizes += [8.0] * (n_overlay - len(ov_sym_sizes))
+                    else:
+                        ov_sym_sizes = [8.0] * n_overlay
                     main_name = (
                         str(data_concrete.name)
                         if getattr(data_concrete, "name", None)
@@ -545,6 +575,9 @@ def view(
                                 color=ov_colors[k],
                                 t=aligned[k][si][0],
                                 y=aligned[k][si][1],
+                                width=ov_widths[k],
+                                symbol=ov_symbols[k],
+                                symbol_size=ov_sym_sizes[k],
                             )
                             for k in range(n_overlay)
                         ])
@@ -565,13 +598,26 @@ def view(
                         overlay_series_acc.append([])
                         overlay_main_names_acc.append(None)
                 if cfg.sample_markers is not None:
+                    resolved_marker_arrays = []
+                    marker_tuns = []
+                    for marker in cfg.sample_markers:
+                        marker_array, marker_tun = _resolve(marker.bool_array)
+                        resolved_marker_arrays.append(marker_array)
+                        marker_tuns.append(marker_tun)
+                    if data_tun is not None and any(t is not None for t in marker_tuns):
+                        raise NotImplementedError(
+                            "Tuner: live SampleMarkers require a concrete "
+                            "TraceConfig.data array."
+                        )
                     bool_per_marker = convert_event_arrays_aligned_with(
                         data_concrete,
-                        [m.bool_array for m in cfg.sample_markers],
+                        resolved_marker_arrays,
                         order_by=cfg.order_by,
                         descending=cfg.descending,
                     )
-                    sample_markers_rendered = []
+                    if sample_markers_rendered is None:
+                        sample_markers_rendered = []
+                    marker_base = len(sample_markers_rendered)
                     for marker, bps in zip(cfg.sample_markers, bool_per_marker):
                         size, alpha = _resolve_marker_size_alpha(marker)
                         sample_markers_rendered.append(
@@ -583,6 +629,14 @@ def view(
                                 alpha=alpha,
                             )
                         )
+                    for marker_k, marker_tun in enumerate(marker_tuns):
+                        if marker_tun is not None:
+                            bindings.append(Binding(
+                                kind="trace_marker", tunable=marker_tun, cfg=cfg,
+                                marker_host_slice=host_slice,
+                                marker_k=marker_base + marker_k,
+                                host_data=data_concrete,
+                            ))
             else:
                 raise ValueError(
                     f"Unknown TraceConfig.mode={cfg.mode!r} "
@@ -602,6 +656,7 @@ def view(
 
     xr_series_out = xr_series or None
     stacked_colors = stacked_colors_acc if any_stacked_color else None
+    stacked_widths = stacked_widths_acc if any_stacked_width else None
     dense_groups = dense_list or None
     heatmap_series = heatmap_list or None
     raster_series_list = raster_list or None
@@ -641,6 +696,8 @@ def view(
 
     if stacked_colors is not None and "colors" not in kwargs:
         kwargs["colors"] = stacked_colors
+    if stacked_widths is not None and "line_widths" not in kwargs:
+        kwargs["line_widths"] = stacked_widths
     if config_subplot_order is not None and "subplot_order" not in kwargs:
         kwargs["subplot_order"] = config_subplot_order
     if any_bottom_spine and "bottom_spines" not in kwargs:

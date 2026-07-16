@@ -43,13 +43,16 @@ class SampleMarkers:
     color : str or RGB(A) tuple
         Marker color — named string, hex (``"#RRGGBB"``), or
         ``(R, G, B[, A])`` tuple.
-    bool_array : xr.DataArray
+    bool_array : xr.DataArray or Tunable or Callable
         Boolean DataArray whose dims/shape match the parent
         :class:`TraceConfig`'s ``data`` (for an ``N``-trace × ``S``-sample
         config, an ``(N, S)`` array with the same dims).  ``True`` at sample
         *i* on trace *j* draws a marker at that trace's value at that
         timepoint.  Aligned to the traces by coordinate label and the same
-        ``order_by`` / ``descending`` ordering as the data.
+        ``order_by`` / ``descending`` ordering as the data. In stacked-subplot
+        mode this can instead be a :func:`loupe.tunable` wrapper (or a bare
+        zero-argument callable returning that Boolean DataArray), so the
+        markers move live with the Tuner. Dense-mode marker masks are static.
     size : float, optional
         Marker size in points.  ``None`` (default) picks 8.0 for ``'o'``
         and 9.0 for other markers.
@@ -61,7 +64,7 @@ class SampleMarkers:
 
     marker: str
     color: "str | tuple"
-    bool_array: "xr.DataArray"
+    bool_array: "xr.DataArray | Tunable | Callable"
     size: float | None = None
     alpha: int | None = None
 
@@ -105,6 +108,14 @@ class TraceConfig:
         Single color applied to every trace produced by this DataArray,
         e.g. ``"#a020f0"`` or ``(160, 32, 240)``.  Overrides ``hue`` /
         ``palette`` when both are set.
+    line_width : float
+        Line width (in pixels) of this config's own trace(s).  Default
+        ``1.0``.  Stacked-subplots mode only.
+    overlay_line_widths : list[float] or None
+        One line width (pixels) per entry in *overlay_arrays*.  ``None``
+        (default) draws every overlay at width ``1.0``; a short list is
+        extended with ``1.0``.  Ignored when *overlay_arrays* is unset.
+        Stacked-subplots mode only.
     array_name : bool or str
         Controls the array-level component of each trace name.  ``False``
         (default) prepends nothing; multi-trace DataArrays render as just
@@ -119,7 +130,8 @@ class TraceConfig:
         window may carry markers and no :class:`HeatmapConfig` /
         :class:`RasterConfig` / :class:`Zip` may appear alongside; dense markers
         have no such restriction (multiple carriers, free coexistence) and are
-        drawn at the displayed y so they track the gain.  See
+        drawn at the displayed y so they track the gain. In a stacked view,
+        each marker's ``bool_array`` may be a live tunable result. See
         :class:`SampleMarkers`.
     overlay_arrays : list[xr.DataArray] or None
         Extra DataArrays to draw *on the same axes* as this TraceConfig's own
@@ -140,6 +152,17 @@ class TraceConfig:
         or RGB(A) tuples.  ``None`` (default) cycles a built-in distinct
         palette.  A short list is extended from the palette.  Ignored when
         *overlay_arrays* is unset.
+    overlay_symbols : list or None
+        One entry per *overlay_arrays* item selecting how that overlay is drawn.
+        ``None`` (the default, and the per-entry default) draws a connected
+        line; a pyqtgraph symbol string (``"o"``, ``"t"``, ``"x"``, ``"s"``, …)
+        draws *unconnected point markers* at the overlay's finite samples
+        instead — ideal for stamping landmark points (a trough, a peak) onto a
+        trace. A short list is padded with ``None`` (line). Stacked-subplots
+        mode only; ignored when *overlay_arrays* is unset.
+    overlay_symbol_sizes : list or None
+        One marker size (points) per *overlay_arrays* entry, used only where
+        *overlay_symbols* names a symbol. ``None`` (default) uses ``8.0``.
     add_bottom_spine : bool
         When ``True`` (stacked-subplots mode only), draw a minimal horizontal
         line at the bottom of each subplot produced by this DataArray, marking
@@ -163,6 +186,10 @@ class TraceConfig:
     sample_markers: "list[SampleMarkers] | None" = None
     overlay_arrays: "list[xr.DataArray | Tunable | Callable] | None" = None
     overlay_colors: "list | None" = None
+    line_width: float = 1.0
+    overlay_line_widths: "list | None" = None
+    overlay_symbols: "list | None" = None
+    overlay_symbol_sizes: "list | None" = None
     add_bottom_spine: bool = False
 
     @classmethod

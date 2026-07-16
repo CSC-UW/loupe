@@ -57,6 +57,12 @@ class OverlayCurve:
     color: "tuple | str"
     t: np.ndarray
     y: np.ndarray
+    width: float = 1.0
+    # When set (e.g. "o", "t", "x"), the overlay is drawn as unconnected point
+    # markers at its finite samples instead of a line — handy for stamping
+    # landmarks (troughs, peaks) onto a trace. ``symbol_size`` is in points.
+    symbol: str | None = None
+    symbol_size: float = 8.0
 
 
 @dataclass

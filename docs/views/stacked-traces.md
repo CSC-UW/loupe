@@ -52,7 +52,7 @@ view(TraceConfig(
 ))
 ```
 
-`bool_array` must have the same dims/shape as `data`. `True` at sample _i_ on trace _j_ draws a marker at `(time[i], data[j, i])`.
+`bool_array` must have the same dims/shape as `data`. `True` at sample _i_ on trace _j_ draws a marker at `(time[i], data[j, i])`. In a stacked view it may also be a `tunable(...)` result (or zero-argument callable) returning that Boolean DataArray, so marker locations update with the rest of the Tuner-bound layers. Dense-mode marker masks remain static.
 
 Marker defaults:
 - `'o'` → size 8.0, alpha 110 (semi-transparent filled circle)

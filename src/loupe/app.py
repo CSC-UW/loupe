@@ -195,6 +195,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         data_dir=None,
         data_files=None,
         colors=None,
+        line_widths=None,
         video_configs: list | None = None,
         fixed_scale=True,
         window_len: float = 10.0,
@@ -244,6 +245,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Tuner: live parameter-tuning bindings + params (built by loupe.view).
         tuner_bindings: list | None = None,
         tuner_params: list | None = None,
+        # Tuner: when True (default), a parameter change leaves every plot's
+        # pan/zoom exactly as the user left it — only the recomputed data
+        # redraws. When False, touched stacked subplots re-fit their Y-range to
+        # the new data (the pre-0.x behaviour).
+        tuner_preserve_view: bool = True,
         # Optional ProgressReporter for launch-time progress.
         reporter=None,
     ):
@@ -272,6 +278,16 @@ class LoupeApp(QtWidgets.QMainWindow):
         # disabled). Parallel to self.plots / self.series by index.
         self.plot_bottom_spines: list = []
         self.hovered_plot = None  # *** FIX 2: Track which plot is hovered ***
+
+        # Ctrl+drag trace selection (a set of trace subplots) + Ctrl+Shift+wheel
+        # Y-scaling. The selection scales together; with none selected the
+        # hovered plot scales alone.
+        self._trace_selection: set = set()
+        self._trace_sel_active = False
+        self._trace_sel_start_y = 0.0
+        self._trace_sel_prev: set = set()
+        # Per-notch fraction the visible Y-range changes on Ctrl+Shift+wheel.
+        self._y_scale_per_notch = 0.15
 
         # Locked uniform left-axis width (px). None until auto-fit measures it
         # on the first painted layout; reset to None on full rebuilds so new
@@ -444,6 +460,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._select_end = None
         self._is_zoom_drag = False
         self.fixed_scale = bool(fixed_scale)
+        self.tuner_preserve_view = bool(tuner_preserve_view)
 
         # Video slots — one VideoSlot per VideoConfig. Workers + threads
         # are owned by the slot; labels/menu actions get attached later
@@ -566,7 +583,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         if overlay_groups:
             self.set_overlay_series(overlay_groups, colors=overlay_colors)
         elif xr_series or dense_groups or heatmap_series:
-            self.set_series(xr_series or [], colors=colors)
+            self.set_series(xr_series or [], colors=colors, line_widths=line_widths)
 
         # User-supplied initial layout order overrides the default segregated
         # order produced by set_series. Apply AFTER set_series, then rebuild
@@ -2625,8 +2642,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         if folder:
             self._load_series_from_dir(folder)
 
-    def set_series(self, series_list, colors=None):
+    def set_series(self, series_list, colors=None, line_widths=None):
         self.series = series_list
+
+        # Assign per-trace line widths (pixels; default 1.0).
+        if line_widths and len(line_widths) == len(series_list):
+            self.series_line_widths = [float(w) for w in line_widths]
+        else:
+            self.series_line_widths = [1.0] * len(series_list)
 
         # Assign per-trace colours (RGBA tuples or default white).
         if colors and len(colors) == len(series_list):
@@ -2653,6 +2676,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         # New plot set: re-fit the uniform left-axis width from scratch.
         self._left_axis_width = None
         self.plots.clear()
+        # Old plot refs are about to be destroyed; drop any trace selection
+        # (borders live on the discarded viewboxes, so just reset the set).
+        self._trace_selection = set()
+        self._trace_sel_active = False
         self.curves.clear()
         self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
@@ -2817,6 +2844,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         # New plot set: re-fit the uniform left-axis width from scratch.
         self._left_axis_width = None
         self.plots.clear()
+        # Old plot refs are about to be destroyed; drop any trace selection
+        # (borders live on the discarded viewboxes, so just reset the set).
+        self._trace_selection = set()
+        self._trace_sel_active = False
         self.curves.clear()
         self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
@@ -3146,6 +3177,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
             vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+            vb.sigWheelYScale.connect(self._on_wheel_y_scale)
+            vb.sigTraceSelectStart.connect(self._on_trace_select_start)
+            vb.sigTraceSelectUpdate.connect(self._on_trace_select_update)
+            vb.sigTraceSelectFinish.connect(self._on_trace_select_finish)
 
             plt = HoverablePlotItem(viewBox=vb)
             plt.sigHovered.connect(self._on_plot_hovered)
@@ -3231,6 +3266,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         # New plot set: re-fit the uniform left-axis width from scratch.
         self._left_axis_width = None
         self.plots.clear()
+        # Old plot refs are about to be destroyed; drop any trace selection
+        # (borders live on the discarded viewboxes, so just reset the set).
+        self._trace_selection = set()
+        self._trace_sel_active = False
         self.curves.clear()
         self.plot_bottom_spines.clear()
         self.sample_marker_scatters.clear()
@@ -3336,6 +3375,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
             vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+            vb.sigWheelYScale.connect(self._on_wheel_y_scale)
+            vb.sigTraceSelectStart.connect(self._on_trace_select_start)
+            vb.sigTraceSelectUpdate.connect(self._on_trace_select_update)
+            vb.sigTraceSelectFinish.connect(self._on_trace_select_finish)
 
             plt = HoverablePlotItem(viewBox=vb)
             plt.sigHovered.connect(self._on_plot_hovered)
@@ -3366,7 +3409,9 @@ class LoupeApp(QtWidgets.QMainWindow):
                 pen_color = self.series_colors[idx]
             else:
                 pen_color = (255, 255, 255)
-            pen = pg.mkPen(pen_color, width=1)
+            widths = getattr(self, "series_line_widths", None)
+            pen_width = widths[idx] if widths and idx < len(widths) else 1.0
+            pen = pg.mkPen(pen_color, width=pen_width)
             # Name the host curve only when it carries overlays, so its legend
             # distinguishes host vs. overlay; otherwise leave it unnamed (no
             # legend entry, preserving the pre-overlay look).
@@ -3387,13 +3432,27 @@ class LoupeApp(QtWidgets.QMainWindow):
             overlay_items_for_series: list[pg.PlotDataItem] = []
             if idx < len(self.overlay_series):
                 for oc in self.overlay_series[idx]:
-                    o_pen = pg.mkPen(oc.color, width=1)
-                    o_curve = pg.PlotDataItem(
-                        [], [], pen=o_pen, name=oc.name, antialias=False
-                    )
-                    plt.addItem(o_curve)
-                    o_curve.setDownsampling(auto=True, method="peak")
-                    o_curve.setClipToView(True)
+                    symbol = getattr(oc, "symbol", None)
+                    if symbol:
+                        # Unconnected point markers at the overlay's finite
+                        # samples (pen=None → no connecting line). Downsampling
+                        # is left off so no landmark point is dropped.
+                        o_brush = pg.mkBrush(oc.color)
+                        o_curve = pg.PlotDataItem(
+                            [], [], pen=None, name=oc.name, antialias=True,
+                            symbol=symbol, symbolBrush=o_brush, symbolPen=None,
+                            symbolSize=getattr(oc, "symbol_size", 8.0),
+                        )
+                        plt.addItem(o_curve)
+                        o_curve.setClipToView(True)
+                    else:
+                        o_pen = pg.mkPen(oc.color, width=getattr(oc, "width", 1.0))
+                        o_curve = pg.PlotDataItem(
+                            [], [], pen=o_pen, name=oc.name, antialias=False
+                        )
+                        plt.addItem(o_curve)
+                        o_curve.setDownsampling(auto=True, method="peak")
+                        o_curve.setClipToView(True)
                     overlay_items_for_series.append(o_curve)
             self.overlay_curve_items.append(overlay_items_for_series)
 
@@ -3513,6 +3572,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
             vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+            vb.sigWheelYScale.connect(self._on_wheel_y_scale)
+            vb.sigTraceSelectStart.connect(self._on_trace_select_start)
+            vb.sigTraceSelectUpdate.connect(self._on_trace_select_update)
+            vb.sigTraceSelectFinish.connect(self._on_trace_select_finish)
 
             plt = HoverablePlotItem(viewBox=vb)
             plt.sigHovered.connect(self._on_plot_hovered)
@@ -3697,6 +3760,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
             vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+            vb.sigWheelYScale.connect(self._on_wheel_y_scale)
+            vb.sigTraceSelectStart.connect(self._on_trace_select_start)
+            vb.sigTraceSelectUpdate.connect(self._on_trace_select_update)
+            vb.sigTraceSelectFinish.connect(self._on_trace_select_finish)
 
             plt = HoverablePlotItem(viewBox=vb)
             plt.sigHovered.connect(self._on_plot_hovered)
@@ -3793,6 +3860,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             vb.sigWheelScrolled.connect(self._page)
             vb.sigWheelSmoothScrolled.connect(self._on_smooth_scroll)
             vb.sigWheelCursorScrolled.connect(self._on_cursor_wheel)
+            vb.sigWheelYScale.connect(self._on_wheel_y_scale)
+            vb.sigTraceSelectStart.connect(self._on_trace_select_start)
+            vb.sigTraceSelectUpdate.connect(self._on_trace_select_update)
+            vb.sigTraceSelectFinish.connect(self._on_trace_select_finish)
 
             plt = HoverablePlotItem(viewBox=vb)
             plt.sigHovered.connect(self._on_plot_hovered)
@@ -4985,6 +5056,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._pending_dirty_param_ids = set()
         if not dirty_ids:
             return
+        # Snapshot every plot's exact pan/zoom before recomputing, so a slider
+        # move never disturbs what the user is looking at — only the recomputed
+        # data redraws inside the unchanged frame. Restoring afterwards also
+        # neutralises any autorange a setData() might trigger.
+        view_snapshot = self._snapshot_plot_views() if self.tuner_preserve_view else None
         touched_trace_idxs: set[int] = set()
         for b in self._tuner_bindings:
             if any(id(p) in dirty_ids for p in b.params):
@@ -4993,15 +5069,41 @@ class LoupeApp(QtWidgets.QMainWindow):
                 except Exception as exc:  # keep the GUI alive on a bad recompute
                     self._update_status(f"Tuner: recompute failed — {exc}")
         self._refresh_curves()
-        # Re-fit Y on touched stacked subplots so a tuned amplitude stays framed.
-        if self.fixed_scale:
+        if self.tuner_preserve_view:
+            self._restore_plot_views(view_snapshot)
+        elif self.fixed_scale:
+            # Legacy behaviour: re-fit Y on touched subplots to reframe a tuned
+            # amplitude. Only reachable with tuner_preserve_view=False.
             for idx in touched_trace_idxs:
                 self._refit_trace_yrange(idx)
+
+    def _snapshot_plot_views(self) -> list[tuple]:
+        """Record each trace subplot's (x_range, y_range) for later restore."""
+        snap: list[tuple] = []
+        for plt in self.plots:
+            try:
+                xr_, yr_ = plt.getViewBox().viewRange()
+                snap.append((plt, tuple(xr_), tuple(yr_)))
+            except Exception:
+                continue
+        return snap
+
+    def _restore_plot_views(self, snapshot: list[tuple] | None) -> None:
+        """Restore ranges captured by :meth:`_snapshot_plot_views`, exactly."""
+        if not snapshot:
+            return
+        for plt, xr_, yr_ in snapshot:
+            try:
+                vb = plt.getViewBox()
+                vb.setRange(xRange=xr_, yRange=yr_, padding=0)
+            except Exception:
+                continue
 
     def _apply_binding(self, b, touched_trace_idxs: set[int]) -> None:
         """Re-evaluate one Tunable and write fresh data into the runtime
         containers it owns, in place (registry parallelism is preserved)."""
         from loupe.xr_loader import (
+            convert_event_arrays_aligned_with,
             convert_overlay_arrays_aligned_with,
             convert_xarray_inputs_with_order,
         )
@@ -5044,6 +5146,32 @@ class LoupeApp(QtWidgets.QMainWindow):
                     oc = self.overlay_series[gi][b.overlay_k]
                     oc.t, oc.y = col[li]
                     touched_trace_idxs.add(gi)
+        elif b.kind == "trace_marker":
+            fresh = b.tunable()
+            aligned = convert_event_arrays_aligned_with(
+                b.host_data, [fresh], order_by=cfg.order_by,
+                descending=cfg.descending,
+            )
+            per_series = aligned[0]
+            marker_k = b.marker_k
+            host_slice = b.marker_host_slice
+            if (
+                marker_k is None
+                or host_slice is None
+                or not (0 <= marker_k < len(self.sample_markers))
+            ):
+                self._update_status(
+                    "Tuner: live marker binding lost its target; re-run view()."
+                )
+                return
+            expected = host_slice.stop - host_slice.start
+            if len(per_series) != expected:
+                self._update_status(
+                    f"Tuner: marker recompute changed trace count "
+                    f"({expected} → {len(per_series)}); re-run view() to apply."
+                )
+                return
+            self.sample_markers[marker_k].bool_per_series = per_series
         else:
             raise NotImplementedError(
                 f"Tuner binding kind {b.kind!r} is not supported yet."
@@ -5082,6 +5210,110 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             if self.hovered_plot is plot:
                 self.hovered_plot = None
+
+    # ------------------------------------------------------------------ #
+    #  Ctrl+drag trace selection + Ctrl+Shift+wheel Y-scaling
+    # ------------------------------------------------------------------ #
+    def _on_trace_select_start(self, scene_y: float) -> None:
+        self._stop_playback_if_playing()
+        self._trace_sel_active = True
+        self._trace_sel_start_y = float(scene_y)
+        self._trace_sel_prev = set(self._trace_selection)
+        self._set_trace_selection(self._plots_spanning(scene_y, scene_y))
+
+    def _on_trace_select_update(self, scene_y: float) -> None:
+        if not self._trace_sel_active:
+            return
+        self._set_trace_selection(
+            self._plots_spanning(self._trace_sel_start_y, scene_y)
+        )
+
+    def _on_trace_select_finish(self) -> None:
+        if not self._trace_sel_active:
+            return
+        self._trace_sel_active = False
+        # A plain Ctrl+click on the plot that was already the sole selection
+        # clears it — a natural toggle-off for the common single-trace case.
+        if (
+            len(self._trace_selection) == 1
+            and self._trace_selection == self._trace_sel_prev
+        ):
+            self._set_trace_selection(set())
+        n = len(self._trace_selection)
+        if n:
+            self._update_status(
+                f"{n} trace{'s' if n > 1 else ''} selected — "
+                "Ctrl+Shift+scroll to scale · Esc to clear."
+            )
+
+    def _plots_spanning(self, scene_y0: float, scene_y1: float) -> set:
+        """Trace subplots whose viewbox vertically overlaps [y0, y1] (scene px)."""
+        lo, hi = sorted((float(scene_y0), float(scene_y1)))
+        hit = set()
+        for plt in self.plots:
+            try:
+                rect = plt.getViewBox().sceneBoundingRect()
+            except Exception:
+                continue
+            if rect.top() <= hi and rect.bottom() >= lo:
+                hit.add(plt)
+        return hit
+
+    def _set_trace_selection(self, new_selection: set) -> None:
+        new_selection = {p for p in new_selection if p in self.plots}
+        if new_selection == self._trace_selection:
+            return
+        for plt in self._trace_selection - new_selection:
+            self._set_plot_selected_style(plt, False)
+        for plt in new_selection - self._trace_selection:
+            self._set_plot_selected_style(plt, True)
+        self._trace_selection = new_selection
+
+    def _set_plot_selected_style(self, plt, selected: bool) -> None:
+        try:
+            plt.getViewBox().setBorder(
+                pg.mkPen((90, 200, 255, 220), width=2) if selected else None
+            )
+        except Exception:
+            pass
+
+    def _clear_trace_selection(self) -> None:
+        if self._trace_selection:
+            self._set_trace_selection(set())
+
+    def _on_wheel_y_scale(self, dy: int) -> None:
+        """Ctrl+Shift+wheel: scale the hovered trace's Y-axis (or every selected
+        trace, when the hovered plot is part of a selection).
+
+        The factor is proportional to the wheel delta, so a faster scroll scales
+        harder; scrolling up magnifies (shrinks the visible Y-range about its
+        centre)."""
+        hp = self.hovered_plot
+        if self._trace_selection and hp in self._trace_selection:
+            targets = set(self._trace_selection)
+        elif hp in self.plots:
+            targets = {hp}
+        else:
+            return
+        notches = float(dy) / 120.0
+        factor = (1.0 - self._y_scale_per_notch) ** notches
+        if not np.isfinite(factor) or factor <= 0:
+            return
+        for plt in targets:
+            self._scale_plot_y(plt, factor)
+
+    def _scale_plot_y(self, plt, factor: float) -> None:
+        try:
+            plt.enableAutoRange("y", False)
+            vb = plt.getViewBox()
+            lo, hi = vb.viewRange()[1]
+            center = 0.5 * (lo + hi)
+            half = 0.5 * (hi - lo) * factor
+            if half <= 0:
+                return
+            vb.setYRange(center - half, center + half, padding=0)
+        except Exception:
+            pass
 
     def _on_drag_start(self, x):
         self._stop_playback_if_playing()
@@ -5755,6 +5987,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         # lives on a QAction in _build_menu so it's discoverable in the menus.
         ktxt = ev.text().lower()
         key = ev.key()
+
+        # Esc clears a Ctrl+drag trace selection first (before other handling).
+        if key == QtCore.Qt.Key.Key_Escape and self._trace_selection:
+            self._clear_trace_selection()
+            self._update_status("Trace selection cleared.")
+            return
 
         if (
             ktxt in self.keymap
@@ -6763,6 +7001,8 @@ class LoupeApp(QtWidgets.QMainWindow):
             ("Mouse wheel", "Page left/right one full window"),
             ("Shift + wheel", "Smooth scroll window"),
             ("Ctrl + wheel", "Cursor scrub within current window"),
+            ("Ctrl + Shift + wheel", "Scale hovered/selected trace(s) vertically"),
+            ("Ctrl + drag", "Select trace(s) to scale together (Esc clears)"),
             ("Alt + wheel", "Adjust trace gain (Dense view)"),
             ("Shift + Alt + wheel", "Vertical scroll through traces (Dense view)"),
         ]
@@ -6873,4 +7113,3 @@ class LoupeApp(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"ERROR: Exception during closeEvent: {e}")
         super().closeEvent(ev)
-

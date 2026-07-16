@@ -17,8 +17,9 @@ The two primitives a user touches:
 
 Drop a :class:`Tunable` (or a bare zero-arg callable closing over
 :class:`Param` objects) into an array-bearing config slot — e.g.
-:attr:`loupe.configs.TraceConfig.overlay_arrays` — and Loupe re-evaluates it
-live as you drag the matching slider::
+:attr:`loupe.configs.TraceConfig.overlay_arrays` or a stacked
+:class:`loupe.configs.SampleMarkers` mask — and Loupe re-evaluates it live as
+you drag the matching slider::
 
     from loupe import view, TraceConfig, Param, tunable
     import wisco_slap as wis
@@ -326,14 +327,16 @@ class Binding:
     ``slice`` into ``LoupeApp.series`` / ``LoupeApp.overlay_series``.
     """
 
-    kind: str  # "trace_stacked" | "trace_overlay" (more as support grows)
+    kind: str  # "trace_stacked" | "trace_overlay" | "trace_marker"
     tunable: Tunable
     cfg: Any  # the originating Config — carries order_by / descending / hue
     # locators (only the ones for `kind` are set) ------------------------------
     series_slice: slice | None = None  # trace_stacked → app.series / app.curves
     overlay_host_slice: slice | None = None  # trace_overlay → host-series indices
     overlay_k: int | None = None  # trace_overlay → which overlay_arrays column
-    host_data: Any = None  # trace_overlay → resolved host DataArray (for alignment)
+    host_data: Any = None  # trace_overlay/trace_marker → host DataArray
+    marker_host_slice: slice | None = None  # trace_marker → host-series indices
+    marker_k: int | None = None  # trace_marker → which sample-marker set
 
     @property
     def params(self) -> list[Param]:
