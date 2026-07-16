@@ -39,6 +39,7 @@ class SampleMarkers:
     bool_per_series: list[np.ndarray]
     size: float = 8.0
     alpha: int = 255  # 0..255; controls fill alpha for 'o', stroke alpha otherwise
+    view_id: str | None = None
 
 
 @dataclass

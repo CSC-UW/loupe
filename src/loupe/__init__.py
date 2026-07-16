@@ -22,6 +22,7 @@ from loupe.tuner import (
     tunable,
 )
 from loupe.view import view
+from loupe.view_config import ViewConfig, ViewConfigApplyReport, ViewConfigError
 
 __all__ = [
     "BoolParam",
@@ -38,6 +39,9 @@ __all__ = [
     "TraceConfig",
     "Tunable",
     "VideoConfig",
+    "ViewConfig",
+    "ViewConfigApplyReport",
+    "ViewConfigError",
     "Zip",
     "tunable",
     "view",

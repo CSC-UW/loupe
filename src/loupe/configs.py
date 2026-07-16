@@ -60,6 +60,10 @@ class SampleMarkers:
         Marker alpha in ``0..255``.  ``None`` (default) picks 110 for
         ``'o'`` (semi-transparent fill) and 255 for other markers
         (solid stroke).
+    view_id : str or None
+        Optional stable identity used when a View-Config is replayed against
+        an analogous recording. Recommended when several marker sets could
+        otherwise have the same symbol.
     """
 
     marker: str
@@ -67,6 +71,7 @@ class SampleMarkers:
     bool_array: "xr.DataArray | Tunable | Callable"
     size: float | None = None
     alpha: int | None = None
+    view_id: str | None = None
 
 
 @dataclass
@@ -170,6 +175,10 @@ class TraceConfig:
         and adds no vertical space, so the tight stacking is unchanged.  The
         line is skipped on the bottom-most subplot, which already shows the full
         time axis.
+    view_id : str or None
+        Optional stable identity for semantic View-Config matching. Give a
+        logical signal the same ID in analogous recordings even if its runtime
+        subplot name or input-list position changes.
     """
 
     data: "xr.DataArray | Tunable | Callable"
@@ -191,6 +200,7 @@ class TraceConfig:
     overlay_symbols: "list | None" = None
     overlay_symbol_sizes: "list | None" = None
     add_bottom_spine: bool = False
+    view_id: str | None = None
 
     @classmethod
     def from_path(
@@ -271,6 +281,8 @@ class HeatmapConfig:
     decim_method : str
         Time-axis decimation when zoomed out. ``"peak"`` (max-absolute per
         bin, preserves transients) or ``"mean"``.
+    view_id : str or None
+        Optional stable identity for semantic View-Config matching.
     """
 
     data: "xr.DataArray"
@@ -282,6 +294,7 @@ class HeatmapConfig:
     vmin: float | None = None
     vmax: float | None = None
     decim_method: str = "peak"
+    view_id: str | None = None
 
 
 @dataclass
@@ -349,6 +362,8 @@ class RasterConfig:
         (hex string or RGB(A) tuple, default gray ``(120, 120, 120)``), and
         ``"width"`` (line width in pixels, default ``1.0``).  Unknown keys
         emit a warning.  Ignored unless *horizontal_separators* is set.
+    view_id : str or None
+        Optional stable identity for semantic View-Config matching.
     """
 
     data: "pl.DataFrame"
@@ -363,6 +378,7 @@ class RasterConfig:
     alpha_range: tuple[float, float] = (0.3, 1.0)
     horizontal_separators: "list | None" = None
     separator_params: "dict | None" = None
+    view_id: str | None = None
 
     @classmethod
     def from_parquet(
@@ -428,6 +444,9 @@ class VideoConfig:
         the offset is added once to the (possibly concatenated) array.
         Useful as a quick alignment shim against the trace cursor without
         rewriting the underlying ``.npy`` files.  Defaults to ``0.0``.
+    view_id : str or None
+        Optional stable identity for matching saved visibility, layout weight,
+        and frame-step selection across analogous recordings.
     """
 
     video_path: "str | list[str]"
@@ -435,6 +454,7 @@ class VideoConfig:
     name: str | None = None
     stretch: int | None = None
     frame_times_correction: float = 0.0
+    view_id: str | None = None
 
 
 @dataclass
@@ -450,9 +470,9 @@ class Zip:
     ----------
     traces : list[TraceConfig]
         Two or more :class:`TraceConfig` instances whose ``data`` shares
-        the dim named by *on*.  Only ``color`` on each TraceConfig applies
-        within a Zip; other fields must remain at their defaults (Zip
-        dictates the per-subplot layout).
+        the dim named by *on*.  Only ``color`` and ``view_id`` on each
+        TraceConfig apply within a Zip; other fields must remain at their
+        defaults (Zip dictates the per-subplot layout).
     on : str
         Coordinate dim to zip on (e.g. ``"syn_id"``).
     colors : list, optional
@@ -463,12 +483,15 @@ class Zip:
         labels as just the overlay dim value.  A string is used as the
         prefix verbatim.  ``True`` is rejected because a Zip wraps
         multiple DataArrays and has no single source name.
+    view_id : str or None
+        Optional stable identity for semantic View-Config matching.
     """
 
     traces: list
     on: str
     colors: list | None = None
     array_name: bool | str = False
+    view_id: str | None = None
 
     def __post_init__(self):
         if len(self.traces) < 2:
@@ -493,12 +516,23 @@ class Zip:
             "overlay_arrays": None,
             "overlay_colors": None,
         }
+        source_view_ids: set[str] = set()
         for i, t in enumerate(self.traces):
             if not isinstance(t, TraceConfig):
                 raise TypeError(
                     f"Zip.traces[{i}] must be a TraceConfig, got "
                     f"{type(t).__name__}."
                 )
+            if t.view_id is not None:
+                if not isinstance(t.view_id, str) or not t.view_id.strip():
+                    raise ValueError(
+                        f"Zip.traces[{i}].view_id must be a non-empty string."
+                    )
+                if t.view_id in source_view_ids:
+                    raise ValueError(
+                        f"Duplicate Zip trace view_id={t.view_id!r}."
+                    )
+                source_view_ids.add(t.view_id)
             for fname, fdefault in meaningless.items():
                 actual = getattr(t, fname)
                 if actual != fdefault:

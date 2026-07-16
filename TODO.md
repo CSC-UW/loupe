@@ -6,7 +6,9 @@
 
 ## Features
 
-- [ ] Add the ability to save and load configurations (gains, hidden subplots).
+- [x] Add versioned View-Config save/load for runtime presentation state
+  (gains, plot order/heights/visibility, styles, heatmaps, labels, videos, and
+  optional session/Tuner state).
 - [ ] Add multi-window/multi-screen support.
 - [ ] Add support for display of larger-than-memory data (e.g. 48h full-neuropixel LFPs), but only if it can be done without risking degradation of performance for in-memory data. Performance must remain top priority.
 

@@ -41,6 +41,49 @@ view([
 ])
 ```
 
+### Saving and loading a view
+
+Loupe can save the current presentation as a portable, human-readable
+`*.loupe-view.json` file. Use **File → Save View-Config As…**, then restore it
+with **File → Load View-Config…**. A View-Config includes subplot order,
+visibility and heights; trace, overlay, sample-marker, and global-event styles;
+dense gain/paging; heatmap color limits and colormaps; raster rendering;
+per-plot Y ranges; label display/alpha; video layout; playback and navigation
+settings. It never embeds the loaded arrays, event tables, labels, or video
+paths.
+
+Programmatic save and restore:
+
+```python
+w = view([
+    TraceConfig(eeg, view_id="eeg"),
+    HeatmapConfig(spectrogram, view_id="spectrogram"),
+])
+
+# After adjusting the live view:
+w.save_view_config("mouse-17.loupe-view.json")
+
+# A later, analogous recording:
+w2 = view([
+    TraceConfig(next_eeg, view_id="eeg"),
+    HeatmapConfig(next_spectrogram, view_id="spectrogram"),
+], view_config="mouse-17.loupe-view.json")
+```
+
+Set `view_id=` on each Config when a preset will be reused across recordings.
+It is the stable semantic identity; list position is not. Without IDs, Loupe
+matches by plot type, displayed name, and duplicate occurrence. A normal load
+applies every safe match and reports differences. For pipelines that require
+an exact plot inventory, pass `view_config_strict=True` to `view()` or
+`w.apply_view_config(config, strict=True)`.
+
+By default the preset omits the current timestamp, scroll position, window
+geometry, and Tuner values so it remains reusable. The save dialog can include
+either optional section; code can use
+`save_view_config(..., include_session=True, include_tuner=True)`.
+
+See [docs/view-config.md](docs/view-config.md) for the full behavior and API.
+
 ---
 
 ### Plot types
@@ -182,7 +225,11 @@ view(Zip(
 ))
 ```
 
-Inside a `Zip`, only the `color` field on each wrapped `TraceConfig` applies; other fields must remain at their defaults. Only one `Zip` per window, and a `Zip` cannot coexist with `TraceConfig` or `HeatmapConfig`.
+Inside a `Zip`, only the `color` and `view_id` fields on each wrapped
+`TraceConfig` apply; other fields must remain at their defaults. The inner IDs
+let a View-Config keep curve colors attached to their logical sources if those
+sources are reordered. Only one `Zip` per window, and a `Zip` cannot coexist
+with `TraceConfig` or `HeatmapConfig`.
 
 See [docs/views/zip.md](docs/views/zip.md) for the full constraints and parameter reference.
 

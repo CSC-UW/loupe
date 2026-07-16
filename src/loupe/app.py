@@ -250,6 +250,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         # redraws. When False, touched stacked subplots re-fit their Y-range to
         # the new data (the pre-0.x behaviour).
         tuner_preserve_view: bool = True,
+        # Semantic source metadata produced by loupe.view for View-Config
+        # matching. One list per runtime subplot registry kind.
+        plot_identities: dict[str, list[dict]] | None = None,
         # Optional ProgressReporter for launch-time progress.
         reporter=None,
     ):
@@ -261,6 +264,14 @@ class LoupeApp(QtWidgets.QMainWindow):
             from loupe.progress import null_reporter
             reporter = null_reporter()
         self._reporter = reporter
+        initial_view_plot_identities = {
+            kind: [dict(x) for x in values]
+            for kind, values in (plot_identities or {}).items()
+        }
+        # Constructor-time setters are also public data-replacement methods.
+        # Keep this empty while they run; install the semantic identities from
+        # ``view()`` only after initial construction is complete.
+        self._view_plot_identities: dict[str, list[dict]] = {}
 
         pg.setConfigOptions(
             antialias=False, useOpenGL=True, background="k", foreground="w"
@@ -487,6 +498,8 @@ class LoupeApp(QtWidgets.QMainWindow):
                 frame_times_correction=float(
                     getattr(cfg, "frame_times_correction", 0.0) or 0.0
                 ),
+                view_id=getattr(cfg, "view_id", None),
+                desired_visible=(i == 0),
             )
             self.video_slots.append(slot)
 
@@ -660,6 +673,22 @@ class LoupeApp(QtWidgets.QMainWindow):
             elif not (xr_series or dense_groups or heatmap_series):
                 self._update_time_range_from_raster()
                 self._create_raster_only_plots()
+
+        runtime_plot_counts = {
+            "ts": len(self.overlay_groups) if self.overlay_mode else len(self.series),
+            "dense": len(self.dense_groups),
+            "raster": len(self.raster_series),
+            "heatmap": len(self.heatmap_series),
+        }
+        if all(
+            len(initial_view_plot_identities.get(kind, [])) == count
+            for kind, count in runtime_plot_counts.items()
+        ):
+            self._view_plot_identities = initial_view_plot_identities
+        else:
+            # Legacy constructor inputs can append data in addition to the
+            # Config-derived registries. Never retain partly stale identities.
+            self._view_plot_identities = {}
 
         # Tuner: auto-open the panel when a config declared tunable params.
         if self._tuner_params:
@@ -865,6 +894,138 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Apply initial video stretches
         self._apply_video_stretches()
 
+    # ---------- View-Config persistence ----------
+
+    def capture_view_config(
+        self,
+        *,
+        include_session: bool = False,
+        include_tuner: bool = False,
+    ):
+        """Return a portable snapshot of the current presentation state."""
+        from loupe.view_config_runtime import capture_view_config
+
+        return capture_view_config(
+            self,
+            include_session=include_session,
+            include_tuner=include_tuner,
+        )
+
+    def save_view_config(
+        self,
+        path,
+        *,
+        include_session: bool = False,
+        include_tuner: bool = False,
+    ):
+        """Capture and atomically save the current presentation state."""
+        from loupe.view_config_runtime import save_view_config
+
+        return save_view_config(
+            self,
+            path,
+            include_session=include_session,
+            include_tuner=include_tuner,
+        )
+
+    def apply_view_config(self, config_or_path, *, strict: bool = False):
+        """Apply a View-Config and return its compatibility report."""
+        from loupe.view_config_runtime import apply_view_config
+
+        return apply_view_config(self, config_or_path, strict=strict)
+
+    def _on_load_view_config(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load Loupe View-Config",
+            getattr(self, "_last_view_config_path", ""),
+            "Loupe View-Config (*.loupe-view.json *.json);;"
+            "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            report = self.apply_view_config(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Could not load View-Config",
+                str(exc),
+            )
+            return
+        self._last_view_config_path = path
+        if not report.is_exact:
+            QtWidgets.QMessageBox.information(
+                self,
+                "View-Config applied with differences",
+                report.details(),
+            )
+
+    def _view_config_save_options(self) -> tuple[bool, bool] | None:
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Save View-Config")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        intro = QtWidgets.QLabel(
+            "The reusable presentation settings are always saved. "
+            "Optionally include recording-session state:"
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        session = QtWidgets.QCheckBox(
+            "Include current time, vertical scroll, and window geometry"
+        )
+        session.setToolTip(
+            "Useful for reopening the same recording exactly where you left it."
+        )
+        layout.addWidget(session)
+
+        tuner = QtWidgets.QCheckBox("Include current Tuner parameter values")
+        tuner.setEnabled(bool(self._tuner_params))
+        if not self._tuner_params:
+            tuner.setToolTip("This window has no tunable parameters.")
+        layout.addWidget(tuner)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Save
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        return session.isChecked(), tuner.isChecked()
+
+    def _on_save_view_config(self) -> None:
+        options = self._view_config_save_options()
+        if options is None:
+            return
+        include_session, include_tuner = options
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Loupe View-Config",
+            getattr(self, "_last_view_config_path", "view.loupe-view.json"),
+            "Loupe View-Config (*.loupe-view.json);;JSON files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            saved_path = self.save_view_config(
+                path,
+                include_session=include_session,
+                include_tuner=include_tuner,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Could not save View-Config",
+                str(exc),
+            )
+            return
+        self._last_view_config_path = str(saved_path)
+        self._update_status(f"Saved View-Config: {saved_path}")
+
     def _build_menu(self):
         mfile = self.menuBar().addMenu("&File")
         a = QtGui.QAction("Load &Time Series…", self)
@@ -876,6 +1037,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         m = QtGui.QAction("Load &Raster Data…", self)
         m.triggered.connect(self._on_load_raster_data)
         mfile.addAction(m)
+        mfile.addSeparator()
+
+        load_view_action = QtGui.QAction("Load &View-Config…", self)
+        load_view_action.triggered.connect(self._on_load_view_config)
+        mfile.addAction(load_view_action)
+        save_view_action = QtGui.QAction("Save View-Config &As…", self)
+        save_view_action.triggered.connect(self._on_save_view_config)
+        mfile.addAction(save_view_action)
         mfile.addSeparator()
 
         c = QtGui.QAction("Load Interval &Labels…", self)
@@ -1163,7 +1332,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         for slot in self.video_slots:
             action = QtGui.QAction(f"Show {slot.name}", self)
             action.setCheckable(True)
-            action.setChecked(slot.index == 0)
+            action.setChecked(slot.desired_visible)
             if slot.index < 9:
                 action.setShortcut(
                     QtGui.QKeySequence(f"Ctrl+Shift+{slot.index + 1}")
@@ -2643,6 +2812,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._load_series_from_dir(folder)
 
     def set_series(self, series_list, colors=None, line_widths=None):
+        # Direct replacement has no Config-level provenance. Later presets
+        # safely fall back to runtime kind/name/occurrence matching.
+        self._view_plot_identities = {}
         self.series = series_list
 
         # Assign per-trace line widths (pixels; default 1.0).
@@ -2794,6 +2966,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             One color per source DataArray. Accepts hex strings or RGB(A) tuples.
         """
         self._stop_playback_if_playing()
+        self._view_plot_identities = {}
         self.overlay_mode = True
         self.overlay_groups = overlay_groups
 
@@ -2952,6 +3125,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         alpha_range : tuple[float, float]
             ``(min_alpha, max_alpha)`` for normalizing *alpha_by*.
         """
+        self._view_plot_identities = {}
         from loupe.df_loader import (
             dataframe_to_raster_series,
             load_dataframe_from_parquet,
@@ -2997,6 +3171,7 @@ class LoupeApp(QtWidgets.QMainWindow):
     # ---------- Raster Viewer ----------
     def _load_raster_data(self, timestamps_paths, yvals_paths, alpha_paths, colors):
         """Load raster data from provided file paths."""
+        self._view_plot_identities = {}
 
         def _normalize_list(raw_list):
             if not raw_list:
@@ -4880,11 +5055,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         slot.is_open = True
         slot.requested_frame_idx = None
         if slot.label is not None:
-            slot.label.show()
-        # Hide the label-summary panel once any non-primary video opens
-        # (matches the historical "make room for a second video" behavior).
-        if slot.index != 0 and self.interval_label_summary_panel is not None:
-            self.interval_label_summary_panel.hide()
+            slot.label.setVisible(bool(slot.desired_visible))
+        self._sync_video_summary_visibility()
         self._request_initial_frame()
 
     def _request_initial_frame(self):
@@ -6925,11 +7097,23 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not (0 <= which < len(self.video_slots)):
             return
         slot = self.video_slots[which]
+        slot.desired_visible = bool(visible)
         if slot.label is None:
             return
         slot.label.setVisible(bool(visible))
+        self._sync_video_summary_visibility()
         self._apply_video_stretches()
         QtCore.QTimer.singleShot(0, self._rescale_all_video_frames)
+
+    def _sync_video_summary_visibility(self) -> None:
+        """Give the summary panel back its space when secondary videos hide."""
+        if self.interval_label_summary_panel is None:
+            return
+        secondary_open = any(
+            slot.index != 0 and slot.is_open and slot.desired_visible
+            for slot in self.video_slots
+        )
+        self.interval_label_summary_panel.setVisible(not secondary_open)
 
     # ---------- Help/Status & cleanup ----------
 

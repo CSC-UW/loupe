@@ -261,6 +261,11 @@ class TunerDock(QtWidgets.QDockWidget):
     def _notify(self, p: Param) -> None:
         self.main_window._on_tuner_param_changed(p)
 
+    def sync_from_params(self) -> None:
+        """Refresh controls after values are changed outside this dock."""
+        for sync in self._sync_callbacks:
+            sync()
+
     def _copy_values(self) -> None:
         d: dict[str, Any] = {}
         for i, p in enumerate(self.params):
@@ -274,7 +279,6 @@ class TunerDock(QtWidgets.QDockWidget):
     def _reset_all(self) -> None:
         for p in self.params:
             p.reset()
-        for sync in self._sync_callbacks:
-            sync()
+        self.sync_from_params()
         for p in self.params:
             self.main_window._on_tuner_param_changed(p)

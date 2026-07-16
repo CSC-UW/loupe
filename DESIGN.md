@@ -49,6 +49,29 @@ Layout and sizing
 - Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Three plot types are supported: `"ts"` (stacked subplots), `"dense"`, and `"raster"`. Each has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically.
 - Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing dense, raster, and stacked-subplot plots in any order.
 
+View-Config persistence
+- Data-input Configs and View-Configs are intentionally separate. `TraceConfig`
+  and its peers construct runtime data registries; `ViewConfig` stores only the
+  presentation state of those registries.
+- `loupe.view_config` owns the versioned JSON domain model, validation, atomic
+  I/O, portable plot references, and apply reports. It imports no Qt code, so a
+  startup file is parsed before QApplication creation or video-thread startup.
+- `loupe.view_config_runtime` is the adapter between the domain model and a
+  live `LoupeApp`. It inventories the four plot registries, captures state, and
+  applies matches in one batched layout/render refresh.
+- Plot matching is semantic. An explicit Config `view_id` plus a generated
+  local index is preferred; otherwise matching uses plot kind, displayed name,
+  and duplicate occurrence. Saved list positions never directly select a
+  current plot. Unmatched records remain unchanged and are returned in a
+  `ViewConfigApplyReport`; strict mode rejects plot-inventory mismatches before
+  mutating the window.
+- The default file is a reusable presentation preset. Session position/window
+  geometry and Tuner parameter values are separate opt-in sections. Files do
+  not contain source arrays, label rows, video paths, or opaque Qt state.
+- Files are written to a temporary sibling, flushed, and atomically replaced.
+  `schema_version` gates future migrations; version 1 rejects incompatible
+  older/newer schemas rather than guessing.
+
 Raster viewer rendering
 - Raster/raster plots display discrete events as vertical line segments.
 - Each event is drawn as a vertical line at its timestamp, spanning from `(row + 0.5 - height)` to `(row + 0.5 + height)` where height is the configurable event height.

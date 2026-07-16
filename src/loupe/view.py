@@ -8,7 +8,7 @@ data converter, and hands the result to :class:`loupe.app.LoupeApp`.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from loupe.configs import (
     GlobalEventsConfig,
@@ -21,6 +21,7 @@ from loupe.configs import (
 from loupe.interval_labels import IntervalLabelSchema, IntervalLabelSet
 from loupe.state_config import load_state_config
 from loupe.tuner import Binding, Tunable, _wrap_callable, collect_params
+from loupe.view_config import ViewConfig, coerce_view_config
 
 if TYPE_CHECKING:
     import polars as pl
@@ -58,6 +59,8 @@ def view(
     label_colors: dict | None = None,
     interval_label_alpha: float | None = None,
     interval_label_overlays: bool = True,
+    view_config: "str | Path | Mapping | ViewConfig | None" = None,
+    view_config_strict: bool = False,
     **kwargs,
 ) -> "LoupeApp":
     """Launch the Loupe viewer.
@@ -110,6 +113,12 @@ def view(
         Whether to shade label spans across the subplots. Default True. Pass
         False to rely on the pinned label strip / hypnogram instead (the
         overlays can also be toggled at runtime with ``Ctrl+Shift+L``).
+    view_config : path, mapping, or ViewConfig, optional
+        Saved runtime presentation state to apply after the supplied data
+        Configs construct the window. View-Configs never load data or labels.
+    view_config_strict : bool, optional
+        Reject the View-Config without applying it if the saved and current
+        plot inventories do not match exactly. Default False.
     **kwargs
         Forwarded to :class:`LoupeApp` (``fixed_scale``, etc.).
 
@@ -171,6 +180,12 @@ def view(
         dataarray_to_heatmaps,
     )
 
+    # Parse before creating a QApplication or starting video threads. Runtime
+    # plot compatibility is checked after the window has been constructed.
+    resolved_view_config = (
+        coerce_view_config(view_config) if view_config is not None else None
+    )
+
     # ---- normalize data into a list of Configs ----------------------------
     _allowed = (TraceConfig, HeatmapConfig, RasterConfig, Zip)
     if data is None:
@@ -194,6 +209,39 @@ def view(
                 f"DataArrays in TraceConfig(da) and bare DataFrames in "
                 f"RasterConfig(df)."
             )
+
+    explicit_plot_ids: set[str] = set()
+    for i, item in enumerate(data_list):
+        source_id = getattr(item, "view_id", None)
+        if source_id is None:
+            continue
+        if not isinstance(source_id, str) or not source_id.strip():
+            raise ValueError(f"data[{i}].view_id must be a non-empty string.")
+        if source_id in explicit_plot_ids:
+            raise ValueError(f"Duplicate plot Config view_id={source_id!r}.")
+        explicit_plot_ids.add(source_id)
+
+    explicit_marker_ids: set[str] = set()
+    marker_configs = [
+        cfg
+        for item in data_list
+        for cfg in (
+            list(item.traces) if isinstance(item, Zip) else [item]
+        )
+        if isinstance(cfg, TraceConfig)
+    ]
+    for cfg in marker_configs:
+        for marker in cfg.sample_markers or []:
+            marker_id = marker.view_id
+            if marker_id is None:
+                continue
+            if not isinstance(marker_id, str) or not marker_id.strip():
+                raise ValueError("SampleMarkers.view_id must be a non-empty string.")
+            if marker_id in explicit_marker_ids:
+                raise ValueError(
+                    f"Duplicate SampleMarkers view_id={marker_id!r}."
+                )
+            explicit_marker_ids.add(marker_id)
 
     # ---- cross-Config validation ------------------------------------------
     n_zip = sum(1 for x in data_list if isinstance(x, Zip))
@@ -268,6 +316,12 @@ def view(
     overlay_colors: list | None = None
     order_acc: list[tuple[str, int]] = []
     sample_markers_rendered: list | None = None
+    plot_identities: dict[str, list[dict]] = {
+        "ts": [],
+        "dense": [],
+        "raster": [],
+        "heatmap": [],
+    }
     # Per-stacked-series overlay curves (parallel to xr_series). Each entry is
     # a list[OverlayCurve] ([] when that series carries no overlays); the
     # parallel name list holds the host's legend label (None when no overlays).
@@ -323,6 +377,14 @@ def view(
                 reporter=reporter,
             )
             overlay_colors = item.colors
+            for local_idx, _group in enumerate(overlay_groups):
+                plot_identities["ts"].append({
+                    "source_id": item.view_id,
+                    "source_explicit": item.view_id is not None,
+                    "source_index": i,
+                    "local_index": local_idx,
+                    "curve_source_ids": [t.view_id for t in item.traces],
+                })
         elif isinstance(item, RasterConfig):
             raster_data, raster_tun = _resolve(item.data)
             if raster_tun is not None:
@@ -370,6 +432,12 @@ def view(
             raster_list.extend(new_ms)
             for j in range(len(new_ms)):
                 order_acc.append(("raster", base + j))
+                plot_identities["raster"].append({
+                    "source_id": item.view_id,
+                    "source_explicit": item.view_id is not None,
+                    "source_index": i,
+                    "local_index": j,
+                })
         elif isinstance(item, HeatmapConfig):
             heatmap_data, heatmap_tun = _resolve(item.data)
             if heatmap_tun is not None:
@@ -404,6 +472,12 @@ def view(
             heatmap_list.extend(new_heatmaps)
             for j in range(len(new_heatmaps)):
                 order_acc.append(("heatmap", base + j))
+                plot_identities["heatmap"].append({
+                    "source_id": item.view_id,
+                    "source_explicit": item.view_id is not None,
+                    "source_index": i,
+                    "local_index": j,
+                })
         else:  # TraceConfig
             cfg = item
             data_concrete, data_tun = _resolve(cfg.data)
@@ -468,6 +542,7 @@ def view(
                                 bool_per_series=bps,
                                 size=size,
                                 alpha=alpha,
+                                view_id=marker.view_id,
                             )
                         )
                 dense_idx = len(dense_list)
@@ -485,6 +560,12 @@ def view(
                     sample_markers=dense_markers,
                 ))
                 order_acc.append(("dense", dense_idx))
+                plot_identities["dense"].append({
+                    "source_id": cfg.view_id,
+                    "source_explicit": cfg.view_id is not None,
+                    "source_index": i,
+                    "local_index": 0,
+                })
             elif cfg.mode == "stacked-subplots":
                 tuples, _, _, _ = convert_xarray_inputs_with_order(
                     data_concrete,
@@ -497,7 +578,7 @@ def view(
                 new_series = [Series(n, t, y) for n, t, y in tuples]
                 base = len(xr_series)
                 xr_series.extend(new_series)
-                for _s in new_series:
+                for local_idx, _s in enumerate(new_series):
                     stacked_colors_acc.append(cfg.color)
                     if cfg.color is not None:
                         any_stacked_color = True
@@ -508,6 +589,12 @@ def view(
                     if cfg.add_bottom_spine:
                         any_bottom_spine = True
                     order_acc.append(("ts", base))
+                    plot_identities["ts"].append({
+                        "source_id": cfg.view_id,
+                        "source_explicit": cfg.view_id is not None,
+                        "source_index": i,
+                        "local_index": local_idx,
+                    })
                     base += 1
                 # Tuner: this TraceConfig owns the contiguous host-series block
                 # [host_slice]; record a binding if its data is tunable.
@@ -627,6 +714,7 @@ def view(
                                 bool_per_series=bps,
                                 size=size,
                                 alpha=alpha,
+                                view_id=marker.view_id,
                             )
                         )
                     for marker_k, marker_tun in enumerate(marker_tuns):
@@ -715,6 +803,16 @@ def view(
                     f"videos must contain VideoConfig instances, got {type(v).__name__}"
                 )
 
+    explicit_video_ids: set[str] = set()
+    for i, cfg in enumerate(video_configs):
+        if cfg.view_id is None:
+            continue
+        if not isinstance(cfg.view_id, str) or not cfg.view_id.strip():
+            raise ValueError(f"videos[{i}].view_id must be a non-empty string.")
+        if cfg.view_id in explicit_video_ids:
+            raise ValueError(f"Duplicate VideoConfig view_id={cfg.view_id!r}.")
+        explicit_video_ids.add(cfg.view_id)
+
     if global_events is not None:
         if not isinstance(global_events, GlobalEventsConfig):
             raise TypeError(
@@ -779,9 +877,16 @@ def view(
         tuner_bindings=bindings or None,
         tuner_params=collect_params(bindings) or None,
         reporter=reporter,
+        plot_identities=plot_identities,
         **kwargs,
     )
     w.show()
+    if resolved_view_config is not None:
+        try:
+            w.apply_view_config(resolved_view_config, strict=view_config_strict)
+        except Exception:
+            w.close()
+            raise
     if splash is not None:
         splash.finish(w)
     reporter.done()

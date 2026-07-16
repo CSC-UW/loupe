@@ -211,3 +211,7 @@ class VideoSlot:
     is_open: bool = False
     last_pixmap: QtGui.QPixmap | None = None
     requested_frame_idx: int | None = None
+    view_id: str | None = None
+    # Visibility intent is independent of QWidget.isVisible(), which is false
+    # while an ancestor is hidden and can be overwritten by an async open.
+    desired_visible: bool = True
