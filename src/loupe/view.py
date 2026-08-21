@@ -465,6 +465,7 @@ def view(
                 vmin=item.vmin,
                 vmax=item.vmax,
                 decim_method=item.decim_method,
+                shade_nans=item.shade_nans,
                 array_name=resolved_array_name,
                 reporter=reporter,
             )

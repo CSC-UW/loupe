@@ -123,6 +123,7 @@ def _mixed_configs(order=("alpha", "beta", "dense", "raster", "heat")):
         "heat": HeatmapConfig(
             _heat(),
             array_name=True,
+            shade_nans="#3E1715",
             view_id="heat-source",
         ),
     }
@@ -203,6 +204,7 @@ def test_mixed_view_round_trip_matches_semantically_after_reordering(tmp_path):
     source.heatmap_series[0].vmax = 900.0
     source.heatmap_series[0].colormap = "plasma"
     source.heatmap_series[0].decim_method = "mean"
+    source.heatmap_series[0].shade_nans = (62, 23, 21, 0.85)
     source.heatmap_height_factors[0] = 1.5
     source._resolved_event_styles["stim"].update({
         "line_color": (101, 102, 103),
@@ -266,6 +268,7 @@ def test_mixed_view_round_trip_matches_semantically_after_reordering(tmp_path):
     assert target.heatmap_series[0].vmax == pytest.approx(900.0)
     assert target.heatmap_series[0].colormap == "plasma"
     assert target.heatmap_series[0].decim_method == "mean"
+    assert target.heatmap_series[0].shade_nans == (62, 23, 21, 0.85)
     assert target._resolved_event_styles["stim"]["line_color"] == (101, 102, 103)
     assert target._resolved_event_styles["stim"]["line_style"] == "dashed"
     y_range = target.plots[alpha_i].getViewBox().viewRange()[1]

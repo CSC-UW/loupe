@@ -107,6 +107,8 @@ class HeatmapSeries:
     vmin: float = 0.0
     vmax: float = 1.0
     decim_method: str = "peak"  # "peak" | "mean"
+    # Resolved (R, G, B, alpha_float), or None for the legacy blank-NaN path.
+    shade_nans: tuple[int, int, int, float] | None = None
     mipmap_levels: list[np.ndarray] | None = None  # built lazily for big arrays
 
 

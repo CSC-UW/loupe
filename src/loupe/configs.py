@@ -281,6 +281,10 @@ class HeatmapConfig:
     decim_method : str
         Time-axis decimation when zoomed out. ``"peak"`` (max-absolute per
         bin, preserves transients) or ``"mean"``.
+    shade_nans : bool, str, or tuple[str, float]
+        ``False`` (default) preserves the existing blank appearance for NaN
+        values. Pass a ``"#RRGGBB"`` hex color to shade NaNs at 0.7 alpha, or
+        ``("#RRGGBB", alpha)`` to set alpha explicitly between 0 and 1.
     view_id : str or None
         Optional stable identity for semantic View-Config matching.
     """
@@ -294,7 +298,13 @@ class HeatmapConfig:
     vmin: float | None = None
     vmax: float | None = None
     decim_method: str = "peak"
+    shade_nans: "bool | str | tuple[str, float]" = False
     view_id: str | None = None
+
+    def __post_init__(self) -> None:
+        from loupe._heatmap_utils import _normalize_nan_shade
+
+        _normalize_nan_shade(self.shade_nans)
 
 
 @dataclass

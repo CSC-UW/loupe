@@ -131,7 +131,7 @@ view(data, view_config=config, view_config_strict=True)
   symbols, and symbol sizes.
 - Dense plots: gain, trace step, traces per page, and resolved categorical
   palette.
-- Heatmaps: `vmin`, `vmax`, colormap, and decimation method. Named colormaps are
+- Heatmaps: `vmin`, `vmax`, colormap, decimation method, and NaN shading. Named colormaps are
   stored by name; an arbitrary Matplotlib colormap is stored as a portable RGBA
   lookup table.
 - Rasters: base/category colors and separator style, plus the global brightness,

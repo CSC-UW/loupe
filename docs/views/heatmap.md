@@ -16,6 +16,7 @@ Defined in `src/loupe/__init__.py:172-222`.
 | `vmin` | `None` | Color scale lower bound. Default: 1st percentile per heatmap. |
 | `vmax` | `None` | Color scale upper bound. Default: 99th percentile per heatmap. |
 | `decim_method` | `"peak"` | Time-axis decimation when zoomed out: `"peak"` (max-absolute per bin, preserves transients) or `"mean"`. |
+| `shade_nans` | `False` | Preserve blank NaNs when false. Pass `"#RRGGBB"` to shade NaNs at 0.7 alpha, or `(hex_color, alpha)` with alpha in 0–1. |
 | `array_name` | `False` | `False` → subplot named just `"{split_by}={split_val}"`. `True` → prefix with `data.name`. A string → verbatim prefix. A callable `(split_val, sub_da) -> str` → full subplot name. |
 
 Each subplot must have exactly one non-time dim remaining after `split_by` — otherwise a clear error is raised.
@@ -31,6 +32,7 @@ view(HeatmapConfig(
     split_by="dend-ID",
     order_by="pos",
     cmap=["magma", "viridis", "plasma", "inferno"],
+    shade_nans=("#3E1715", 0.85),
 ))
 
 # Single array (no split):
@@ -55,7 +57,7 @@ The Heatmap Plot Controls dialog provides per-subplot live adjustment of:
 Heatmap plots use a layered strategy to stay responsive even with multiple plots loaded:
 
 1. Cursor moves, selection drags, label additions, and Y-zoom skip the heatmap refresh entirely.
-2. Each plot caches its last-rendered `(window, view-width, vmin, vmax, cmap, decim_method)` and short-circuits if unchanged.
+2. Each plot caches its last-rendered `(window, view-width, vmin, vmax, cmap, decim_method, shade_nans)` and short-circuits if unchanged.
 3. NaN values are sentinel-replaced at load time so refresh uses fast `np.max` / `np.mean` (no nan-aware overhead).
 4. Manual NumPy LUT mapping → uint8 RGBA upload bypasses pyqtgraph's per-pixel level math.
 5. Arrays exceeding 5 M elements get a power-of-2 mip-map at load time (~2× memory), so pan latency stays O(viewbox-width) regardless of recording length.

@@ -18,7 +18,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
-from loupe._heatmap_utils import _colormap_display_name
+from loupe._heatmap_utils import _colormap_display_name, _normalize_nan_shade
 from loupe.tuner import BoolParam, ChoiceParam, IntParam
 from loupe.view_config import (
     PlotRef,
@@ -315,6 +315,15 @@ def _plot_state(app, target: _Target) -> dict[str, Any]:
             "vmax": float(heat.vmax),
             "colormap": _serialize_colormap(heat.colormap),
             "decim_method": str(heat.decim_method),
+            "shade_nans": (
+                False
+                if heat.shade_nans is None
+                else [
+                    f"#{heat.shade_nans[0]:02X}{heat.shade_nans[1]:02X}"
+                    f"{heat.shade_nans[2]:02X}",
+                    float(heat.shade_nans[3]),
+                ]
+            ),
         }
     else:
         raster = app.raster_series[i]
@@ -916,6 +925,14 @@ def _apply_heatmap_state(app, target: _Target, state: Mapping[str, Any], report)
             )
     elif method is not None and method not in {"peak", "mean"}:
         report.skipped.append(f"{target.ref.label}: invalid heatmap decim_method")
+    if "shade_nans" in raw:
+        shade_value = raw["shade_nans"]
+        if isinstance(shade_value, list):
+            shade_value = tuple(shade_value)
+        try:
+            heat.shade_nans = _normalize_nan_shade(shade_value)
+        except Exception as exc:
+            report.skipped.append(f"{target.ref.label} shade_nans: {exc}")
     if target.index < len(app._heatmap_cache_keys):
         app._heatmap_cache_keys[target.index] = None
 

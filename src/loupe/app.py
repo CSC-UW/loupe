@@ -4922,6 +4922,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 i0, i1, target_w,
                 float(asx.vmin), float(asx.vmax),
                 _colormap_cache_token(asx.colormap), asx.decim_method,
+                asx.shade_nans,
             )
             if self._heatmap_cache_keys[i] == cache_key:
                 continue
@@ -4941,6 +4942,12 @@ class LoupeApp(QtWidgets.QMainWindow):
             idx = (norm * 255.0).astype(np.uint8)
             lut = self._get_array_lut(asx.colormap)
             rgba = lut[idx]
+            if asx.shade_nans is not None:
+                nan_mask = np.isneginf(Y_disp)
+                if np.any(nan_mask):
+                    r, g, b, alpha = asx.shade_nans
+                    alpha_u8 = min(255, max(0, int(alpha * 255.0 + 0.5)))
+                    rgba[nan_mask] = (r, g, b, alpha_u8)
 
             image_item.setImage(rgba, autoLevels=False)
 

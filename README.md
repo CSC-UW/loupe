@@ -163,7 +163,8 @@ Renders an `xr.DataArray` as a 2-D heatmap (imshow-style) with time on the x-axi
 ```python
 from loupe import view, HeatmapConfig
 view(HeatmapConfig(dnv, split_by="dend-ID", order_by="pos",
-                   cmap=["magma", "viridis", "plasma", "inferno"]))
+                   cmap=["magma", "viridis", "plasma", "inferno"],
+                   shade_nans=("#3E1715", 0.85)))
 ```
 
 Key parameters:
@@ -175,6 +176,7 @@ Key parameters:
 | `cmap` | `"magma"` | Colormap name, `Colormap`, list (per-split), dict, or callable. |
 | `vmin` / `vmax` | `None` | Color scale limits (default: 1–99 percentile per heatmap). |
 | `decim_method` | `"peak"` | `"peak"` preserves transients; `"mean"` smooths. |
+| `shade_nans` | `False` | Hex color for NaNs at 0.7 alpha, or `(hex_color, alpha)` for a custom alpha in 0–1. |
 
 Each subplot must have exactly one non-time dim remaining after the split — otherwise a clear error is raised.
 

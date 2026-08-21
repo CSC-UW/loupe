@@ -538,6 +538,7 @@ def dataarray_to_heatmaps(
     vmin: float | None = None,
     vmax: float | None = None,
     decim_method: str = "peak",
+    shade_nans: "bool | str | tuple[str, float]" = False,
     array_name: "bool | str | Callable[..., str]" = False,
     reporter=None,
 ):
@@ -572,6 +573,10 @@ def dataarray_to_heatmaps(
         Color scale limits.  Default is robust 1–99 percentile per group.
     decim_method : str
         ``"peak"`` (max-absolute per bin, default) or ``"mean"``.
+    shade_nans : bool, str, or tuple[str, float]
+        ``False`` leaves NaNs with their existing blank appearance. A
+        ``"#RRGGBB"`` color shades them at 0.7 alpha; ``(color, alpha)`` sets
+        an explicit alpha between 0 and 1.
     array_name : bool, str, or callable
         Controls subplot names.  ``False`` (default) names subplots with
         just ``split_val`` (or an empty string when there's no split).
@@ -593,6 +598,9 @@ def dataarray_to_heatmaps(
         ARRAY_MIPMAP_THRESHOLD,
         HeatmapSeries,
     )
+    from loupe._heatmap_utils import _normalize_nan_shade
+
+    resolved_nan_shade = _normalize_nan_shade(shade_nans)
 
     if "time" not in da.dims:
         raise ValueError(
@@ -761,6 +769,7 @@ def dataarray_to_heatmaps(
             vmin=this_vmin,
             vmax=this_vmax,
             decim_method=decim_method,
+            shade_nans=resolved_nan_shade,
             mipmap_levels=mipmap,
         ))
 
