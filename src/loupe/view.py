@@ -45,6 +45,7 @@ def view(
     data: "TraceConfig | HeatmapConfig | RasterConfig | Zip | list | None" = None,
     *,
     window_len: float = 10.0,
+    compact_heatmaps_to_fit: bool = False,
     # Video sources
     videos: "VideoConfig | list[VideoConfig] | None" = None,
     # Global event markers (vertical lines across every pane)
@@ -78,6 +79,12 @@ def view(
         ``RasterConfig(df)``.
     window_len : float
         Initial time window in seconds (default ``10.0``).
+    compact_heatmaps_to_fit : bool, optional
+        If True, uniformly compress the visible heatmap subplots vertically so
+        the complete subplot stack fits in the plot viewport without vertical
+        scrolling. Non-heatmap subplots keep their requested heights whenever
+        possible. The fit is recomputed when the window is resized. Default
+        False.
     videos : VideoConfig or list[VideoConfig], optional
         Synchronized video sources for the right panel.  A single
         :class:`VideoConfig` is accepted as shorthand for a one-element
@@ -866,6 +873,7 @@ def view(
         dense_groups=dense_groups,
         heatmap_series=heatmap_series,
         window_len=window_len,
+        compact_heatmaps_to_fit=compact_heatmaps_to_fit,
         sample_markers=sample_markers_rendered,
         overlay_series=overlay_series_acc if any_overlays else None,
         overlay_main_names=overlay_main_names_acc if any_overlays else None,

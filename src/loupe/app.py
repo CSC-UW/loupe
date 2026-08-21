@@ -115,6 +115,16 @@ LEFT_AXIS_WIDTH_PAD = 6  # headroom added to the measured max
 # LoupeApp._build_ui / _toggle_label_strip_visibility).
 LABEL_STRIP_HEIGHT = 24
 
+# Heatmaps shorter than this do not have enough vertical room for a readable
+# rotated name plus first/last row tick labels. Keep the aligned left-axis
+# gutter/spine, but suppress those text decorations until the heatmap grows.
+HEATMAP_Y_DECORATION_MIN_CONTENT_HEIGHT = 40
+
+# QGraphicsGridLayout's default unconstrained maximum (FLT_MAX). Row
+# constraints survive plot reordering, so non-heatmap rows must explicitly be
+# restored to this value when a formerly constrained row changes kind.
+GRAPHICS_LAYOUT_UNBOUNDED_HEIGHT = float(np.finfo(np.float32).max)
+
 
 def _raster_extent(ms) -> float:
     """Total vertical extent of a raster in row-units, including any gaps
@@ -215,6 +225,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         dense_groups=None,
         # Heatmap mode
         heatmap_series=None,
+        # Uniformly compress visible heatmaps so the complete subplot stack
+        # fits in the plot viewport without outer vertical scrolling.
+        compact_heatmaps_to_fit: bool = False,
         # Initial layout order — list of ("ts"|"dense"|"raster"|"heatmap", idx)
         # tuples that specifies the visual subplot order top-to-bottom.
         # When None, falls back to the type-segregated default
@@ -406,7 +419,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # of every visible subplot fits in the plot-area viewport without
         # vertical scrolling. Toggled via View menu. Re-evaluated on every
         # resize. Has no effect when there are no heatmap plots.
-        self.compact_heatmaps_to_fit = True
+        self.compact_heatmaps_to_fit = bool(compact_heatmaps_to_fit)
         # Cache last-rendered key per heatmap plot so identical refreshes return early
         self._heatmap_cache_keys: list[tuple | None] = []
         # Cache uint8 RGBA LUTs by colormap name (built once per name)
@@ -1260,8 +1273,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         mview.addAction(self.action_proportional_heatmap)
 
         # Uniformly compress heatmap plots so the entire stack fits on screen
-        # (no vertical scrollbar). On by default; users with few heatmaps can
-        # turn it off to get the full per-row 12px sizing.
+        # (no vertical scrollbar). Users with few heatmaps can leave it off to
+        # retain the full per-row 12px sizing.
         self.action_compact_heatmaps_to_fit = QtGui.QAction(
             "Compact Heatmap Plots to Fit Screen", self
         )
@@ -2389,6 +2402,33 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         dlg.exec()
 
+    @staticmethod
+    def _plot_vertical_chrome_height(plt) -> int:
+        """Return fixed vertical pixels outside a plot's data ViewBox.
+
+        A normal subplot contributes a ~2 px frame. The bottom-most subplot
+        also owns the shared time axis, adding roughly 40 px. Treating that
+        fixed chrome as heatmap data height is what makes the last small
+        heatmap disappear when its row is tightly capped.
+        """
+        try:
+            vb = plt.getViewBox()
+            view_min = float(vb.minimumHeight()) if vb is not None else 0.0
+            return max(0, int(math.ceil(float(plt.minimumHeight()) - view_min)))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _configure_heatmap_y_axis_for_height(plt, content_height: int) -> None:
+        """Hide or restore heatmap y-axis text based on data-area height."""
+        try:
+            show_text = content_height >= HEATMAP_Y_DECORATION_MIN_CONTENT_HEIGHT
+            left_axis = plt.getAxis("left")
+            left_axis.setStyle(showValues=show_text)
+            left_axis.label.setVisible(show_text)
+        except Exception:
+            pass
+
     def _apply_custom_plot_heights(self):
         """Apply custom height factors to all visible plots based on subplot_order.
 
@@ -2410,9 +2450,14 @@ class LoupeApp(QtWidgets.QMainWindow):
             visible_plots = self._get_visible_subplot_order()
 
             # ---- Pass 1: compute natural (preferred, stretch) per row ------
-            # Each entry: (plot_type, idx, plt, factor, preferred, stretch)
+            # Each entry: (plot_type, idx, plt, factor, preferred_total,
+            # stretch, heatmap_content, heatmap_chrome). Heatmap content and
+            # fixed plot chrome are kept separate so pixels-per-row remains
+            # proportional even for 1-10-row heatmaps.
             specs: list[tuple] = []
             for plot_type, idx in visible_plots:
+                heatmap_content = None
+                heatmap_chrome = 0
                 if plot_type == "ts":
                     factor = (
                         self.plot_height_factors[idx]
@@ -2460,15 +2505,21 @@ class LoupeApp(QtWidgets.QMainWindow):
                         # Mirror raster proportional sizing: weight by row count.
                         BASE_HEIGHT_PER_ROW = 12
                         n_rows = max(1, asx.Y.shape[0])
-                        preferred = max(
+                        heatmap_content = max(
                             MIN_HEIGHT, int(n_rows * BASE_HEIGHT_PER_ROW * factor)
                         )
                         stretch = max(1, int(n_rows * factor * 10))
                     else:
                         # Heatmaps benefit from a bit more vertical room than line
                         # plots; mirror dense's larger default.
-                        preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor * 2))
+                        heatmap_content = max(
+                            MIN_HEIGHT, int(BASE_HEIGHT * factor * 2)
+                        )
                         stretch = max(1, int(factor * 200))
+                    heatmap_chrome = (
+                        self._plot_vertical_chrome_height(plt) if plt is not None else 0
+                    )
+                    preferred = heatmap_content + heatmap_chrome
 
                 else:  # raster
                     factor = (
@@ -2496,36 +2547,112 @@ class LoupeApp(QtWidgets.QMainWindow):
                         preferred = max(MIN_HEIGHT, int(BASE_HEIGHT * factor))
                         stretch = max(1, int(factor * 100))
 
-                specs.append((plot_type, idx, plt, factor, preferred, stretch))
+                specs.append(
+                    (
+                        plot_type,
+                        idx,
+                        plt,
+                        factor,
+                        preferred,
+                        stretch,
+                        heatmap_content,
+                        heatmap_chrome,
+                    )
+                )
 
             # ---- Pass 1.5: optional uniform heatmap compression ------------
             if self.compact_heatmaps_to_fit and any(s[0] == "heatmap" for s in specs):
                 viewport_h = self._available_plot_area_height()
                 if viewport_h > 0:
-                    natural_total = sum(s[4] for s in specs)
-                    heatmap_total = sum(s[4] for s in specs if s[0] == "heatmap")
-                    non_heatmap_total = natural_total - heatmap_total
-                    target_heatmap_total = max(MIN_HEIGHT, viewport_h - non_heatmap_total)
-                    if heatmap_total > target_heatmap_total and heatmap_total > 0:
-                        compress = target_heatmap_total / heatmap_total
+                    # Grid spacing also consumes viewport height. Budget for it
+                    # explicitly so preferred row heights plus inter-row gaps
+                    # fit the scroll area's viewport exactly.
+                    spacing = max(0.0, float(layout.verticalSpacing()))
+                    spacing_total = spacing * max(0, len(specs) - 1)
+                    row_budget = max(
+                        len(specs) * MIN_HEIGHT,
+                        viewport_h - spacing_total,
+                    )
+                    heatmap_specs = [s for s in specs if s[0] == "heatmap"]
+                    non_heatmap_total = sum(s[4] for s in specs if s[0] != "heatmap")
+                    heatmap_chrome_total = sum(s[7] for s in heatmap_specs)
+                    heatmap_content_total = sum(s[6] for s in heatmap_specs)
+                    target_content_total = max(
+                        len(heatmap_specs) * MIN_HEIGHT,
+                        row_budget - non_heatmap_total - heatmap_chrome_total,
+                    )
+                    if (
+                        heatmap_content_total > target_content_total
+                        and heatmap_content_total > 0
+                    ):
+                        compress = target_content_total / heatmap_content_total
                         specs = [
                             (
-                                pt, idx, plt, factor,
-                                max(MIN_HEIGHT, int(round(pref * compress))) if pt == "heatmap" else pref,
+                                pt,
+                                idx,
+                                plt,
+                                factor,
+                                (
+                                    chrome
+                                    + max(MIN_HEIGHT, int(round(content * compress)))
+                                    if pt == "heatmap"
+                                    else pref
+                                ),
                                 stretch,
+                                (
+                                    max(MIN_HEIGHT, int(round(content * compress)))
+                                    if pt == "heatmap"
+                                    else content
+                                ),
+                                chrome,
                             )
-                            for (pt, idx, plt, factor, pref, stretch) in specs
+                            for (
+                                pt,
+                                idx,
+                                plt,
+                                factor,
+                                pref,
+                                stretch,
+                                content,
+                                chrome,
+                            ) in specs
                         ]
 
             # ---- Pass 2: apply to layout + per-plot axis tweaks -------------
-            for row, (plot_type, idx, plt, factor, preferred, stretch) in enumerate(specs):
+            for row, (
+                plot_type,
+                idx,
+                plt,
+                factor,
+                preferred,
+                stretch,
+                heatmap_content,
+                _heatmap_chrome,
+            ) in enumerate(specs):
                 if plt:
-                    is_raster_label = (plot_type == "raster")
-                    self._configure_plot_for_height(
-                        plt, factor, is_raster=is_raster_label
-                    )
+                    if plot_type == "heatmap":
+                        self._configure_heatmap_y_axis_for_height(
+                            plt, int(heatmap_content)
+                        )
+                    else:
+                        is_raster_label = plot_type == "raster"
+                        self._configure_plot_for_height(
+                            plt, factor, is_raster=is_raster_label
+                        )
                 layout.setRowPreferredHeight(row, preferred)
                 layout.setRowMinimumHeight(row, MIN_HEIGHT)
+                if plot_type == "heatmap" and (
+                    self.scale_heatmap_proportionally
+                    or self.compact_heatmaps_to_fit
+                ):
+                    # A preferred height alone is only a hint: Qt otherwise
+                    # redistributes space toward PlotItem's ~52 px default and
+                    # floors every small heatmap at nearly the same height.
+                    layout.setRowMaximumHeight(row, preferred)
+                else:
+                    layout.setRowMaximumHeight(
+                        row, GRAPHICS_LAYOUT_UNBOUNDED_HEIGHT
+                    )
                 layout.setRowStretchFactor(row, stretch)
 
             # Re-assert the uniform left-axis width now that heights/visibility
@@ -2541,7 +2668,11 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _available_plot_area_height(self) -> int:
         """Return the height (px) the plot-area viewport can display without scrolling."""
         try:
-            vp = self.plot_area.viewport()
+            # ``plot_area`` is the scroll area's child and can already be much
+            # taller than the screen. Measuring its own viewport makes compact
+            # mode size against the overflow it is supposed to eliminate.
+            # The QScrollArea viewport is the actual on-screen height budget.
+            vp = self.plot_scroll_area.viewport()
             h = int(vp.height()) if vp is not None else 0
             return max(0, h)
         except Exception:
@@ -2550,6 +2681,7 @@ class LoupeApp(QtWidgets.QMainWindow):
     def _toggle_compact_heatmaps_to_fit(self, checked: bool) -> None:
         """View-menu handler for the 'Compact Heatmap Plots to Fit Screen' toggle."""
         self.compact_heatmaps_to_fit = bool(checked)
+        self._update_plot_area_height()
         self._apply_custom_plot_heights()
 
     def _configure_plot_for_height(self, plt, factor, is_raster=False):
@@ -4548,6 +4680,16 @@ class LoupeApp(QtWidgets.QMainWindow):
         visible = self._get_visible_subplot_order()
         n = len(visible)
         if n == 0:
+            self.plot_area.setMinimumHeight(0)
+            return
+        # Compact mode delegates all row sizing to the GraphicsLayout and lets
+        # the child widget shrink to the QScrollArea viewport. The historical
+        # ``n * trace_height_px`` minimum otherwise forces an overflow even
+        # after heatmap preferred heights have been compressed.
+        if self.compact_heatmaps_to_fit and any(
+            plot_type == "heatmap" for plot_type, _ in visible
+        ):
+            self.plot_area.setMinimumHeight(0)
             return
         # Desired height = n * trace_height_px, but at least the scroll area height
         scroll_h = self.plot_scroll_area.viewport().height() if hasattr(self, "plot_scroll_area") else 600

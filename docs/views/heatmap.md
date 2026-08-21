@@ -37,7 +37,24 @@ view(HeatmapConfig(
 
 # Single array (no split):
 view(HeatmapConfig(dF_one_dend, order_by="pos"))
+
+# Force a large split heatmap stack to fit without vertical scrolling:
+view(
+    HeatmapConfig(dnv, split_by="dend-ID", order_by="pos"),
+    compact_heatmaps_to_fit=True,
+)
 ```
+
+`compact_heatmaps_to_fit=True` uniformly reduces heatmap heights until the full
+visible subplot stack fits in the plot viewport. Other subplot types retain
+their requested heights whenever possible, and Loupe recomputes the fit after
+window resizes. The same setting is available at runtime under **View → Compact
+Heatmap Plots to Fit Screen** and is included in saved View-Configs. Heatmap
+data-area heights stay proportional to row count down through one-row arrays;
+fixed plot chrome such as the shared bottom time axis is budgeted separately.
+When a compacted heatmap's data area is under 40 px tall, Loupe hides its
+y-axis name and tick labels automatically and restores them if the plot later
+grows. The aligned y-axis gutter and spine remain in place.
 
 ## Runtime controls
 
@@ -45,6 +62,7 @@ view(HeatmapConfig(dF_one_dend, order_by="pos"))
 | --- | --- |
 | Open Heatmap Plot Controls dialog | `Ctrl+Shift+H` |
 | Subplot height / visibility / order | `Ctrl+H` |
+| Toggle viewport-fit heatmap sizing | View → Compact Heatmap Plots to Fit Screen |
 
 The Heatmap Plot Controls dialog provides per-subplot live adjustment of:
 - `vmin` / `vmax` (slider + spinbox; "Reset to 1–99% percentile" button)

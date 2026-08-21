@@ -167,6 +167,25 @@ view(HeatmapConfig(dnv, split_by="dend-ID", order_by="pos",
                    shade_nans=("#3E1715", 0.85)))
 ```
 
+When a split produces more heatmaps than fit vertically, opt into viewport-fit
+sizing so Loupe compresses the full heatmap stack and removes the outer vertical
+scrollbar:
+
+```python
+view([
+    TraceConfig(roi_dff),
+    HeatmapConfig(glu, split_by="dend-ID", order_by="pos"),
+    HeatmapConfig(ca, split_by="dend-ID", order_by="pos"),
+], compact_heatmaps_to_fit=True)
+```
+
+The fit updates whenever the window is resized. It can also be toggled at
+runtime with **View → Compact Heatmap Plots to Fit Screen**. Proportional
+sizing remains row-count based through very small heatmaps: a one-row heatmap
+may be only a few image pixels tall. Loupe automatically hides the heatmap's
+y-axis name and tick labels when its data area is too short to show them
+readably, while retaining the aligned axis gutter.
+
 Key parameters:
 
 | Param | Default | Purpose |
