@@ -15,6 +15,7 @@ from PySide6 import QtCore, QtWidgets
 from loupe._heatmap_utils import (
     ARRAY_COLORMAP_PRESETS,
     ARRAY_MIPMAP_TARGET_MIN_COLS,
+    _colormap_cache_token,
     _colormap_display_name,
 )
 
@@ -215,6 +216,193 @@ class DenseViewControlsDialog(QtWidgets.QDialog):
         self.main_window._setup_dense_vscrollbar_for_group(gi)
 
 
+class ColormapLevelsDialog(QtWidgets.QDialog):
+    """Bulk vmin/vmax editor for heatmaps grouped by current colormap."""
+
+    def __init__(self, parent: "HeatmapControlsDialog"):
+        super().__init__(parent)
+        self.setWindowTitle("Adjust vmin/vmax by colormap")
+        self.setModal(False)
+        self.controls_dialog = parent
+        self._entries = self._current_colormap_entries()
+        self._selected_tokens: frozenset[object] = frozenset()
+
+        layout = QtWidgets.QVBoxLayout(self)
+        instructions = QtWidgets.QLabel(
+            "Select any combination of the colormaps currently in use. "
+            "Level changes are applied immediately to every matching heatmap."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        self.colormap_list = QtWidgets.QListWidget()
+        for entry_index, (_token, display_name, count) in enumerate(self._entries):
+            suffix = "heatmap" if count == 1 else "heatmaps"
+            item = QtWidgets.QListWidgetItem(
+                f"{display_name} — {count} {suffix}", self.colormap_list
+            )
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, entry_index)
+        layout.addWidget(self.colormap_list, 1)
+
+        selection_buttons = QtWidgets.QHBoxLayout()
+        self.select_all_btn = QtWidgets.QPushButton("Select all")
+        self.clear_btn = QtWidgets.QPushButton("Clear")
+        selection_buttons.addWidget(self.select_all_btn)
+        selection_buttons.addWidget(self.clear_btn)
+        selection_buttons.addStretch(1)
+        layout.addLayout(selection_buttons)
+
+        levels = QtWidgets.QFormLayout()
+        self.vmin_spin = self._make_level_spinbox()
+        self.vmax_spin = self._make_level_spinbox()
+        levels.addRow("vmin:", self.vmin_spin)
+        levels.addRow("vmax:", self.vmax_spin)
+        layout.addLayout(levels)
+
+        self.status_label = QtWidgets.QLabel("Select at least one colormap.")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.colormap_list.itemChanged.connect(self._on_selection_changed)
+        self.select_all_btn.clicked.connect(self._select_all)
+        self.clear_btn.clicked.connect(self._clear_selection)
+        self.vmin_spin.valueChanged.connect(
+            lambda value: self._apply_level("vmin", value)
+        )
+        self.vmax_spin.valueChanged.connect(
+            lambda value: self._apply_level("vmax", value)
+        )
+        self._set_level_controls_enabled(False)
+        self.resize(470, 390)
+
+    @staticmethod
+    def _make_level_spinbox() -> QtWidgets.QDoubleSpinBox:
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setDecimals(6)
+        spin.setRange(-1e100, 1e100)
+        spin.setSingleStep(0.01)
+        spin.setKeyboardTracking(True)
+        return spin
+
+    def _current_colormap_entries(self) -> list[tuple[object, str, int]]:
+        entries: list[list] = []
+        by_token: dict[object, int] = {}
+        for heatmap in self.controls_dialog.main_window.heatmap_series:
+            token = _colormap_cache_token(heatmap.colormap)
+            if token in by_token:
+                entries[by_token[token]][2] += 1
+                continue
+            by_token[token] = len(entries)
+            entries.append([token, _colormap_display_name(heatmap.colormap), 1])
+
+        # Distinct custom colormap objects may share a display name. Make those
+        # rows unambiguous without changing how matching itself works.
+        name_totals: dict[str, int] = {}
+        for _, name, _ in entries:
+            name_totals[name] = name_totals.get(name, 0) + 1
+        name_seen: dict[str, int] = {}
+        result = []
+        for token, name, count in entries:
+            if name_totals[name] > 1:
+                name_seen[name] = name_seen.get(name, 0) + 1
+                name = f"{name} [{name_seen[name]}]"
+            result.append((token, name, count))
+        return result
+
+    def _checked_tokens(self) -> frozenset[object]:
+        tokens = []
+        for row in range(self.colormap_list.count()):
+            item = self.colormap_list.item(row)
+            if item.checkState() == QtCore.Qt.CheckState.Checked:
+                entry_index = int(item.data(QtCore.Qt.ItemDataRole.UserRole))
+                tokens.append(self._entries[entry_index][0])
+        return frozenset(tokens)
+
+    def _set_level_controls_enabled(self, enabled: bool) -> None:
+        self.vmin_spin.setEnabled(enabled)
+        self.vmax_spin.setEnabled(enabled)
+
+    def _matching_heatmaps(self):
+        return [
+            heatmap
+            for heatmap in self.controls_dialog.main_window.heatmap_series
+            if _colormap_cache_token(heatmap.colormap) in self._selected_tokens
+        ]
+
+    def _sync_levels_from_heatmaps(self) -> None:
+        heatmaps = self._matching_heatmaps()
+        if not heatmaps:
+            return
+        self.vmin_spin.blockSignals(True)
+        self.vmax_spin.blockSignals(True)
+        try:
+            self.vmin_spin.setValue(float(heatmaps[0].vmin))
+            self.vmax_spin.setValue(float(heatmaps[0].vmax))
+        finally:
+            self.vmin_spin.blockSignals(False)
+            self.vmax_spin.blockSignals(False)
+
+    def _update_status(self) -> None:
+        heatmaps = self._matching_heatmaps()
+        if not heatmaps:
+            self.status_label.setText("Select at least one colormap.")
+            return
+        vmins = {float(heatmap.vmin) for heatmap in heatmaps}
+        vmaxs = {float(heatmap.vmax) for heatmap in heatmaps}
+        if len(vmins) > 1 or len(vmaxs) > 1:
+            self.status_label.setText(
+                f"{len(heatmaps)} heatmaps selected; their current levels are mixed. "
+                "Editing either field applies that value to all selected heatmaps."
+            )
+        else:
+            self.status_label.setText(
+                f"{len(heatmaps)} heatmaps selected. Changes apply immediately."
+            )
+
+    def _on_selection_changed(self, _item=None) -> None:
+        selected = self._checked_tokens()
+        changed = selected != self._selected_tokens
+        self._selected_tokens = selected
+        self._set_level_controls_enabled(bool(selected))
+        if selected and changed:
+            self._sync_levels_from_heatmaps()
+        self._update_status()
+
+    def _set_all_checked(self, checked: bool) -> None:
+        self.colormap_list.blockSignals(True)
+        try:
+            state = (
+                QtCore.Qt.CheckState.Checked
+                if checked
+                else QtCore.Qt.CheckState.Unchecked
+            )
+            for row in range(self.colormap_list.count()):
+                self.colormap_list.item(row).setCheckState(state)
+        finally:
+            self.colormap_list.blockSignals(False)
+        self._on_selection_changed()
+
+    def _select_all(self) -> None:
+        self._set_all_checked(True)
+
+    def _clear_selection(self) -> None:
+        self._set_all_checked(False)
+
+    def _apply_level(self, attribute: str, value: float) -> None:
+        if not self._selected_tokens:
+            return
+        self.controls_dialog._apply_level_by_colormap(
+            self._selected_tokens, attribute, float(value)
+        )
+        self._update_status()
+
+
 class HeatmapControlsDialog(QtWidgets.QDialog):
     """Non-modal dialog for adjusting per-heatmap vmin/vmax, colormap, and decim method."""
 
@@ -234,6 +422,15 @@ class HeatmapControlsDialog(QtWidgets.QDialog):
         main_layout = QtWidgets.QVBoxLayout(container)
 
         self._group_widgets: list[dict] = []
+        self._colormap_levels_dialog = None
+
+        self.adjust_by_colormap_btn = QtWidgets.QPushButton(
+            "Adjust vmin/vmax by colormap"
+        )
+        self.adjust_by_colormap_btn.clicked.connect(
+            self._show_colormap_levels_dialog
+        )
+        main_layout.addWidget(self.adjust_by_colormap_btn)
 
         for ai, asx in enumerate(self.main_window.heatmap_series):
             grp_box = QtWidgets.QGroupBox(asx.name)
@@ -402,8 +599,26 @@ class HeatmapControlsDialog(QtWidgets.QDialog):
         w["decim_mean"].blockSignals(True)
         try:
             w["vmin_slider"].setValue(self._value_to_slider(ai, asx.vmin))
+            if not (
+                w["vmin_spin"].minimum()
+                <= asx.vmin
+                <= w["vmin_spin"].maximum()
+            ):
+                w["vmin_spin"].setRange(
+                    min(w["vmin_spin"].minimum(), asx.vmin),
+                    max(w["vmin_spin"].maximum(), asx.vmin),
+                )
             w["vmin_spin"].setValue(asx.vmin)
             w["vmax_slider"].setValue(self._value_to_slider(ai, asx.vmax))
+            if not (
+                w["vmax_spin"].minimum()
+                <= asx.vmax
+                <= w["vmax_spin"].maximum()
+            ):
+                w["vmax_spin"].setRange(
+                    min(w["vmax_spin"].minimum(), asx.vmax),
+                    max(w["vmax_spin"].maximum(), asx.vmax),
+                )
             w["vmax_spin"].setValue(asx.vmax)
             cmap_label = _colormap_display_name(asx.colormap)
             if w["cmap_combo"].findText(cmap_label) < 0:
@@ -506,3 +721,27 @@ class HeatmapControlsDialog(QtWidgets.QDialog):
             self._sync_widgets_to_state(j)
             self._invalidate_array_cache(j)
         self.main_window._refresh_heatmap_plots()
+
+    def _show_colormap_levels_dialog(self) -> None:
+        if self._colormap_levels_dialog is not None:
+            self._colormap_levels_dialog.close()
+            self._colormap_levels_dialog.deleteLater()
+        self._colormap_levels_dialog = ColormapLevelsDialog(self)
+        self._colormap_levels_dialog.show()
+        self._colormap_levels_dialog.raise_()
+        self._colormap_levels_dialog.activateWindow()
+
+    def _apply_level_by_colormap(
+        self, tokens: frozenset[object], attribute: str, value: float
+    ) -> None:
+        """Apply one level to all heatmaps using any selected colormap."""
+        changed_indices = []
+        for ai, heatmap in enumerate(self.main_window.heatmap_series):
+            if _colormap_cache_token(heatmap.colormap) not in tokens:
+                continue
+            setattr(heatmap, attribute, value)
+            self._sync_widgets_to_state(ai)
+            self._invalidate_array_cache(ai)
+            changed_indices.append(ai)
+        if changed_indices:
+            self.main_window._refresh_heatmap_plots()
