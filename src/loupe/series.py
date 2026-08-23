@@ -87,6 +87,9 @@ class RasterSeries:
     y_extent: float | None = None  # total vertical extent incl. gaps; None means n_rows
     separator_color: "tuple | str | None" = None  # resolved line color; None -> app default
     separator_width: float | None = None  # line width in px; None -> app default
+    # order_by value for each row index (len == n_rows). Lets a live tuner
+    # re-evaluation keep the row layout pinned (see RasterConfig.rows).
+    row_keys: np.ndarray | None = None
 
 
 @dataclass

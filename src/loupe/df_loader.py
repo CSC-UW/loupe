@@ -91,6 +91,7 @@ def dataframe_to_raster_series(
     horizontal_separators: list | None = None,
     separator_params: dict | None = None,
     reporter=None,
+    rows=None,
 ) -> list:
     """Convert a Polars DataFrame into one or more RasterSeries for raster display.
 
@@ -145,6 +146,11 @@ def dataframe_to_raster_series(
         Optional styling: keys ``"gap"`` (row-units, default ``0.6``),
         ``"color"`` (hex/RGB(A), default ``(120, 120, 120)``), ``"width"``
         (pixels, default ``1.0``).  Unknown keys warn.
+    rows : sequence or None
+        Explicit, ordered set of *order_by* values to render as raster rows
+        (row ``i`` is ``rows[i]``).  Rows with no events are still drawn
+        (empty); events whose *order_by* value is not in ``rows`` are dropped.
+        ``None`` (default) derives the rows from the unique values present.
 
     Returns
     -------
@@ -179,7 +185,11 @@ def dataframe_to_raster_series(
             f"Available: {df.columns}"
         )
 
-    if df.height == 0:
+    if df.height == 0 and (rows is None or split_by is not None):
+        # Nothing to draw -- unless the caller pinned the rows of a single
+        # (unsplit) raster, in which case an empty series with the full row
+        # layout is returned so the subplot exists and can be filled later
+        # (e.g. a live-tuned threshold that currently excludes every event).
         return []
 
     # ---- shared categorical palette (built once across the whole DataFrame) -
@@ -317,9 +327,17 @@ def dataframe_to_raster_series(
         # timestamps
         timestamps = gdf[time_col].to_numpy().astype(np.float64)
 
-        # y-values: map unique sorted values to contiguous 0-based ints
-        unique_y = np.sort(gdf[order_by].unique().to_numpy())
-        y_map = {v: i for i, v in enumerate(unique_y)}
+        # y-values: map unique sorted values to contiguous 0-based ints, or
+        # pin the row set/order to the caller-supplied ``rows``.
+        if rows is not None:
+            import polars as pl  # lazy
+
+            unique_y = np.asarray(list(rows))
+            gdf = gdf.filter(pl.col(order_by).is_in(list(rows)))
+            timestamps = gdf[time_col].to_numpy().astype(np.float64)
+        else:
+            unique_y = np.sort(gdf[order_by].unique().to_numpy())
+        y_map = {v: i for i, v in enumerate(unique_y.tolist())}
         raw_y = gdf[order_by].to_numpy()
         yvals = np.array([y_map[v] for v in raw_y], dtype=np.intp)
         n_rows = len(unique_y)
@@ -389,6 +407,7 @@ def dataframe_to_raster_series(
 
         result.append(
             RasterSeries(
+                row_keys=np.asarray(unique_y),
                 name=series_name,
                 timestamps=timestamps,
                 yvals=yvals,

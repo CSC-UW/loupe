@@ -327,11 +327,12 @@ class Binding:
     ``slice`` into ``LoupeApp.series`` / ``LoupeApp.overlay_series``.
     """
 
-    kind: str  # "trace_stacked" | "trace_overlay" | "trace_marker"
+    kind: str  # "trace_stacked" | "trace_overlay" | "trace_marker" | "raster"
     tunable: Tunable
     cfg: Any  # the originating Config — carries order_by / descending / hue
     # locators (only the ones for `kind` are set) ------------------------------
-    series_slice: slice | None = None  # trace_stacked → app.series / app.curves
+    series_slice: slice | None = None  # trace_stacked → app.series / app.curves;
+    # raster → app.raster_series
     overlay_host_slice: slice | None = None  # trace_overlay → host-series indices
     overlay_k: int | None = None  # trace_overlay → which overlay_arrays column
     host_data: Any = None  # trace_overlay/trace_marker → host DataArray

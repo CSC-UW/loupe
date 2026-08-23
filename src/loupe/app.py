@@ -5507,10 +5507,124 @@ class LoupeApp(QtWidgets.QMainWindow):
                 )
                 return
             self.sample_markers[marker_k].bool_per_series = per_series
+        elif b.kind == "raster":
+            self._apply_raster_binding(b)
         else:
             raise NotImplementedError(
                 f"Tuner binding kind {b.kind!r} is not supported yet."
             )
+
+    def _apply_raster_binding(self, b) -> None:
+        """Live-update the raster subplots owned by one tunable RasterConfig.
+
+        Re-evaluates the DataFrame, regroups it exactly as :func:`loupe.view`
+        did, and swaps the per-event arrays into the existing RasterSeries.
+        Row layout is pinned: rows are matched to the initial render's
+        ``row_keys`` (or the config's explicit ``rows``), so a row that loses
+        all its events stays in place, empty. Subplot groups are matched by
+        name; a vanished group renders empty.
+        """
+        from dataclasses import replace
+
+        from loupe.df_loader import _parse_raster_color, dataframe_to_raster_series
+
+        cfg = b.cfg
+        fresh = b.tunable()
+        idxs = [
+            i
+            for i in range(b.series_slice.start, b.series_slice.stop)
+            if i < len(self.raster_series)
+        ]
+        if not idxs:
+            return
+        new_list: list = []
+        if fresh is not None and getattr(fresh, "height", 0) > 0:
+            new_list = dataframe_to_raster_series(
+                fresh,
+                time_col=cfg.time_col,
+                order_by=cfg.order_by,
+                split_by=cfg.split_by,
+                alpha_by=cfg.alpha_by,
+                array_name=cfg.array_name,
+                palette=cfg.palette,
+                alpha_range=cfg.alpha_range,
+                hue=cfg.hue,
+                horizontal_separators=cfg.horizontal_separators,
+                separator_params=cfg.separator_params,
+                rows=cfg.rows,
+            )
+            if cfg.hue is None and cfg.color is not None:
+                resolved = _parse_raster_color(cfg.color)
+                for ms in new_list:
+                    ms.color = resolved
+        by_name = {ms.name: ms for ms in new_list}
+
+        for i in idxs:
+            old = self.raster_series[i]
+            new = by_name.get(old.name)
+            float_rows = old.yvals.dtype.kind == "f"
+            if new is None:
+                upd = replace(
+                    old,
+                    timestamps=np.empty(0, dtype=np.float64),
+                    yvals=np.empty(0, dtype=old.yvals.dtype),
+                    alphas=np.empty(0, dtype=np.float64),
+                    category_index=(
+                        np.empty(0, dtype=np.int16)
+                        if old.category_index is not None
+                        else None
+                    ),
+                )
+            else:
+                ts, ys, al, ci = new.timestamps, new.yvals, new.alphas, new.category_index
+                if (
+                    old.row_keys is not None
+                    and new.row_keys is not None
+                    and old.separator_lines is None
+                    and not np.array_equal(old.row_keys, new.row_keys)
+                ):
+                    # Re-map the fresh render's rows onto the pinned layout.
+                    pos = {k: j for j, k in enumerate(old.row_keys.tolist())}
+                    remap = np.array(
+                        [pos.get(k, -1) for k in new.row_keys.tolist()], dtype=np.intp
+                    )
+                    y_old = remap[np.asarray(ys).astype(np.intp)]
+                    keep = y_old >= 0
+                    ts, al = ts[keep], al[keep]
+                    ys = y_old[keep].astype(np.float64 if float_rows else np.intp)
+                    if ci is not None:
+                        ci = ci[keep]
+                same_palette = (
+                    old.category_colors is None and new.category_colors is None
+                ) or (
+                    old.category_colors is not None
+                    and new.category_colors is not None
+                    and list(old.category_colors) == list(new.category_colors)
+                )
+                upd = replace(
+                    old,
+                    timestamps=ts,
+                    yvals=ys,
+                    alphas=al,
+                    category_index=ci if same_palette else new.category_index,
+                    category_colors=(
+                        old.category_colors if same_palette else new.category_colors
+                    ),
+                    color=new.color if cfg.hue is None else old.color,
+                )
+                if not same_palette and i < len(self._raster_line_items):
+                    # Category set changed: rebuild this subplot's pen grid.
+                    plt = self.raster_plots[i] if i < len(self.raster_plots) else None
+                    if plt is not None:
+                        for cat_items in self._raster_line_items[i]:
+                            for it in cat_items:
+                                plt.removeItem(it)
+                        items, pens = self._create_raster_render_items(plt, upd)
+                        self._raster_line_items[i] = items
+                        if i < len(self._raster_pens):
+                            self._raster_pens[i] = pens
+            self.raster_series[i] = upd
+        self._refresh_raster_plots()
 
     def _refit_trace_yrange(self, idx: int) -> None:
         """Recompute a stacked subplot's fixed Y-range from its (newly tuned)

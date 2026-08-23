@@ -402,14 +402,6 @@ def view(
                 })
         elif isinstance(item, RasterConfig):
             raster_data, raster_tun = _resolve(item.data)
-            if raster_tun is not None:
-                import warnings
-                warnings.warn(
-                    "Tuner: tuning RasterConfig.data (event detection) is not "
-                    "yet supported; rendering with the initial parameter "
-                    "values. Slider control will land in a later checkpoint.",
-                    stacklevel=2,
-                )
             new_ms = dataframe_to_raster_series(
                 raster_data,
                 time_col=item.time_col,
@@ -423,6 +415,7 @@ def view(
                 horizontal_separators=item.horizontal_separators,
                 separator_params=item.separator_params,
                 reporter=reporter,
+                rows=item.rows,
             )
             if item.hue is not None:
                 if item.color is not None:
@@ -445,6 +438,11 @@ def view(
                     ms.color = resolved
             base = len(raster_list)
             raster_list.extend(new_ms)
+            if raster_tun is not None:
+                bindings.append(Binding(
+                    kind="raster", tunable=raster_tun, cfg=item,
+                    series_slice=slice(base, base + len(new_ms)),
+                ))
             for j in range(len(new_ms)):
                 order_acc.append(("raster", base + j))
                 plot_identities["raster"].append({

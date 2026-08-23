@@ -11,6 +11,7 @@ Re-exported from :mod:`loupe`, so the canonical import is
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -372,8 +373,24 @@ class RasterConfig:
         (hex string or RGB(A) tuple, default gray ``(120, 120, 120)``), and
         ``"width"`` (line width in pixels, default ``1.0``).  Unknown keys
         emit a warning.  Ignored unless *horizontal_separators* is set.
+    rows : sequence or None
+        Explicit, ordered set of *order_by* values to render as raster rows
+        (row ``i`` is ``rows[i]``).  Rows with no events are still drawn, and
+        events whose *order_by* value is not listed are dropped.  Use this to
+        keep the row layout fixed while *data* is live-tuned (e.g. an event
+        catalog filtered by a :class:`loupe.Param` threshold).  ``None``
+        (default) derives rows from the values present in *data*.
     view_id : str or None
         Optional stable identity for semantic View-Config matching.
+
+    Notes
+    -----
+    *data* may be a :func:`loupe.tunable` (or a bare zero-arg callable)
+    returning a DataFrame; its :class:`loupe.Param` arguments become live
+    Tuner sliders and the raster re-renders when they move.  Subplot groups
+    are matched by name between re-evaluations (a group with no remaining
+    events renders empty), and rows stay pinned to the initial render (or
+    to *rows* when given).
     """
 
     data: "pl.DataFrame"
@@ -388,6 +405,7 @@ class RasterConfig:
     alpha_range: tuple[float, float] = (0.3, 1.0)
     horizontal_separators: "list | None" = None
     separator_params: "dict | None" = None
+    rows: "Sequence | None" = None
     view_id: str | None = None
 
     @classmethod
