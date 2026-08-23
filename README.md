@@ -180,7 +180,9 @@ view([
 ```
 
 The fit updates whenever the window is resized. It can also be toggled at
-runtime with **View → Compact Heatmap Plots to Fit Screen**. Proportional
+runtime with **View → Compact Heatmap Plots to Fit Screen**. The raster
+counterpart is `compact_rasters_to_fit=True` (**View → Compact Raster Plots to
+Fit Screen**); both can be on together and then share one compression ratio. Proportional
 sizing remains row-count based through very small heatmaps: a one-row heatmap
 may be only a few image pixels tall. Loupe automatically hides the heatmap's
 y-axis name and tick labels when its data area is too short to show them

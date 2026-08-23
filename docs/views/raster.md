@@ -116,6 +116,14 @@ view(RasterConfig(ev, time_col="time", order_by="unit",
                   shade_nans=("#C0C0C0", 0.45)))
 ```
 
+## Viewport fit
+
+`view(..., compact_rasters_to_fit=True)` uniformly compresses the visible raster
+subplots until the whole stack fits the plot viewport without vertical
+scrolling (the raster analogue of `compact_heatmaps_to_fit`). The fit is
+recomputed on resize, can be toggled at runtime under **View → Compact Raster
+Plots to Fit Screen**, and is saved in View-Configs (`display.compact_rasters_to_fit`).
+
 ## Runtime controls
 
 | Action | Binding |

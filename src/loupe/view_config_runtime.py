@@ -529,6 +529,7 @@ def capture_view_config(
         "raster_event_thickness": int(app.raster_event_thickness),
         "scale_heatmap_proportionally": bool(app.scale_heatmap_proportionally),
         "compact_heatmaps_to_fit": bool(app.compact_heatmaps_to_fit),
+        "compact_rasters_to_fit": bool(getattr(app, "compact_rasters_to_fit", False)),
         "interval_labels": {
             "alpha": float(app.interval_label_alpha_multiplier),
             "overlays_visible": bool(app.interval_label_overlays_enabled),
@@ -1246,6 +1247,7 @@ def apply_view_config(
         ("scale_raster_proportionally", "scale_raster_proportionally", "action_proportional_raster"),
         ("scale_heatmap_proportionally", "scale_heatmap_proportionally", "action_proportional_heatmap"),
         ("compact_heatmaps_to_fit", "compact_heatmaps_to_fit", "action_compact_heatmaps_to_fit"),
+        ("compact_rasters_to_fit", "compact_rasters_to_fit", "action_compact_rasters_to_fit"),
     ):
         value = _bool(display, key, report)
         if value is not None:

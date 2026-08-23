@@ -52,6 +52,9 @@ window resizes. The same setting is available at runtime under **View → Compac
 Heatmap Plots to Fit Screen** and is included in saved View-Configs. Heatmap
 data-area heights stay proportional to row count down through one-row arrays;
 fixed plot chrome such as the shared bottom time axis is budgeted separately.
+`compact_rasters_to_fit=True` does the same for raster subplots (see
+[raster.md](raster.md)); with both on, heatmaps and rasters are compressed by
+a single shared ratio so their relative sizes are preserved.
 When a compacted heatmap's data area is under 40 px tall, Loupe hides its
 y-axis name and tick labels automatically and restores them if the plot later
 grows. The aligned y-axis gutter and spine remain in place.

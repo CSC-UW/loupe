@@ -228,6 +228,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Uniformly compress visible heatmaps so the complete subplot stack
         # fits in the plot viewport without outer vertical scrolling.
         compact_heatmaps_to_fit: bool = False,
+        compact_rasters_to_fit: bool = False,
         # Initial layout order — list of ("ts"|"dense"|"raster"|"heatmap", idx)
         # tuples that specifies the visual subplot order top-to-bottom.
         # When None, falls back to the type-segregated default
@@ -426,6 +427,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # vertical scrolling. Toggled via View menu. Re-evaluated on every
         # resize. Has no effect when there are no heatmap plots.
         self.compact_heatmaps_to_fit = bool(compact_heatmaps_to_fit)
+        self.compact_rasters_to_fit = bool(compact_rasters_to_fit)
         # Cache last-rendered key per heatmap plot so identical refreshes return early
         self._heatmap_cache_keys: list[tuple | None] = []
         # Cache uint8 RGBA LUTs by colormap name (built once per name)
@@ -1299,6 +1301,17 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._toggle_compact_heatmaps_to_fit
         )
         mview.addAction(self.action_compact_heatmaps_to_fit)
+
+        # Raster counterpart: compress raster plots so the whole stack fits.
+        self.action_compact_rasters_to_fit = QtGui.QAction(
+            "Compact Raster Plots to Fit Screen", self
+        )
+        self.action_compact_rasters_to_fit.setCheckable(True)
+        self.action_compact_rasters_to_fit.setChecked(self.compact_rasters_to_fit)
+        self.action_compact_rasters_to_fit.toggled.connect(
+            self._toggle_compact_rasters_to_fit
+        )
+        mview.addAction(self.action_compact_rasters_to_fit)
 
         heatmap_ctrl_action = QtGui.QAction("Heatmap Plot Controls...", self)
         heatmap_ctrl_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+H"))
@@ -2575,8 +2588,9 @@ class LoupeApp(QtWidgets.QMainWindow):
                     )
                 )
 
-            # ---- Pass 1.5: optional uniform heatmap compression ------------
-            if self.compact_heatmaps_to_fit and any(s[0] == "heatmap" for s in specs):
+            # ---- Pass 1.5: optional uniform heatmap / raster compression ---
+            compact_types = self._compact_plot_types()
+            if compact_types and any(s[0] in compact_types for s in specs):
                 viewport_h = self._available_plot_area_height()
                 if viewport_h > 0:
                     # Grid spacing also consumes viewport height. Budget for it
@@ -2588,10 +2602,16 @@ class LoupeApp(QtWidgets.QMainWindow):
                         len(specs) * MIN_HEIGHT,
                         viewport_h - spacing_total,
                     )
-                    heatmap_specs = [s for s in specs if s[0] == "heatmap"]
-                    non_heatmap_total = sum(s[4] for s in specs if s[0] != "heatmap")
+                    # Rasters carry their whole preferred height as 'content'
+                    # (no separate chrome); heatmaps keep content/chrome apart.
+                    heatmap_specs = [s for s in specs if s[0] in compact_types]
+                    non_heatmap_total = sum(
+                        s[4] for s in specs if s[0] not in compact_types
+                    )
                     heatmap_chrome_total = sum(s[7] for s in heatmap_specs)
-                    heatmap_content_total = sum(s[6] for s in heatmap_specs)
+                    heatmap_content_total = sum(
+                        (s[6] if s[6] is not None else s[4]) for s in heatmap_specs
+                    )
                     target_content_total = max(
                         len(heatmap_specs) * MIN_HEIGHT,
                         row_budget - non_heatmap_total - heatmap_chrome_total,
@@ -2609,14 +2629,22 @@ class LoupeApp(QtWidgets.QMainWindow):
                                 factor,
                                 (
                                     chrome
-                                    + max(MIN_HEIGHT, int(round(content * compress)))
-                                    if pt == "heatmap"
+                                    + max(
+                                        MIN_HEIGHT,
+                                        int(
+                                            round(
+                                                (content if content is not None else pref)
+                                                * compress
+                                            )
+                                        ),
+                                    )
+                                    if pt in compact_types
                                     else pref
                                 ),
                                 stretch,
                                 (
                                     max(MIN_HEIGHT, int(round(content * compress)))
-                                    if pt == "heatmap"
+                                    if (pt in compact_types and content is not None)
                                     else content
                                 ),
                                 chrome,
@@ -2656,10 +2684,13 @@ class LoupeApp(QtWidgets.QMainWindow):
                         )
                 layout.setRowPreferredHeight(row, preferred)
                 layout.setRowMinimumHeight(row, MIN_HEIGHT)
-                if plot_type == "heatmap" and (
-                    self.scale_heatmap_proportionally
-                    or self.compact_heatmaps_to_fit
-                ):
+                if (
+                    plot_type == "heatmap"
+                    and (
+                        self.scale_heatmap_proportionally
+                        or self.compact_heatmaps_to_fit
+                    )
+                ) or (plot_type == "raster" and self.compact_rasters_to_fit):
                     # A preferred height alone is only a hint: Qt otherwise
                     # redistributes space toward PlotItem's ~52 px default and
                     # floors every small heatmap at nearly the same height.
@@ -2698,6 +2729,21 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.compact_heatmaps_to_fit = bool(checked)
         self._update_plot_area_height()
         self._apply_custom_plot_heights()
+
+    def _toggle_compact_rasters_to_fit(self, checked: bool) -> None:
+        """View-menu handler for the 'Compact Raster Plots to Fit Screen' toggle."""
+        self.compact_rasters_to_fit = bool(checked)
+        self._update_plot_area_height()
+        self._apply_custom_plot_heights()
+
+    def _compact_plot_types(self) -> set:
+        """Plot types whose rows are uniformly compressed to fit the viewport."""
+        types = set()
+        if getattr(self, "compact_heatmaps_to_fit", False):
+            types.add("heatmap")
+        if getattr(self, "compact_rasters_to_fit", False):
+            types.add("raster")
+        return types
 
     def _configure_plot_for_height(self, plt, factor, is_raster=False):
         """Configure plot axis tick-label visibility based on height factor.
@@ -4752,9 +4798,8 @@ class LoupeApp(QtWidgets.QMainWindow):
         # the child widget shrink to the QScrollArea viewport. The historical
         # ``n * trace_height_px`` minimum otherwise forces an overflow even
         # after heatmap preferred heights have been compressed.
-        if self.compact_heatmaps_to_fit and any(
-            plot_type == "heatmap" for plot_type, _ in visible
-        ):
+        compact_types = self._compact_plot_types()
+        if compact_types and any(plot_type in compact_types for plot_type, _ in visible):
             self.plot_area.setMinimumHeight(0)
             return
         # Desired height = n * trace_height_px, but at least the scroll area height
@@ -7059,7 +7104,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Re-fit heatmap plots when compact mode is on, since the available
         # viewport height changed. Deferred so the layout has settled by the
         # time we measure viewport().height().
-        if getattr(self, "compact_heatmaps_to_fit", False) and self.heatmap_series:
+        if (getattr(self, "compact_heatmaps_to_fit", False) and self.heatmap_series) or (
+            getattr(self, "compact_rasters_to_fit", False) and self.raster_series
+        ):
             QtCore.QTimer.singleShot(70, self._apply_custom_plot_heights)
 
     def _pin_bottom_spine(self, vb, spine) -> None:

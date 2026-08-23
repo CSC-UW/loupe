@@ -46,6 +46,7 @@ def view(
     *,
     window_len: float = 10.0,
     compact_heatmaps_to_fit: bool = False,
+    compact_rasters_to_fit: bool = False,
     # Video sources
     videos: "VideoConfig | list[VideoConfig] | None" = None,
     # Global event markers (vertical lines across every pane)
@@ -86,6 +87,11 @@ def view(
         scrolling. Non-heatmap subplots keep their requested heights whenever
         possible. The fit is recomputed when the window is resized. Default
         False.
+    compact_rasters_to_fit : bool, optional
+        Raster counterpart of ``compact_heatmaps_to_fit``: uniformly compress
+        the visible raster subplots so the stack fits the viewport without
+        vertical scrolling. Both flags may be on at once, in which case
+        heatmap and raster rows share one compression ratio. Default False.
     videos : VideoConfig or list[VideoConfig], optional
         Synchronized video sources for the right panel.  A single
         :class:`VideoConfig` is accepted as shorthand for a one-element
@@ -892,6 +898,7 @@ def view(
         heatmap_series=heatmap_series,
         window_len=window_len,
         compact_heatmaps_to_fit=compact_heatmaps_to_fit,
+        compact_rasters_to_fit=compact_rasters_to_fit,
         sample_markers=sample_markers_rendered,
         overlay_series=overlay_series_acc if any_overlays else None,
         overlay_main_names=overlay_main_names_acc if any_overlays else None,
