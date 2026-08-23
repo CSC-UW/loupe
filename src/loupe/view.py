@@ -436,6 +436,12 @@ def view(
                 resolved = _parse_raster_color(item.color)
                 for ms in new_ms:
                     ms.color = resolved
+            from loupe._heatmap_utils import _normalize_nan_shade
+
+            nan_shade = _normalize_nan_shade(item.shade_nans)
+            for ms in new_ms:
+                ms.nan_spans = item.nan_spans
+                ms.nan_shade = nan_shade
             base = len(raster_list)
             raster_list.extend(new_ms)
             if raster_tun is not None:

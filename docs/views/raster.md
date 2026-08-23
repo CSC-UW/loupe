@@ -20,6 +20,8 @@ Defined in `src/loupe/__init__.py:225-316`.
 | `array_name` | `""` | Subplot label prefix. `""` (default) leaves grouped subplots labeled by raw group values. A non-empty string is used verbatim. A callable `(group_val, sub_df) -> str` returns the full subplot name. Multi-column groups join with `"-"` (e.g. `"imec0-CA1-SR"`). |
 | `horizontal_separators` | `None` | Values in `order_by` space at which to draw a thin horizontal line plus a small vertical gap — a purely visual border (e.g. to delimit units from different probes in one raster). Each value `v` draws the line just below the row whose `order_by` value is `v`. Resolved per subplot under `split_by`; out-of-range / on-boundary values are ignored. |
 | `separator_params` | `None` | Optional styling dict for the separators: `"gap"` (row-units, default `0.6`), `"color"` (hex / RGB(A), default gray `(120,120,120)`), `"width"` (px, default `1.0`). Unknown keys warn. Ignored unless `horizontal_separators` is set. |
+| `nan_spans` | `None` | Time spans where the *source signal* was NaN — a list of `(t_start, t_end)` shaded across the whole subplot, or `{order_by_value: [(t_start, t_end), ...]}` for per-row shading. Drawn only when `shade_nans` is set. |
+| `shade_nans` | `False` | `"#RRGGBB"` (0.7 alpha) or `("#RRGGBB", alpha)` — colour for `nan_spans`, same semantics as the heatmap option. |
 | `rows` | `None` | Explicit, ordered list of `order_by` values to use as raster rows (row `i` is `rows[i]`). Rows with no events are still drawn (empty) and events whose `order_by` value is not listed are dropped. Applies per subplot under `split_by`. An empty unsplit DataFrame with `rows` still yields an (empty) subplot with the full row layout. Use it to keep one row per unit when `data` is live-tuned. |
 
 ## Loader
@@ -98,6 +100,21 @@ them (events for `order_by` values that were absent initially are dropped).
 Subplot groups under `split_by` are matched by name; a group whose events all
 vanish renders empty. Sharing one `Param` across several `RasterConfig`s gives a
 single slider that drives all of them.
+
+## NaN shading
+
+Events carry no notion of "missing data", so a raster cannot tell a silent stretch
+from a gap in the recording. Pass the gaps explicitly as `nan_spans` (e.g. derived
+with `np.isnan` on the traces the events were detected in) and a `shade_nans`
+colour; Loupe draws them as one shaded path behind the ticks, full-height for a
+plain span list or per row for a `{row_key: spans}` mapping. The spans survive
+live re-tuning of `data`.
+
+```python
+view(RasterConfig(ev, time_col="time", order_by="unit",
+                  nan_spans=[(12.0, 13.5), (40.0, 41.0)],
+                  shade_nans=("#C0C0C0", 0.45)))
+```
 
 ## Runtime controls
 

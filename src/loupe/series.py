@@ -90,6 +90,10 @@ class RasterSeries:
     # order_by value for each row index (len == n_rows). Lets a live tuner
     # re-evaluation keep the row layout pinned (see RasterConfig.rows).
     row_keys: np.ndarray | None = None
+    # NaN spans of the source signal (list of (t0, t1) or {row_key: [...]}) and
+    # the normalized (r, g, b, alpha) shade colour; None -> no shading.
+    nan_spans: "list | dict | None" = None
+    nan_shade: "tuple | None" = None
 
 
 @dataclass

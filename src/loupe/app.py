@@ -369,6 +369,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_sel_regions: list[pg.LinearRegionItem] = []
         # One inner list of horizontal-separator InfiniteLines per raster subplot.
         self.raster_separator_lines: list[list[pg.InfiniteLine]] = []
+        self.raster_nan_items: list = []  # NaN-span shading per raster plot
         # Shape: [raster_idx][category_idx][alpha_level] -> PlotDataItem / QPen.
         # For non-categorical raster series the outer category dim is length 1.
         self._raster_line_items: list[list[list[pg.PlotDataItem]]] = []
@@ -3018,6 +3019,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
         self.raster_separator_lines.clear()
+        self.raster_nan_items.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
         self.heatmap_plots.clear()
@@ -3179,6 +3181,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
         self.raster_separator_lines.clear()
+        self.raster_nan_items.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
 
@@ -3487,6 +3490,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
         self.raster_separator_lines.clear()
+        self.raster_nan_items.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
 
@@ -3554,6 +3558,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_separator_lines.append(
                 self._add_raster_separator_lines(plt, ms)
             )
+            self.raster_nan_items.append(self._add_raster_nan_shading(plt, ms))
             self._raster_line_items.append(line_items)
             self._raster_pens.append(pens)
 
@@ -3611,6 +3616,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.raster_cur_lines.clear()
         self.raster_sel_regions.clear()
         self.raster_separator_lines.clear()
+        self.raster_nan_items.clear()
         self._raster_line_items.clear()
         self._raster_pens.clear()
         self.heatmap_plots.clear()
@@ -3953,6 +3959,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_separator_lines.append(
                 self._add_raster_separator_lines(plt, ms)
             )
+            self.raster_nan_items.append(self._add_raster_nan_shading(plt, ms))
             self._raster_line_items.append(line_items)
             self._raster_pens.append(pens)
 
@@ -4225,6 +4232,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.raster_separator_lines.append(
                 self._add_raster_separator_lines(plt, ms)
             )
+            self.raster_nan_items.append(self._add_raster_nan_shading(plt, ms))
             self._raster_line_items.append(line_items)
             self._raster_pens.append(pens)
 
@@ -4261,6 +4269,50 @@ class LoupeApp(QtWidgets.QMainWindow):
             plt.addItem(line)
             handles.append(line)
         return handles
+
+    def _add_raster_nan_shading(self, plt, ms):
+        """Shade the NaN spans of one raster subplot, behind the event ticks.
+
+        ``ms.nan_spans`` is either a list of ``(t0, t1)`` spans covering the
+        full subplot height, or ``{row_key: spans}`` for per-row shading (keys
+        resolved through ``ms.row_keys``; unknown keys are ignored). All spans
+        go into one ``QGraphicsPathItem`` so even thousands of trial gaps cost
+        a single scene item. Returns the item, or ``None`` when the series has
+        no spans or no shade colour.
+        """
+        spans = getattr(ms, "nan_spans", None)
+        shade = getattr(ms, "nan_shade", None)
+        if not spans or shade is None:
+            return None
+        r, g, b, alpha = shade
+        path = QtGui.QPainterPath()
+        if isinstance(spans, dict):
+            keys = (
+                ms.row_keys.tolist()
+                if ms.row_keys is not None
+                else list(range(ms.n_rows))
+            )
+            pos = {k: i for i, k in enumerate(keys)}
+            for key, row_spans in spans.items():
+                i = pos.get(key)
+                if i is None:
+                    continue
+                for t0, t1 in row_spans:
+                    path.addRect(
+                        QtCore.QRectF(float(t0), float(i), float(t1) - float(t0), 1.0)
+                    )
+        else:
+            extent = float(_raster_extent(ms))
+            for t0, t1 in spans:
+                path.addRect(
+                    QtCore.QRectF(float(t0), -0.5, float(t1) - float(t0), extent + 0.5)
+                )
+        item = QtWidgets.QGraphicsPathItem(path)
+        item.setBrush(pg.mkBrush(int(r), int(g), int(b), int(round(float(alpha) * 255))))
+        item.setPen(pg.mkPen(None))
+        item.setZValue(-20)  # below separators (-5), selection (-10) and ticks
+        plt.addItem(item, ignoreBounds=True)
+        return item
 
     def _build_raster_pens(self, ms: RasterSeries) -> list[list[QtGui.QPen]]:
         """Build one row of 11 alpha-graded pens per category color.

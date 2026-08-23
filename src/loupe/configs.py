@@ -380,6 +380,17 @@ class RasterConfig:
         keep the row layout fixed while *data* is live-tuned (e.g. an event
         catalog filtered by a :class:`loupe.Param` threshold).  ``None``
         (default) derives rows from the values present in *data*.
+    nan_spans : list[tuple[float, float]] or dict or None
+        Time spans where the *source signal* behind the events was NaN (a raster
+        cannot know this from the events alone). Either a list of
+        ``(t_start, t_end)`` spans shaded across the full subplot height, or
+        ``{order_by_value: [(t_start, t_end), ...]}`` for per-row shading (keys
+        resolved against the rendered rows). Only drawn when *shade_nans* is
+        set. Default ``None``.
+    shade_nans : bool, str, or tuple[str, float]
+        ``False`` (default) draws nothing. Pass a ``"#RRGGBB"`` hex color to
+        shade *nan_spans* at 0.7 alpha, or ``("#RRGGBB", alpha)`` to set alpha
+        explicitly between 0 and 1. Same semantics as ``HeatmapConfig``.
     view_id : str or None
         Optional stable identity for semantic View-Config matching.
 
@@ -406,7 +417,14 @@ class RasterConfig:
     horizontal_separators: "list | None" = None
     separator_params: "dict | None" = None
     rows: "Sequence | None" = None
+    nan_spans: "list | dict | None" = None
+    shade_nans: "bool | str | tuple[str, float]" = False
     view_id: str | None = None
+
+    def __post_init__(self) -> None:
+        from loupe._heatmap_utils import _normalize_nan_shade
+
+        _normalize_nan_shade(self.shade_nans)
 
     @classmethod
     def from_parquet(
