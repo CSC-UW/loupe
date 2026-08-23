@@ -151,9 +151,21 @@ class IntervalLabelSchema:
     def validate(self, df: pl.DataFrame, *, eps: float = 1e-9) -> None:
         """Check required columns are present and consistent.
 
+        ``note_col`` is optional data: when the schema names one but the input
+        omits it, loading creates an empty string column.  This keeps the
+        legacy ``start_s,end_s,label,note`` schema compatible with three-column
+        label tables while retaining note editing and round-trip exports.
+
         Raises :class:`IntervalLabelSchemaError` on any violation.
         """
-        missing = [c for c in self.all_cols if c not in df.columns]
+        required = [
+            self.start_col,
+            self.end_col,
+            self.duration_col,
+            self.label_col,
+            *self.extra_cols,
+        ]
+        missing = [c for c in required if c is not None and c not in df.columns]
         if missing:
             raise IntervalLabelSchemaError(
                 f"DataFrame is missing schema column(s): {missing}. "
@@ -344,7 +356,7 @@ class IntervalLabelSet:
         source_format: str | None = None,
         writeback_allowed: bool = False,
     ) -> None:
-        schema.validate(df)
+        df = _normalize_loaded_df(df, schema)
         # Add row_id column if not present.
         if _ROW_ID_COL not in df.columns:
             df = df.with_columns(
@@ -391,7 +403,6 @@ class IntervalLabelSet:
         writeback_allowed: bool = False,
     ) -> "IntervalLabelSet":
         """Create an IntervalLabelSet from an in-memory DataFrame matching ``schema``."""
-        df = _normalize_loaded_df(df, schema)
         return cls(
             df,
             schema,
@@ -417,7 +428,6 @@ class IntervalLabelSet:
         if schema is None:
             schema = infer_schema_for_path(p)
         df = READERS[fmt](p)
-        df = _normalize_loaded_df(df, schema)
         return cls(
             df,
             schema,
@@ -876,7 +886,8 @@ def _normalize_loaded_df(df: pl.DataFrame, schema: IntervalLabelSchema) -> pl.Da
     - Cast start/end/duration columns to ``Float64``.
     - If only one of end/duration is present and the schema declares both,
       synthesize the missing one.
-    - Cast the note column to ``Utf8`` (filling nulls with empty strings).
+    - Cast the note column to ``Utf8`` (filling nulls with empty strings), or
+      create it with empty strings when the input omits it.
     - Ensure all extra_cols exist (missing ones become null-filled).
     """
     schema.validate(df)
@@ -903,13 +914,12 @@ def _normalize_loaded_df(df: pl.DataFrame, schema: IntervalLabelSchema) -> pl.Da
                 (pl.col(ec) - pl.col(sc)).alias(dc)
             )
 
-    if schema.note_col and schema.note_col in df.columns:
-        df = df.with_columns(
-            pl.col(schema.note_col)
-            .cast(pl.Utf8)
-            .fill_null("")
-            .alias(schema.note_col)
-        )
+    if schema.note_col:
+        if schema.note_col in df.columns:
+            note_expr = pl.col(schema.note_col).cast(pl.Utf8).fill_null("")
+        else:
+            note_expr = pl.lit("").cast(pl.Utf8)
+        df = df.with_columns(note_expr.alias(schema.note_col))
 
     # Final validation pass after coercions (catches end/duration mismatch).
     schema.validate(df)

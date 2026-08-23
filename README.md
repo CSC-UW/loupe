@@ -393,7 +393,7 @@ Supported formats (all read; CSV / HTSV / Parquet also write):
 
 | Extension | Read | Write | Notes |
 |---|---|---|---|
-| `.csv`     | ✓ | ✓ | Defaults to legacy schema `start_s,end_s,label,note` |
+| `.csv`     | ✓ | ✓ | Defaults to legacy schema `start_s,end_s,label`; optional `note` |
 | `.htsv`    | ✓ | ✓ | Header‑bearing TSV; pass an explicit `IntervalLabelSchema` |
 | `.parquet` | ✓ | ✓ | Pass an explicit `IntervalLabelSchema` |
 | `.txt`     | ✓ | ✗ | Visbrain hypnograms; read‑only (lossy if written) |
@@ -406,6 +406,14 @@ from loupe import view, IntervalLabelSchema, TraceConfig
 
 # Legacy CSV (no schema needed)
 view(TraceConfig(da), interval_labels="labels.csv")
+
+# A legacy DataFrame also needs no schema; note is optional
+legacy_df = pl.DataFrame({
+    "start_s": [0.0, 10.0],
+    "end_s": [10.0, 20.0],
+    "label": ["Wake", "NREM"],
+})
+view(TraceConfig(da), interval_labels=legacy_df)
 
 # HTSV with custom column names + extras shown in the GUI
 schema = IntervalLabelSchema(
@@ -441,7 +449,7 @@ view(TraceConfig(da), interval_labels="labels.htsv",
 
 When `interval_labels_writeback=True`, an extra File → Save Labels (overwrite source) action becomes available (`Ctrl+S`). Without it, the menu item is disabled.
 
-**Viewing labels.** Labels are shown three ways, each independently toggleable: as translucent shaded regions overlaid across every subplot (toggle with `Ctrl+Shift+L`, alpha adjustable via View → Adjust Interval Label Alpha…, or start them off with `view(interval_label_overlays=False)`); collapsed onto the full‑recording hypnogram overview on the right (`h`); and as a compact, color‑only **label strip** pinned above the plots that follows the current window (`Ctrl+L`). The strip is a non‑overlay way to read labels at a glance without shading over the traces — pair it with `interval_label_overlays=False` to rely on the strip alone.
+**Viewing labels.** Labels are shown three ways, each independently toggleable: as translucent shaded regions overlaid across every subplot (toggle with `Ctrl+Shift+L`, alpha adjustable via View → Adjust Interval Label Alpha…); collapsed onto the full‑recording hypnogram overview on the right (`h`); and as a compact, color‑only **label strip** pinned above the plots that follows the current window (`Ctrl+L`). Choose View → **Label Strip Only** or pass `view(label_strip_only=True)` to keep the strip visible while removing label shading from the data plots. The lower-level `view(interval_label_overlays=False)` option remains available when independent control is useful.
 
 #### State definitions
 

@@ -16,10 +16,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from types import SimpleNamespace
 
 import numpy as np
+import polars as pl
 import pyqtgraph as pg
 import pytest
+import xarray as xr
 from PySide6 import QtCore, QtWidgets
 
+from loupe import TraceConfig, view
 from loupe.app import LoupeApp, Series
 from loupe.label_strip import LabelBandRenderer
 from loupe.state_config import load_state_config
@@ -367,3 +370,67 @@ def test_toggle_interval_label_overlays(loupe_window, qapp):
     qapp.processEvents()
     assert loupe_window.interval_label_overlays_enabled is True
     assert nrem_id in loupe_window._interval_label_visuals  # redrawn
+
+
+def test_label_strip_only_menu_action_is_compound_toggle(loupe_window, qapp):
+    action = loupe_window.action_label_strip_only
+    assert action.text() == "Label Strip Only"
+    assert action.isCheckable()
+    assert not action.isChecked()
+
+    action.setChecked(True)
+    qapp.processEvents()
+    assert loupe_window.label_strip_visible is True
+    assert not loupe_window.label_strip_widget.isHidden()
+    assert loupe_window.interval_label_overlays_enabled is False
+
+    action.setChecked(False)
+    qapp.processEvents()
+    assert loupe_window.label_strip_visible is True
+    assert loupe_window.interval_label_overlays_enabled is True
+
+
+def test_view_accepts_note_less_legacy_dataframe_and_label_strip_only(
+    monkeypatch, qapp
+):
+    original_set_config = pg.setConfigOptions
+
+    def _safe_set_config(**kwargs):
+        kwargs["useOpenGL"] = False
+        return original_set_config(**kwargs)
+
+    monkeypatch.setattr(pg, "setConfigOptions", _safe_set_config)
+
+    time = np.linspace(0.0, 20.0, 101)
+    trace = xr.DataArray(np.sin(time), dims=("time",), coords={"time": time})
+    labels = pl.DataFrame(
+        {
+            "start_s": [0.0, 10.0],
+            "end_s": [10.0, 20.0],
+            "label": ["Wake", "NREM"],
+        }
+    )
+
+    window = view(
+        TraceConfig(trace),
+        window_len=20.0,
+        interval_labels=labels,
+        label_strip_only=True,
+        state_definitions=os.path.join(
+            os.path.dirname(__import__("loupe").app.__file__),
+            "example_state_definitions.json",
+        ),
+    )
+    try:
+        qapp.processEvents()
+        assert window.interval_label_set.df["note"].to_list() == ["", ""]
+        assert window.label_strip_visible is True
+        assert window.interval_label_overlays_enabled is False
+        assert window.action_label_strip_only.isChecked()
+        assert window._interval_label_visuals == {}
+        assert set(window.label_strip_renderer._visuals) == set(
+            window.interval_label_set.row_ids
+        )
+    finally:
+        window.close()
+        qapp.processEvents()

@@ -60,6 +60,7 @@ def view(
     label_colors: dict | None = None,
     interval_label_alpha: float | None = None,
     interval_label_overlays: bool = True,
+    label_strip_only: bool = False,
     view_config: "str | Path | Mapping | ViewConfig | None" = None,
     view_config_strict: bool = False,
     **kwargs,
@@ -98,12 +99,14 @@ def view(
         :attr:`GlobalEventsConfig.style_kwargs`; live-editable via the
         View → "Style Global Events…" menu entry.
     interval_labels : pl.DataFrame, str, or Path, optional
-        Initial interval labels.  Either a polars DataFrame (requires
-        ``interval_label_schema``) or a path to a ``.csv``, ``.htsv``,
-        ``.parquet``, or Visbrain ``.txt`` file.
+        Initial interval labels. Either a polars DataFrame or a path to a
+        ``.csv``, ``.htsv``, ``.parquet``, or Visbrain ``.txt`` file. A
+        DataFrame with legacy ``start_s``, ``end_s``, and ``label`` columns
+        uses the legacy schema automatically; other layouts require
+        ``interval_label_schema``.
     interval_label_schema : IntervalLabelSchema, optional
-        Required when ``interval_labels`` is a DataFrame or an ``.htsv``/
-        ``.parquet`` file.
+        Required when ``interval_labels`` is an ``.htsv``/``.parquet`` file,
+        or a DataFrame that does not use the legacy column names.
     interval_labels_writeback : bool
         If True, the GUI's "Save Interval Labels (overwrite source)" action
         will overwrite the file passed in ``interval_labels``.  Default False.
@@ -120,6 +123,11 @@ def view(
         Whether to shade label spans across the subplots. Default True. Pass
         False to rely on the pinned label strip / hypnogram instead (the
         overlays can also be toggled at runtime with ``Ctrl+Shift+L``).
+    label_strip_only : bool, optional
+        If True, show interval-label shading only in the pinned label strip,
+        not over the data subplots. This makes the strip visible and takes
+        precedence over ``interval_label_overlays``. Default False. The same
+        mode is available from View → Label Strip Only.
     view_config : path, mapping, or ViewConfig, optional
         Saved runtime presentation state to apply after the supplied data
         Configs construct the window. View-Configs never load data or labels.
@@ -775,9 +783,15 @@ def view(
             pl_runtime = None
         if pl_runtime is not None and isinstance(interval_labels, pl_runtime.DataFrame):
             if interval_label_schema is None:
-                raise ValueError(
-                    "interval_label_schema= is required when interval_labels is a polars DataFrame."
-                )
+                legacy_required = {"start_s", "end_s", "label"}
+                if legacy_required.issubset(interval_labels.columns):
+                    interval_label_schema = IntervalLabelSchema.legacy()
+                else:
+                    raise ValueError(
+                        "interval_label_schema= is required when interval_labels is a "
+                        "polars DataFrame without the legacy start_s, end_s, and label "
+                        "columns."
+                    )
             interval_label_set = IntervalLabelSet.from_dataframe(
                 interval_labels,
                 interval_label_schema,
@@ -881,6 +895,7 @@ def view(
         interval_label_set=interval_label_set,
         interval_label_alpha=interval_label_alpha,
         interval_label_overlays=interval_label_overlays,
+        label_strip_only=label_strip_only,
         video_configs=video_configs,
         global_events=global_events,
         tuner_bindings=bindings or None,

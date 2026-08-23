@@ -1271,6 +1271,7 @@ def apply_view_config(
         if hyp_zoomed is not None:
             app.hypnogram_zoomed = hyp_zoomed
         app._refresh_interval_label_alpha()
+        app._sync_label_display_actions()
 
     pending_y: list[tuple[_Target, Any]] = []
     matched_keys: list[tuple[int, tuple[str, int]]] = []

@@ -253,6 +253,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Whether to shade labels across the subplots. False leaves the pinned
         # label strip / hypnogram as the only label display (toggle: Ctrl+Shift+L).
         interval_label_overlays: bool = True,
+        # Start with label shading confined to the pinned strip. This forces
+        # the strip on and subplot overlays off.
+        label_strip_only: bool = False,
         # Global event markers: vertical lines drawn across every pane.
         global_events=None,
         # Tuner: live parameter-tuning bindings + params (built by loupe.view).
@@ -397,7 +400,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Whether label spans are shaded across the subplots. When off, the
         # pinned label strip and hypnogram remain the label display. Independent
         # of the alpha multiplier so the strip stays visible. Toggle: Ctrl+Shift+L.
-        self.interval_label_overlays_enabled = bool(interval_label_overlays)
+        self.interval_label_overlays_enabled = (
+            False if label_strip_only else bool(interval_label_overlays)
+        )
         # Custom height factors for individual plot height control (1.0 = default)
         self.plot_height_factors: list[float] = []  # one per time series plot
         self.raster_height_factors: list[float] = []  # one per raster plot
@@ -1181,6 +1186,15 @@ class LoupeApp(QtWidgets.QMainWindow):
             self._toggle_label_strip_visibility
         )
         mview.addAction(toggle_label_strip_action)
+
+        self.action_label_strip_only = QtGui.QAction("Label Strip Only", self)
+        self.action_label_strip_only.setCheckable(True)
+        self.action_label_strip_only.setChecked(self._is_label_strip_only())
+        self.action_label_strip_only.setToolTip(
+            "Show interval-label shading in the pinned strip, not over the data plots."
+        )
+        self.action_label_strip_only.toggled.connect(self._set_label_strip_only)
+        mview.addAction(self.action_label_strip_only)
 
         toggle_label_overlays_action = QtGui.QAction("Toggle Label Overlays", self)
         toggle_label_overlays_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
@@ -6293,6 +6307,31 @@ class LoupeApp(QtWidgets.QMainWindow):
         if self.label_strip_widget is not None:
             self.label_strip_visible = not self.label_strip_visible
             self.label_strip_widget.setVisible(self.label_strip_visible)
+            self._sync_label_display_actions()
+
+    def _is_label_strip_only(self) -> bool:
+        return bool(self.label_strip_visible and not self.interval_label_overlays_enabled)
+
+    def _sync_label_display_actions(self) -> None:
+        """Keep the compound strip-only action aligned with the two base toggles."""
+        action = getattr(self, "action_label_strip_only", None)
+        if action is None:
+            return
+        blocker = QtCore.QSignalBlocker(action)
+        action.setChecked(self._is_label_strip_only())
+        del blocker
+
+    def _set_label_strip_only(self, enabled: bool) -> None:
+        """Confine label shading to the pinned strip, or restore overlays."""
+        if enabled:
+            self.label_strip_visible = True
+            if self.label_strip_widget is not None:
+                self.label_strip_widget.setVisible(True)
+            self.interval_label_overlays_enabled = False
+        else:
+            self.interval_label_overlays_enabled = True
+        self._sync_window_interval_label_visuals(force_rebuild=True)
+        self._sync_label_display_actions()
 
     def _toggle_interval_label_overlays(self):
         """Show/hide the label shading drawn across the subplots. The pinned
@@ -6300,6 +6339,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.interval_label_overlays_enabled = not self.interval_label_overlays_enabled
         # force_rebuild redraws when turning back on; the gate clears when off.
         self._sync_window_interval_label_visuals(force_rebuild=True)
+        self._sync_label_display_actions()
 
     def keyPressEvent(self, ev: QtGui.QKeyEvent):
         # Single-key state hotkeys and `0` clear are intentionally context-

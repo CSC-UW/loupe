@@ -81,6 +81,39 @@ def test_round_trip_csv(tmp_path, legacy_set):
     assert reloaded.df.drop("__loupe_row_id").equals(legacy_set.df.drop("__loupe_row_id"))
 
 
+def test_legacy_csv_without_note_loads_with_empty_notes(tmp_path):
+    path = tmp_path / "labels_without_note.csv"
+    pl.DataFrame(
+        {
+            "start_s": [0.0, 5.0],
+            "end_s": [5.0, 10.0],
+            "label": ["Wake", "NREM"],
+        }
+    ).write_csv(path)
+
+    labels = IntervalLabelSet.from_path(path)
+
+    assert labels.df["note"].to_list() == ["", ""]
+    assert [row.note for row in labels] == ["", ""]
+
+
+def test_legacy_dataframe_without_note_supports_note_editing():
+    df = pl.DataFrame(
+        {
+            "start_s": [0.0],
+            "end_s": [5.0],
+            "label": ["Wake"],
+        }
+    )
+
+    labels = IntervalLabelSet.from_dataframe(df, IntervalLabelSchema.legacy())
+    row_id = labels.row_at_index(0).row_id
+    labels.set_note(row_id, "review")
+
+    assert labels.get_note(row_id) == "review"
+    assert labels.to_savable_df().columns == ["start_s", "end_s", "label", "note"]
+
+
 def test_round_trip_htsv(tmp_path, legacy_set):
     path = tmp_path / "labels.htsv"
     legacy_set.save_as(path)
