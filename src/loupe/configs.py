@@ -31,9 +31,11 @@ class SampleMarkers:
     Supported in both ``mode="stacked-subplots"`` and ``mode="dense"``. In
     dense mode markers are drawn at the *displayed* y (``(value − mean) × gain
     + offset``), so they track the traces as gain changes; each marker set is a
-    single color (no hue tinting). Stacked mode allows only one marker-carrying
-    ``TraceConfig`` per window, while dense markers are unrestricted (multiple
-    carriers, free coexistence with heatmaps / rasters / stacked traces).
+    single color (no hue tinting). Each marker set annotates only the traces of
+    the ``TraceConfig`` it is attached to, so several stacked ``TraceConfig``
+    objects may each carry their own markers in one window; stacked carriers still
+    cannot share a window with heatmaps / rasters / ``Zip``, while dense
+    markers are unrestricted.
 
     Parameters
     ----------
@@ -41,6 +43,10 @@ class SampleMarkers:
         Marker symbol.  ``'o'`` renders a semi-transparent filled circle;
         ``'x'`` renders a solid X.  Other pyqtgraph symbols (``'+'``,
         ``'s'``, ``'t'``, …) fall through with a default outlined style.
+        ``'vline'`` is different in kind: it draws a full-height vertical line
+        through the subplot at each flagged sample (event-time style, e.g.
+        spike times), ignoring the sample's value; *size* is then the line
+        width in pixels and the line always spans the visible y-range.
     color : str or RGB(A) tuple
         Marker color — named string, hex (``"#RRGGBB"``), or
         ``(R, G, B[, A])`` tuple.
@@ -55,12 +61,13 @@ class SampleMarkers:
         zero-argument callable returning that Boolean DataArray), so the
         markers move live with the Tuner. Dense-mode marker masks are static.
     size : float, optional
-        Marker size in points.  ``None`` (default) picks 8.0 for ``'o'``
-        and 9.0 for other markers.
+        Marker size in points (line width in pixels for ``'vline'``).
+        ``None`` (default) picks 8.0 for ``'o'``, 9.0 for other symbols and
+        1.0 for ``'vline'``.
     alpha : int, optional
         Marker alpha in ``0..255``.  ``None`` (default) picks 110 for
-        ``'o'`` (semi-transparent fill) and 255 for other markers
-        (solid stroke).
+        ``'o'`` (semi-transparent fill), 200 for ``'vline'`` and 255 for
+        other markers (solid stroke).
     view_id : str or None
         Optional stable identity used when a View-Config is replayed against
         an analogous recording. Recommended when several marker sets could

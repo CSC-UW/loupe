@@ -385,3 +385,61 @@ def test_reset_restores_defaults_and_recomputes():
         np.testing.assert_allclose(w.overlay_series[0][0].y, before, rtol=1e-4)
     finally:
         w.close()
+
+
+# --------------------------------------------------------------------------- #
+# tunable interval labels
+# --------------------------------------------------------------------------- #
+def _on_labels(n=2, thr=0.0):
+    """Pure stand-in for an interval detector: ``n`` ON periods above ``thr``."""
+    import polars as pl
+
+    starts = [0.1 + 0.3 * i for i in range(int(n))]
+    return pl.DataFrame(
+        {
+            "start_s": starts,
+            "end_s": [s + 0.1 for s in starts],
+            "label": ["ON"] * len(starts),
+        }
+    )
+
+
+def test_tunable_interval_labels_capture_binding_and_recompute():
+    ls = _ls()
+    n = Param(2, 0, 4, step=1, name="n")
+    w = view(
+        TraceConfig(data=ls),
+        interval_labels=tunable(_on_labels, n=n),
+        label_colors={"ON": "#F5A623"},
+        state_definitions=_EXAMPLE_STATE_DEFS,
+    )
+    try:
+        assert [b.kind for b in w._tuner_bindings] == ["interval_labels"]
+        assert w._tuner_params == [n]
+        assert len(w.interval_label_set) == 2
+        assert [r.label for r in w.interval_label_set] == ["ON", "ON"]
+
+        n.value = 4
+        w._on_tuner_param_changed(n)
+        w._flush_tuner()
+        assert len(w.interval_label_set) == 4
+        assert w._interval_label_starts.tolist() == pytest.approx([0.1, 0.4, 0.7, 1.0])
+
+        n.value = 0
+        w._on_tuner_param_changed(n)
+        w._flush_tuner()
+        assert len(w.interval_label_set) == 0
+    finally:
+        w.close()
+
+
+def test_tunable_interval_labels_reject_writeback():
+    ls = _ls()
+    n = Param(2, 0, 4, step=1, name="n")
+    with pytest.raises(ValueError, match="writeback"):
+        view(
+            TraceConfig(data=ls),
+            interval_labels=tunable(_on_labels, n=n),
+            interval_labels_writeback=True,
+            state_definitions=_EXAMPLE_STATE_DEFS,
+        )

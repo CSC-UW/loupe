@@ -129,7 +129,7 @@ view([
 ])
 ```
 
-Runtime: `Ctrl+D` for per-trace Y autorange/min/max; `Ctrl+1`/`Ctrl+2` to Y-zoom the hovered plot. Stacked mode supports `sample_markers` for sample-aligned overlays (single-config-per-window constraint).
+Runtime: `Ctrl+D` for per-trace Y autorange/min/max; `Ctrl+1`/`Ctrl+2` to Y-zoom the hovered plot. Stacked mode supports `sample_markers` for sample-aligned overlays (per config: several stacked configs may each carry their own; `marker="vline"` draws full-height vertical lines at event samples).
 
 See [docs/views/stacked-traces.md](docs/views/stacked-traces.md) for the full parameter reference, `from_path` loader, and `SampleMarkers` usage.
 
@@ -450,6 +450,29 @@ view(TraceConfig(da), interval_labels="labels.htsv",
 ```
 
 When `interval_labels_writeback=True`, an extra File → Save Labels (overwrite source) action becomes available (`Ctrl+S`). Without it, the menu item is disabled.
+
+**Live-tuned labels.** `interval_labels` may also be a `loupe.tunable(...)` (or a
+bare zero-argument callable) returning a labels DataFrame. Its `Param` arguments
+become Tuner controls and the whole label set is recomputed and redrawn — across
+every subplot, the hypnogram strip and the label strip — each time one moves. This
+is the idiomatic way to tune a detector whose output is a set of intervals
+(ON/OFF periods, bursts, artifacts):
+
+```python
+from loupe import Param, tunable
+
+thr = Param(0.2, 0.0, 1.0, step=0.01, name="fraction ≥")
+min_dur = Param(0.05, 0.0, 1.0, step=0.005, name="min duration (s)")
+
+def on_periods(frac, thr=0.2, min_dur=0.05) -> pl.DataFrame:
+    ...  # -> columns start_s, end_s, label
+
+view(HeatmapConfig(da), interval_labels=tunable(on_periods, frac, thr=thr, min_dur=min_dur),
+     label_colors={"ON": "#F5A623"})
+```
+
+Tunable labels are read-only from the GUI's point of view: `interval_labels_writeback`
+must stay `False`, and manual edits are discarded on the next recompute.
 
 **Viewing labels.** Labels are shown three ways, each independently toggleable: as translucent shaded regions overlaid across every subplot (toggle with `Ctrl+Shift+L`, alpha adjustable via View → Adjust Interval Label Alpha…); collapsed onto the full‑recording hypnogram overview on the right (`h`); and as a compact, color‑only **label strip** pinned above the plots that follows the current window (`Ctrl+L`). Choose View → **Label Strip Only** or pass `view(label_strip_only=True)` to keep the strip visible while removing label shading from the data plots. The lower-level `view(interval_label_overlays=False)` option remains available when independent control is useful.
 

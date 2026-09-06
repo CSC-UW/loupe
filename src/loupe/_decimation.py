@@ -76,6 +76,26 @@ def _scatter_kwargs_for_marker(marker: "SampleMarkers") -> dict:
     }
 
 
+#: ``SampleMarkers.marker`` value that renders as full-height vertical lines
+#: (one ``pg.PlotCurveItem`` with ``connect="pairs"`` per series) instead of a
+#: scatter symbol at the sample's value.
+VLINE_MARKER = "vline"
+
+
+def is_vline_marker(marker) -> bool:
+    """True when a :class:`SampleMarkers` set renders as vertical lines."""
+    return getattr(marker, "marker", None) == VLINE_MARKER
+
+
+def _vline_pen_for_marker(marker) -> "pg.QtGui.QPen":
+    """Pen for a ``"vline"`` marker set: its color + alpha, ``size`` as width (px)."""
+    tinted = pg.mkColor(marker.color)
+    tinted.setAlpha(int(max(0, min(255, marker.alpha))))
+    pen = pg.mkPen(tinted, width=float(marker.size))
+    pen.setCosmetic(True)  # crisp at every zoom, like the global event lines
+    return pen
+
+
 # ---------------- Peak-preserving window decimator ----------------
 
 

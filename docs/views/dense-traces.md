@@ -42,6 +42,8 @@ If `data` has multiple non-time dims (e.g. `(probe, channel, time)`), the bool a
 
 Each marker set is drawn as a single aggregated `pg.ScatterPlotItem` per group (one scene item / draw call regardless of trace count), so markers add negligible cost to the dense scroll path. Markers are one color per set (no hue tinting). Restyle live via **View → Adjust Sample Marker Properties…**
 
+`marker="vline"` is supported here too: the set becomes one aggregated `pg.PlotCurveItem` (`connect="pairs"`) drawing a full-height vertical line at every flagged sample of every visible trace, spanning beyond the visible y-range and excluded from auto-range (`size` = line width in px; defaults width 1.0, alpha 200). See [stacked-traces.md](stacked-traces.md#vertical-line-markers-markervline).
+
 Unlike stacked markers, dense markers are unrestricted: multiple dense `TraceConfig`s may each carry markers, and they coexist freely with `HeatmapConfig` / `RasterConfig` / stacked traces in the same window.
 
 ## Multiple dense `TraceConfig`s

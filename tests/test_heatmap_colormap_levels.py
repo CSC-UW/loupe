@@ -110,3 +110,41 @@ def test_bulk_levels_select_any_current_colormap_combination_and_update_live(_qa
     controls.close()
     window.close()
     _qapp.processEvents()
+
+
+def test_bulk_swap_replaces_colormap_of_every_selected_group(_qapp):
+    from loupe._heatmap_utils import _colormap_cache_token
+
+    window = _HeatmapWindow()
+    controls = HeatmapControlsDialog(window)
+    controls._show_colormap_levels_dialog()
+    dialog = controls._colormap_levels_dialog
+    assert not dialog.swap_btn.isEnabled()
+
+    _check_colormap(dialog, "magma")
+    assert dialog.swap_btn.isEnabled()
+    dialog.swap_combo.setCurrentText("cividis")
+    dialog.swap_btn.click()
+
+    assert [s.colormap for s in window.heatmap_series] == [
+        "cividis", "viridis", "cividis", "plasma"
+    ]
+    assert window.refresh_count == 1
+    assert window._heatmap_cache_keys == [None, "cached-1", None, "cached-3"]
+    # regrouped: the new cividis group is the checked row, levels stay per-heatmap
+    rows = [dialog.colormap_list.item(r).text() for r in range(dialog.colormap_list.count())]
+    assert "cividis — 2 heatmaps" in rows and not any(r.startswith("magma") for r in rows)
+    assert dialog._selected_tokens == frozenset({_colormap_cache_token("cividis")})
+    assert (window.heatmap_series[0].vmin, window.heatmap_series[2].vmin) == (0.0, 2.0)
+    # per-heatmap combos followed the swap
+    assert controls._group_widgets[0]["cmap_combo"].currentText() == "cividis"
+
+    # unknown name: nothing changes, status explains
+    dialog.swap_combo.setCurrentText("not-a-colormap")
+    dialog.swap_btn.click()
+    assert [s.colormap for s in window.heatmap_series] == [
+        "cividis", "viridis", "cividis", "plasma"
+    ]
+    assert "Unknown colormap" in dialog.status_label.text()
+    dialog.close()
+    controls.close()

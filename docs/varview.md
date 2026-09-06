@@ -58,7 +58,7 @@ ones). The chosen one:
 | `src/loupe/varview.py` | scanning (`scan_namespace`, `VarInfo`), `VarTableModel`, detail widgets, `PlotsGallery`, `DisplayPubTee`, `VarViewWindow`, `varview()` entry point |
 | `src/loupe/varview_launcher.py` | `LoupeLaunchDialog` (config-builder forms), `open_launcher()`, DataArray preparation helpers |
 | `tests/test_varview.py` | 23 tests, offscreen (`QT_QPA_PLATFORM=offscreen`), incl. an end-to-end dialog→`view()`→`LoupeApp` test |
-| `~/.ipython/profile_default/startup/00-display-formatters.py` | defines a global `varview()` stub in **every** kernel: enables `%gui qt6` if needed, then imports and calls `loupe.varview.varview()` (lazy import — kernel startup stays fast) |
+| `~/.ipython/profile_default/startup/00-display-formatters.py` | defines global `loupenb()` and `varview()` stubs in **every** kernel: both pin the Qt binding to PySide6 and enable `%gui qt6` if needed; `loupenb()` then pushes loupe's public API (`view`, `TraceConfig`, `SampleMarkers`, …) into the notebook namespace, `varview()` imports and opens `loupe.varview.varview()` (lazy imports — kernel startup stays fast) |
 
 ## 3. Usage
 
@@ -152,12 +152,15 @@ varview()
 
 ## 6. Environment facts / gotchas
 
-- **Qt binding**: this venv has *both* PyQt5 (WISynaptic dep) and PySide6
-  (loupe). IPython's `%gui qt`/`%gui qt6` binds **PySide6** — good, matches
-  loupe. But if something imports PyQt5 first and claims the binding (e.g.
-  WISynaptic's napari whisker labeler forces `QT_API=pyqt5`), `%gui qt6`
-  errors with "already imported an Incompatible QT Binding". Don't mix the
-  whisker labeler and varview in one kernel.
+- **Qt binding**: this venv has PyQt5 (WISynaptic dep), **PyQt6** (napari /
+  cellpose / suite2p dep, since 2026-09) and PySide6 (loupe). IPython's
+  `%gui qt6` and pyqtgraph both prefer PyQt6 when it is installed, and the
+  choice is locked for the kernel's lifetime — after that, importing PySide6
+  fails ("could not import module 'PySide6.QtGui'" / "already imported an
+  Incompatible QT Binding"). `import loupe` pins `QT_API=pyside6` and
+  `PYQTGRAPH_QT_LIB=PySide6` (via `os.environ.setdefault`), so import loupe
+  *before* `%gui qt6`, or set those two variables yourself first. Don't mix
+  the napari whisker labeler (`QT_API=pyqt5`) and varview in one kernel.
 - `%gui qt6` does **not** change the matplotlib backend — inline plots keep
   rendering into Zed *and* get captured by the gallery tee. Both, no conflict.
 - **Responsiveness**: the window runs on the kernel's Qt loop, which only

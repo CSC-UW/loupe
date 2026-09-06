@@ -33,11 +33,16 @@ def _resolve_marker_size_alpha(marker) -> tuple[float, int]:
     """Resolve a config :class:`SampleMarkers`' ``None`` size/alpha to defaults.
 
     ``'o'`` (filled circle) → size 8.0, alpha 110 (semi-transparent fill);
+    ``'vline'`` (full-height vertical line) → width 1.0 px, alpha 200;
     any other symbol → size 9.0, alpha 255 (solid stroke). Shared by the
     stacked and dense conversion paths so the two never drift.
     """
-    size = marker.size if marker.size is not None else (8.0 if marker.marker == "o" else 9.0)
-    alpha = marker.alpha if marker.alpha is not None else (110 if marker.marker == "o" else 255)
+    if marker.marker == "vline":
+        size = marker.size if marker.size is not None else 1.0
+        alpha = marker.alpha if marker.alpha is not None else 200
+    else:
+        size = marker.size if marker.size is not None else (8.0 if marker.marker == "o" else 9.0)
+        alpha = marker.alpha if marker.alpha is not None else (110 if marker.marker == "o" else 255)
     return float(size), int(alpha)
 
 
@@ -52,7 +57,7 @@ def view(
     # Global event markers (vertical lines across every pane)
     global_events: "GlobalEventsConfig | None" = None,
     # Interval-label loading
-    interval_labels: "pl.DataFrame | str | Path | None" = None,
+    interval_labels: "pl.DataFrame | str | Path | Tunable | Callable | None" = None,
     interval_label_schema: IntervalLabelSchema | None = None,
     interval_labels_writeback: bool = False,
     # State definitions
@@ -104,12 +109,18 @@ def view(
         via :attr:`GlobalEventsConfig.style_events_on` /
         :attr:`GlobalEventsConfig.style_kwargs`; live-editable via the
         View → "Style Global Events…" menu entry.
-    interval_labels : pl.DataFrame, str, or Path, optional
+    interval_labels : pl.DataFrame, str, Path, Tunable, or callable, optional
         Initial interval labels. Either a polars DataFrame or a path to a
         ``.csv``, ``.htsv``, ``.parquet``, or Visbrain ``.txt`` file. A
         DataFrame with legacy ``start_s``, ``end_s``, and ``label`` columns
         uses the legacy schema automatically; other layouts require
-        ``interval_label_schema``.
+        ``interval_label_schema``. May also be a :func:`loupe.tunable` wrapper
+        (or a bare zero-arg callable) returning such a DataFrame: its
+        :class:`loupe.Param` arguments become Tuner controls and the whole
+        label set is recomputed and redrawn live as they move (e.g. detected
+        ON/OFF periods whose threshold and minimum duration you want to
+        tune). Tunable labels cannot be combined with
+        ``interval_labels_writeback=True``.
     interval_label_schema : IntervalLabelSchema, optional
         Required when ``interval_labels`` is an ``.htsv``/``.parquet`` file,
         or a DataFrame that does not use the legacy column names.
@@ -278,34 +289,27 @@ def view(
     # Sample-marker validation is split by mode. Dense carriers render as one
     # aggregated ScatterPlotItem per group (independent of trace count), so they
     # are self-contained: any number may coexist with each other and with
-    # heatmaps / rasters / stacked traces. Stacked carriers keep the original
-    # single-carrier / no-coexistence rules (their markers share global app
-    # state and assume a single TraceConfig).
+    # heatmaps / rasters / stacked traces. Stacked marker sets annotate only
+    # their own TraceConfig's series block (SampleMarkers.series_start), so any
+    # number of stacked carriers may coexist with each other and with plain
+    # TraceConfigs; they still cannot share a window with heatmaps / rasters /
+    # Zip (the stacked marker items assume the trace-only subplot layout).
     stacked_marker_carriers = [
         x for x in data_list
         if isinstance(x, TraceConfig)
         and x.sample_markers is not None
         and x.mode == "stacked-subplots"
     ]
-    if len(stacked_marker_carriers) > 1:
-        raise ValueError(
-            "Only one stacked-subplots TraceConfig may carry sample_markers per "
-            "window."
-        )
     if stacked_marker_carriers:
-        carrier = stacked_marker_carriers[0]
-        others = [x for x in data_list if x is not carrier]
+        others = [
+            x for x in data_list
+            if not any(x is c for c in stacked_marker_carriers)
+        ]
         if any(isinstance(x, (HeatmapConfig, RasterConfig, Zip)) for x in others):
             raise ValueError(
                 "A stacked-subplots TraceConfig with sample_markers cannot "
                 "coexist with HeatmapConfig / RasterConfig / Zip in the same "
                 "window. (Dense-mode markers have no such restriction.)"
-            )
-        if any(isinstance(x, TraceConfig) for x in others):
-            raise ValueError(
-                "A stacked-subplots TraceConfig with sample_markers must be the "
-                "only TraceConfig in the data list. (Dense-mode markers have no "
-                "such restriction.)"
             )
 
     # ---- Qt application + launch-progress reporter -----------------------
@@ -741,6 +745,7 @@ def view(
                                 size=size,
                                 alpha=alpha,
                                 view_id=marker.view_id,
+                                series_start=host_slice.start,
                             )
                         )
                     for marker_k, marker_tun in enumerate(marker_tuns):
@@ -784,8 +789,18 @@ def view(
         label_colors=label_colors,
     )
 
-    # Build the initial IntervalLabelSet, if any.
+    # Build the initial IntervalLabelSet, if any. A tunable / callable slot is
+    # evaluated once here for the initial render and bound to the Tuner so the
+    # label set is rebuilt live when its Params move.
     interval_label_set: IntervalLabelSet | None = None
+    interval_labels_tun: Tunable | None = None
+    if interval_labels is not None and not isinstance(interval_labels, (str, Path)):
+        interval_labels, interval_labels_tun = _resolve(interval_labels)
+        if interval_labels_tun is not None and interval_labels_writeback:
+            raise ValueError(
+                "interval_labels_writeback=True cannot be combined with a tunable "
+                "interval_labels (there is no source file to write back to)."
+            )
     if interval_labels is not None:
         try:
             import polars as pl_runtime
@@ -806,6 +821,16 @@ def view(
                 interval_labels,
                 interval_label_schema,
                 writeback_allowed=interval_labels_writeback,
+            )
+            if interval_labels_tun is not None:
+                bindings.append(Binding(
+                    kind="interval_labels", tunable=interval_labels_tun,
+                    cfg=interval_label_schema,
+                ))
+        elif interval_labels_tun is not None:
+            raise TypeError(
+                "A tunable interval_labels must return a polars DataFrame, got "
+                f"{type(interval_labels).__name__}."
             )
         else:
             interval_label_set = IntervalLabelSet.from_path(

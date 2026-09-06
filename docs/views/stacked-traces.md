@@ -56,14 +56,30 @@ view(TraceConfig(
 
 Marker defaults:
 - `'o'` → size 8.0, alpha 110 (semi-transparent filled circle)
+- `'vline'` → width 1.0 px, alpha 200 (see below)
 - any other symbol → size 9.0, alpha 255 (solid stroke)
+
+### Vertical-line markers (`marker="vline"`)
+
+`marker="vline"` draws a **full-height vertical line** through the subplot at every flagged sample instead of a symbol at the sample's value — the natural way to stamp event *times* (spikes, stimulus onsets) onto the trace they were detected on. `size` is the line width in pixels. Each series gets one `pg.PlotCurveItem` (`connect="pairs"`) that is sliced to the visible window like the trace itself, spans well beyond the visible y-range, is excluded from auto-range, and is re-spanned whenever the y-range changes, so the lines never affect or lag the y-scale.
+
+```python
+spike_mask = xr.zeros_like(dff, dtype=bool)
+spike_mask[np.searchsorted(dff.time.values, spike_times)] = True
+view([
+    TraceConfig(dff, sample_markers=[SampleMarkers(marker="vline", color="#ff0000", bool_array=spike_mask)]),
+    TraceConfig(other, sample_markers=[SampleMarkers(marker="vline", color="#0088ff", bool_array=other_mask)]),
+])
+```
+
+Unlike `global_events=` (which draws across every pane), a `vline` marker set only appears on the traces of the `TraceConfig` it belongs to.
 
 ### Constraints
 
 These constraints apply to **stacked-subplots** markers only. Dense mode also supports `sample_markers`, with none of these restrictions — see [dense-traces.md](dense-traces.md).
 
-- At most one **stacked-subplots** `TraceConfig` per window may carry sample markers.
-- A stacked `TraceConfig` with sample markers cannot coexist with `HeatmapConfig`, `RasterConfig`, or `Zip`, nor with another `TraceConfig` of any kind (including a dense one). To combine stacked traces with dense markers in the same window, attach the markers to the dense config instead.
+- Any number of stacked `TraceConfig`s may carry sample markers; each marker set annotates only the traces of the config it is attached to (runtime `SampleMarkers.series_start` anchors it to that config's series block), and plain or dense `TraceConfig`s may sit alongside.
+- A stacked `TraceConfig` with sample markers cannot coexist with `HeatmapConfig`, `RasterConfig`, or `Zip` in the same window.
 
 ## Overlay arrays
 

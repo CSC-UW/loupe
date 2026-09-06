@@ -29,17 +29,22 @@ class Series:
 class SampleMarkers:
     """Marker symbols stamped onto specific samples of stacked-subplot traces.
 
-    ``bool_per_series`` has one 1-D bool array per :class:`Series`, in the
-    same order as :attr:`LoupeApp.series`. ``True`` at sample i means a
-    marker is drawn at ``(s.t[i], s.y[i])`` on series s.
+    ``bool_per_series`` has one 1-D bool array per :class:`Series` of the
+    carrying ``TraceConfig``, in :attr:`LoupeApp.series` order; the block
+    starts at global series index ``series_start`` (so entry ``k`` belongs to
+    ``LoupeApp.series[series_start + k]``). Series outside the block get no
+    markers from this set. ``True`` at sample i means a marker is drawn at
+    ``(s.t[i], s.y[i])`` on series s — or, for ``marker == "vline"``, a
+    full-height vertical line at ``s.t[i]``.
     """
 
     marker: str
     color: str | tuple
     bool_per_series: list[np.ndarray]
-    size: float = 8.0
+    size: float = 8.0  # symbol size in px; line width in px for "vline"
     alpha: int = 255  # 0..255; controls fill alpha for 'o', stroke alpha otherwise
     view_id: str | None = None
+    series_start: int = 0
 
 
 @dataclass

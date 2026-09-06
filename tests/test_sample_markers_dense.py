@@ -254,27 +254,31 @@ def test_dense_markers_coexist_with_heatmap_and_stacked():
     assert w.dense_groups[0].sample_markers
 
 
-def test_two_stacked_marker_carriers_rejected():
+def test_two_stacked_marker_carriers_each_own_their_series_block():
+    # Several stacked carriers per window are allowed; each marker set is
+    # anchored to its own TraceConfig's contiguous series block.
     a = _dense_da(name="A")
     b = _dense_da(name="B")
-    with pytest.raises(ValueError, match="[Oo]nly one stacked"):
-        view(
-            [
-                TraceConfig(a, sample_markers=[SampleMarkers("o", "#ff0000", _bool_like(a, [("a", 10)]))]),
-                TraceConfig(b, sample_markers=[SampleMarkers("x", "lime", _bool_like(b, [("b", 10)]))]),
-            ],
-            state_definitions=_STATE_DEFS,
-        )
+    w = view(
+        [
+            TraceConfig(a, sample_markers=[SampleMarkers("o", "#ff0000", _bool_like(a, [("a", 10)]))]),
+            TraceConfig(b, sample_markers=[SampleMarkers("x", "lime", _bool_like(b, [("b", 10)]))]),
+        ],
+        state_definitions=_STATE_DEFS,
+    )
+    assert [m.series_start for m in w.sample_markers] == [0, 3]
+    assert [len(m.bool_per_series) for m in w.sample_markers] == [3, 3]
 
 
-def test_stacked_marker_carrier_rejects_other_traceconfig():
+def test_stacked_marker_carrier_coexists_with_other_traceconfig():
     a = _dense_da(name="A")
     b = _dense_da(name="B")
-    with pytest.raises(ValueError, match="only TraceConfig"):
-        view(
-            [
-                TraceConfig(a, sample_markers=[SampleMarkers("o", "#ff0000", _bool_like(a, [("a", 10)]))]),
-                TraceConfig(b, mode="dense"),  # any other TraceConfig is disallowed
-            ],
-            state_definitions=_STATE_DEFS,
-        )
+    w = view(
+        [
+            TraceConfig(a, sample_markers=[SampleMarkers("o", "#ff0000", _bool_like(a, [("a", 10)]))]),
+            TraceConfig(b, mode="dense"),  # a dense sibling is fine now
+        ],
+        state_definitions=_STATE_DEFS,
+    )
+    assert len(w.sample_markers) == 1
+    assert len(w.dense_groups) == 1

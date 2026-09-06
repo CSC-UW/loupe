@@ -328,8 +328,10 @@ class Binding:
     """
 
     kind: str  # "trace_stacked" | "trace_overlay" | "trace_marker" | "raster"
+    #            | "interval_labels"
     tunable: Tunable
-    cfg: Any  # the originating Config — carries order_by / descending / hue
+    cfg: Any  # the originating Config — carries order_by / descending / hue;
+    # for "interval_labels" it is the IntervalLabelSchema of the returned frame
     # locators (only the ones for `kind` are set) ------------------------------
     series_slice: slice | None = None  # trace_stacked → app.series / app.curves;
     # raster → app.raster_series

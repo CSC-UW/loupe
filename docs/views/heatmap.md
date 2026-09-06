@@ -61,6 +61,13 @@ grows. The aligned y-axis gutter and spine remain in place.
 
 ## Runtime controls
 
+The per-heatmap controls dialog has an **Adjust vmin/vmax by colormap** button:
+check any of the colormaps currently in use to edit vmin/vmax for every heatmap
+using them at once, and use **Replace with… → Replace selected colormaps** to swap
+the colormap of all those heatmaps in one go (presets, any map already in use,
+or any matplotlib-registered name).
+
+
 | Action | Binding |
 | --- | --- |
 | Open Heatmap Plot Controls dialog | `Ctrl+Shift+H` |

@@ -42,6 +42,8 @@ from loupe.state_config import StateConfig, load_state_config
 
 from loupe._decimation import (
     _scatter_kwargs_for_marker,
+    _vline_pen_for_marker,
+    is_vline_marker,
     clamp,
     find_nearest_frame,
     next_pow_two,
@@ -1666,7 +1668,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             grid.addWidget(_make_color_button(entry), row, 3)
 
             size_spin = QtWidgets.QDoubleSpinBox()
-            size_spin.setRange(2.0, 40.0)
+            size_spin.setRange(0.5, 40.0)
             size_spin.setSingleStep(0.5)
             size_spin.setDecimals(1)
             size_spin.setValue(float(marker.size))
@@ -3829,8 +3831,22 @@ class LoupeApp(QtWidgets.QMainWindow):
                     overlay_items_for_series.append(o_curve)
             self.overlay_curve_items.append(overlay_items_for_series)
 
-            scatters_for_series: list[pg.ScatterPlotItem] = []
+            scatters_for_series: list[pg.ScatterPlotItem | pg.PlotCurveItem] = []
             for marker in self.sample_markers:
+                if is_vline_marker(marker):
+                    # Full-height vertical lines: one curve item per series drawn
+                    # as x-pairs spanning (beyond) the visible y-range. Kept out
+                    # of auto-range and re-spanned whenever the y-range changes.
+                    vline = pg.PlotCurveItem(
+                        pen=_vline_pen_for_marker(marker), connect="pairs"
+                    )
+                    vline.setZValue(10)
+                    plt.addItem(vline, ignoreBounds=True)
+                    vb.sigYRangeChanged.connect(
+                        lambda *_, _vb=vb, _it=vline: self._repin_vline_marker(_vb, _it)
+                    )
+                    scatters_for_series.append(vline)
+                    continue
                 sk = _scatter_kwargs_for_marker(marker)
                 scatter = pg.ScatterPlotItem(**sk, pxMode=True, antialias=False)
                 scatter.setZValue(10)
@@ -4597,8 +4613,19 @@ class LoupeApp(QtWidgets.QMainWindow):
         # One aggregated scatter per marker set, drawn above the curves (z=10).
         # Populated per-window in _refresh_dense_curves by concatenating the
         # masked, display-transformed points across all visible traces.
-        marker_scatters: list[pg.ScatterPlotItem] = []
+        marker_scatters: list[pg.ScatterPlotItem | pg.PlotCurveItem] = []
         for mk in group.sample_markers:
+            if is_vline_marker(mk):
+                # Full-height vertical lines (see the stacked path for details).
+                vline = pg.PlotCurveItem(pen=_vline_pen_for_marker(mk), connect="pairs")
+                vline.setZValue(10)
+                plt.addItem(vline, ignoreBounds=True)
+                dense_vb = plt.getViewBox()
+                dense_vb.sigYRangeChanged.connect(
+                    lambda *_, _vb=dense_vb, _it=vline: self._repin_vline_marker(_vb, _it)
+                )
+                marker_scatters.append(vline)
+                continue
             sk = _scatter_kwargs_for_marker(mk)
             sc = pg.ScatterPlotItem(**sk, pxMode=True, antialias=False)
             sc.setZValue(10)
@@ -4770,7 +4797,11 @@ class LoupeApp(QtWidgets.QMainWindow):
                             yacc[mi].append(ys_display[mask])
             scatters = self.dense_marker_scatters[gi] if gi < len(self.dense_marker_scatters) else []
             for mi, sc in enumerate(scatters):
-                if xacc is not None and xacc[mi]:
+                has_pts = xacc is not None and bool(xacc[mi])
+                if mks and mi < len(mks) and is_vline_marker(mks[mi]):
+                    xs = np.concatenate(xacc[mi]) if has_pts else np.empty(0)
+                    self._set_vline_marker_data(sc, sc.getViewBox(), xs)
+                elif has_pts:
                     sc.setData(
                         x=np.concatenate(xacc[mi]),
                         y=np.concatenate(yacc[mi]),
@@ -5606,10 +5637,34 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.sample_markers[marker_k].bool_per_series = per_series
         elif b.kind == "raster":
             self._apply_raster_binding(b)
+        elif b.kind == "interval_labels":
+            self._apply_interval_label_binding(b)
         else:
             raise NotImplementedError(
                 f"Tuner binding kind {b.kind!r} is not supported yet."
             )
+
+    def _apply_interval_label_binding(self, b) -> None:
+        """Live-replace the whole interval-label set from a tunable DataFrame.
+
+        The Tunable returns a polars DataFrame in the schema recorded on the
+        binding (``b.cfg``); ``None`` or an empty frame clears every label.
+        The set is swapped wholesale and every label visual (window overlays,
+        hypnogram strip, label strip, summary table) is rebuilt, exactly as
+        after File → Load Interval Labels. The previous set's writeback flag
+        is preserved (it is always False for tunable labels).
+        """
+        fresh = b.tunable()
+        old = self.interval_label_set
+        schema = b.cfg if b.cfg is not None else old.schema
+        if fresh is None or getattr(fresh, "height", 0) == 0:
+            new_set = IntervalLabelSet.empty(schema)
+        else:
+            new_set = IntervalLabelSet.from_dataframe(
+                fresh, schema, writeback_allowed=old.writeback_allowed
+            )
+        self.interval_label_set = new_set
+        self._finalize_interval_label_change(force_rebuild=True)
 
     def _apply_raster_binding(self, b) -> None:
         """Live-update the raster subplots owned by one tunable RasterConfig.
@@ -7044,10 +7099,19 @@ class LoupeApp(QtWidgets.QMainWindow):
                         )
                 if self.sample_markers and idx < len(self.sample_marker_scatters):
                     for marker_idx, marker in enumerate(self.sample_markers):
-                        mask = marker.bool_per_series[idx][i0:i1]
-                        self.sample_marker_scatters[idx][marker_idx].setData(
-                            x=t_slice[mask], y=y_slice[mask], _callSync="off"
-                        )
+                        item = self.sample_marker_scatters[idx][marker_idx]
+                        # A marker set annotates only its own TraceConfig's
+                        # series block; other series get an empty item.
+                        rel = idx - marker.series_start
+                        if 0 <= rel < len(marker.bool_per_series):
+                            mask = marker.bool_per_series[rel][i0:i1]
+                            xs, ys = t_slice[mask], y_slice[mask]
+                        else:
+                            xs = ys = np.empty(0)
+                        if is_vline_marker(marker):
+                            self._set_vline_marker_data(item, item.getViewBox(), xs)
+                        else:
+                            item.setData(x=xs, y=ys, _callSync="off")
 
         # Also refresh dense, raster, and heatmap plots
         self._refresh_dense_curves()
@@ -7061,6 +7125,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not (0 <= marker_idx < len(self.sample_markers)):
             return
         marker = self.sample_markers[marker_idx]
+        if is_vline_marker(marker):
+            pen = _vline_pen_for_marker(marker)
+            for scatters in self.sample_marker_scatters:
+                if marker_idx < len(scatters):
+                    scatters[marker_idx].setPen(pen)
+            return
         sk = _scatter_kwargs_for_marker(marker)
         no_pen = pg.mkPen(0, 0, 0, 0)
         no_brush = pg.mkBrush(0, 0, 0, 0)
@@ -7087,6 +7157,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         scatters = self.dense_marker_scatters[group_idx]
         if marker_idx >= len(scatters):
             return
+        if is_vline_marker(markers[marker_idx]):
+            scatters[marker_idx].setPen(_vline_pen_for_marker(markers[marker_idx]))
+            return
         sk = _scatter_kwargs_for_marker(markers[marker_idx])
         no_pen = pg.mkPen(0, 0, 0, 0)
         no_brush = pg.mkBrush(0, 0, 0, 0)
@@ -7095,6 +7168,35 @@ class LoupeApp(QtWidgets.QMainWindow):
         scat.setSize(sk["size"])
         scat.setPen(sk["pen"] if sk["pen"] is not None else no_pen)
         scat.setBrush(sk["brush"] if sk["brush"] is not None else no_brush)
+
+    # ---- "vline" sample markers ------------------------------------------
+    @staticmethod
+    def _vline_y_span(vb) -> tuple[float, float]:
+        """y-extent for vertical marker lines: the current view range padded by
+        one full span on each side, so ordinary pans/zooms need no redraw."""
+        try:
+            y0, y1 = vb.viewRange()[1]
+        except Exception:
+            return -1.0, 1.0
+        span = float(y1 - y0) or 1.0
+        return float(y0) - span, float(y1) + span
+
+    def _set_vline_marker_data(self, item, vb, xs) -> None:
+        """Draw one full-height vertical line per time in ``xs`` on a ``"vline"``
+        marker item (a ``pg.PlotCurveItem`` with ``connect="pairs"``)."""
+        xs = np.asarray(xs, dtype=float)
+        item._loupe_vline_x = xs  # remembered for re-spanning on y-range changes
+        if xs.size == 0:
+            item.setData(np.empty(0), np.empty(0), connect="pairs")
+            return
+        lo, hi = self._vline_y_span(vb)
+        item.setData(np.repeat(xs, 2), np.tile([lo, hi], xs.size), connect="pairs")
+
+    def _repin_vline_marker(self, vb, item) -> None:
+        """``sigYRangeChanged`` handler: re-span a vline item to the new y-range."""
+        xs = getattr(item, "_loupe_vline_x", None)
+        if xs is not None and len(xs):
+            self._set_vline_marker_data(item, vb, xs)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)

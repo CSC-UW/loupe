@@ -1047,7 +1047,8 @@ def _apply_markers(app, records, current_targets, report) -> None:
             color = _color_tuple(style["color"])
             size = float(style["size"])
             alpha = int(style["alpha"])
-            if not math.isfinite(size) or not (2.0 <= size <= 40.0):
+            # 0.5 px lower bound: "vline" markers use size as a line width.
+            if not math.isfinite(size) or not (0.5 <= size <= 40.0):
                 raise ValueError("size outside supported range")
             if not (0 <= alpha <= 255):
                 raise ValueError("size/alpha outside supported range")
@@ -1296,10 +1297,16 @@ def apply_view_config(
         pending_y.append((target, state.get("y_axis")))
         matched_keys.append((int(record.get("order", 0)), target.key))
 
-    matched_keys.sort(key=lambda x: x[0])
-    ordered = [key for _, key in matched_keys]
-    ordered.extend(key for key in _full_order(app) if key not in ordered)
-    app.subplot_order = ordered
+    # Only reorder when the config actually expresses an order. Captured
+    # configs always write an explicit "order" per record; a hand-written
+    # partial config (e.g. heights only) has none, and applying it must not
+    # disturb the existing layout order (it used to hoist the matched plots
+    # above everything else).
+    if any("order" in record for record, _ in matches):
+        matched_keys.sort(key=lambda x: x[0])
+        ordered = [key for _, key in matched_keys]
+        ordered.extend(key for key in _full_order(app) if key not in ordered)
+        app.subplot_order = ordered
     app._apply_trace_visibility()
 
     for target, y_axis in pending_y:

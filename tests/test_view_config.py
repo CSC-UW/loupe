@@ -74,18 +74,22 @@ def _heat() -> xr.DataArray:
 
 
 def _raster() -> pl.DataFrame:
-    return pl.DataFrame({
-        "time": [1.0, 2.0, 3.0, 4.0],
-        "unit": [0, 1, 0, 1],
-    })
+    return pl.DataFrame(
+        {
+            "time": [1.0, 2.0, 3.0, 4.0],
+            "unit": [0, 1, 0, 1],
+        }
+    )
 
 
 def _events() -> GlobalEventsConfig:
     return GlobalEventsConfig(
-        pl.DataFrame({
-            "time": [2.0, 6.0],
-            "kind": ["stim", "reward"],
-        }),
+        pl.DataFrame(
+            {
+                "time": [2.0, 6.0],
+                "kind": ["stim", "reward"],
+            }
+        ),
         style_events_on="kind",
     )
 
@@ -206,12 +210,14 @@ def test_mixed_view_round_trip_matches_semantically_after_reordering(tmp_path):
     source.heatmap_series[0].decim_method = "mean"
     source.heatmap_series[0].shade_nans = (62, 23, 21, 0.85)
     source.heatmap_height_factors[0] = 1.5
-    source._resolved_event_styles["stim"].update({
-        "line_color": (101, 102, 103),
-        "line_style": "dashed",
-        "line_width": 3.5,
-        "line_alpha": 123,
-    })
+    source._resolved_event_styles["stim"].update(
+        {
+            "line_color": (101, 102, 103),
+            "line_style": "dashed",
+            "line_width": 3.5,
+            "line_alpha": 123,
+        }
+    )
     source.plots[alpha_i].enableAutoRange("y", False)
     source.plots[alpha_i].setYRange(-4.0, 6.0, padding=0)
     source.subplot_order = [
@@ -239,8 +245,7 @@ def test_mixed_view_round_trip_matches_semantically_after_reordering(tmp_path):
     beta_i = _source_index(target, "ts", "beta-source")
 
     file_actions = {
-        action.text().replace("&", "")
-        for action in target.findChildren(QtGui.QAction)
+        action.text().replace("&", "") for action in target.findChildren(QtGui.QAction)
     }
     assert "Load View-Config…" in file_actions
     assert "Save View-Config As…" in file_actions
@@ -377,7 +382,9 @@ def test_marker_ids_survive_marker_reordering():
     assert report.is_exact
     by_id = {m.view_id: m for m in target.dense_groups[0].sample_markers}
     assert (by_id["peaks"].color, by_id["peaks"].size, by_id["peaks"].alpha) == (
-        (1, 2, 3, 255), 13.0, 77
+        (1, 2, 3, 255),
+        13.0,
+        77,
     )
     assert (
         by_id["troughs"].color,
@@ -484,8 +491,59 @@ def test_duplicate_or_blank_semantic_ids_are_rejected():
             TraceConfig(
                 data,
                 sample_markers=[
-                    SampleMarkers("o", "red", xr.zeros_like(data, dtype=bool), view_id="")
+                    SampleMarkers(
+                        "o", "red", xr.zeros_like(data, dtype=bool), view_id=""
+                    )
                 ],
             ),
             state_definitions=_STATE_DEFS,
         )
+
+
+def test_partial_config_without_order_keys_preserves_interleaved_layout(_qapp):
+    """A heights-only View-Config (no "order" per record) must not reorder the
+    subplots; explicit "order" keys still do."""
+    import numpy as np
+    import xarray as xr
+
+    from loupe import HeatmapConfig, TraceConfig, view
+    from loupe.view_config import ViewConfig
+
+    t = np.linspace(0.0, 10.0, 200)
+
+    def _tr(name):
+        return TraceConfig(
+            xr.DataArray(np.sin(t), dims=("time",), coords={"time": t}, name=name)
+        )
+
+    def _hm(name):
+        return HeatmapConfig(
+            xr.DataArray(
+                np.random.default_rng(0).normal(size=(4, len(t))),
+                dims=("row", "time"),
+                coords={"row": np.arange(4), "time": t},
+                name=name,
+            )
+        )
+
+    interleaved = [("ts", 0), ("heatmap", 0), ("ts", 1), ("heatmap", 1)]
+    w = view([_tr("a"), _hm("h1"), _tr("b"), _hm("h2")])
+    try:
+        assert w.subplot_order == interleaved
+
+        cfg = w.capture_view_config().to_dict()
+        for p in cfg["plots"]:
+            p.pop("order")
+            p["height"] = 0.5
+        w.apply_view_config(ViewConfig.from_dict(cfg))
+        assert w.subplot_order == interleaved  # heights-only: layout untouched
+
+        cfg2 = w.capture_view_config().to_dict()
+        # capture inventories plots type-segregated (ts a, ts b, h1, h2);
+        # reversing those positions puts h2 first, then h1, b, a.
+        for i, p in enumerate(cfg2["plots"]):
+            p["order"] = len(cfg2["plots"]) - 1 - i  # reverse explicitly
+        w.apply_view_config(ViewConfig.from_dict(cfg2))
+        assert w.subplot_order == [("heatmap", 1), ("heatmap", 0), ("ts", 1), ("ts", 0)]
+    finally:
+        w.close()

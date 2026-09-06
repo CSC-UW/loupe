@@ -261,6 +261,23 @@ class ColormapLevelsDialog(QtWidgets.QDialog):
         levels.addRow("vmax:", self.vmax_spin)
         layout.addLayout(levels)
 
+        # Bulk colormap swap: replace the colormap of every selected group.
+        swap_row = QtWidgets.QHBoxLayout()
+        self.swap_combo = QtWidgets.QComboBox()
+        self.swap_combo.setEditable(True)
+        self.swap_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        for name in self._swap_choices():
+            self.swap_combo.addItem(name)
+        completer = QtWidgets.QCompleter(self._swap_choices(), self.swap_combo)
+        completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
+        self.swap_combo.setCompleter(completer)
+        self.swap_btn = QtWidgets.QPushButton("Replace selected colormaps")
+        swap_row.addWidget(QtWidgets.QLabel("Replace with:"))
+        swap_row.addWidget(self.swap_combo, 1)
+        swap_row.addWidget(self.swap_btn)
+        layout.addLayout(swap_row)
+
         self.status_label = QtWidgets.QLabel("Select at least one colormap.")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -278,6 +295,7 @@ class ColormapLevelsDialog(QtWidgets.QDialog):
         self.vmax_spin.valueChanged.connect(
             lambda value: self._apply_level("vmax", value)
         )
+        self.swap_btn.clicked.connect(self._apply_swap)
         self._set_level_controls_enabled(False)
         self.resize(470, 390)
 
@@ -293,6 +311,7 @@ class ColormapLevelsDialog(QtWidgets.QDialog):
     def _current_colormap_entries(self) -> list[tuple[object, str, int]]:
         entries: list[list] = []
         by_token: dict[object, int] = {}
+        self._inuse_by_name: dict[str, object] = {}
         for heatmap in self.controls_dialog.main_window.heatmap_series:
             token = _colormap_cache_token(heatmap.colormap)
             if token in by_token:
@@ -300,6 +319,9 @@ class ColormapLevelsDialog(QtWidgets.QDialog):
                 continue
             by_token[token] = len(entries)
             entries.append([token, _colormap_display_name(heatmap.colormap), 1])
+            self._inuse_by_name.setdefault(
+                _colormap_display_name(heatmap.colormap), heatmap.colormap
+            )
 
         # Distinct custom colormap objects may share a display name. Make those
         # rows unambiguous without changing how matching itself works.
@@ -315,6 +337,71 @@ class ColormapLevelsDialog(QtWidgets.QDialog):
             result.append((token, name, count))
         return result
 
+    def _swap_choices(self) -> list[str]:
+        """Replacement colormaps: presets, then the maps currently in use (so a
+        group can adopt another group's custom colormap object), then every
+        colormap registered with matplotlib."""
+        import matplotlib
+
+        names = list(ARRAY_COLORMAP_PRESETS)
+        names += [n for n in self._inuse_by_name if n not in names]
+        names += [n for n in sorted(matplotlib.colormaps) if n not in names]
+        return names
+
+    def _resolve_swap_colormap(self, name: str):
+        """Colormap object/name for a swap-combo entry, or None if unknown."""
+        import matplotlib
+
+        name = name.strip()
+        if not name:
+            return None
+        if name in ARRAY_COLORMAP_PRESETS or name in matplotlib.colormaps:
+            return name
+        return self._inuse_by_name.get(name)
+
+    def _rebuild_colormap_list(self, select_token: object | None) -> None:
+        """Regroup after a swap and (re)select the group holding ``select_token``."""
+        self._entries = self._current_colormap_entries()
+        self.colormap_list.blockSignals(True)
+        try:
+            self.colormap_list.clear()
+            for entry_index, (token, display_name, count) in enumerate(self._entries):
+                suffix = "heatmap" if count == 1 else "heatmaps"
+                item = QtWidgets.QListWidgetItem(
+                    f"{display_name} — {count} {suffix}", self.colormap_list
+                )
+                item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+                checked = select_token is not None and token == select_token
+                item.setCheckState(
+                    QtCore.Qt.CheckState.Checked
+                    if checked
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, entry_index)
+        finally:
+            self.colormap_list.blockSignals(False)
+        self._selected_tokens = frozenset()  # force a resync
+        self._on_selection_changed()
+
+    def _apply_swap(self) -> None:
+        if not self._selected_tokens:
+            return
+        new_cmap = self._resolve_swap_colormap(self.swap_combo.currentText())
+        if new_cmap is None:
+            self.status_label.setText(
+                f"Unknown colormap {self.swap_combo.currentText()!r}; "
+                "pick a preset, an in-use map, or any matplotlib name."
+            )
+            return
+        n = self.controls_dialog._apply_colormap_by_colormap(
+            self._selected_tokens, new_cmap
+        )
+        self._rebuild_colormap_list(_colormap_cache_token(new_cmap))
+        self.status_label.setText(
+            f"Replaced the colormap of {n} heatmap{'s' if n != 1 else ''} with "
+            f"{_colormap_display_name(new_cmap)}."
+        )
+
     def _checked_tokens(self) -> frozenset[object]:
         tokens = []
         for row in range(self.colormap_list.count()):
@@ -327,6 +414,8 @@ class ColormapLevelsDialog(QtWidgets.QDialog):
     def _set_level_controls_enabled(self, enabled: bool) -> None:
         self.vmin_spin.setEnabled(enabled)
         self.vmax_spin.setEnabled(enabled)
+        self.swap_combo.setEnabled(enabled)
+        self.swap_btn.setEnabled(enabled)
 
     def _matching_heatmaps(self):
         return [
@@ -730,6 +819,23 @@ class HeatmapControlsDialog(QtWidgets.QDialog):
         self._colormap_levels_dialog.show()
         self._colormap_levels_dialog.raise_()
         self._colormap_levels_dialog.activateWindow()
+
+    def _apply_colormap_by_colormap(self, tokens: frozenset[object], colormap) -> int:
+        """Give every heatmap using any selected colormap a new colormap.
+
+        Returns the number of heatmaps changed.
+        """
+        changed_indices = []
+        for ai, heatmap in enumerate(self.main_window.heatmap_series):
+            if _colormap_cache_token(heatmap.colormap) not in tokens:
+                continue
+            heatmap.colormap = colormap
+            self._sync_widgets_to_state(ai)
+            self._invalidate_array_cache(ai)
+            changed_indices.append(ai)
+        if changed_indices:
+            self.main_window._refresh_heatmap_plots()
+        return len(changed_indices)
 
     def _apply_level_by_colormap(
         self, tokens: frozenset[object], attribute: str, value: float
