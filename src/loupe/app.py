@@ -127,6 +127,18 @@ HEATMAP_Y_DECORATION_MIN_CONTENT_HEIGHT = 40
 # restored to this value when a formerly constrained row changes kind.
 GRAPHICS_LAYOUT_UNBOUNDED_HEIGHT = float(np.finfo(np.float32).max)
 
+# The stacked plot area is one QOpenGLWidget, i.e. one framebuffer sized in
+# *device* pixels, so its height cannot exceed the GPU's texture / renderbuffer
+# limit or the framebuffer fails and the view silently renders nothing.
+# ``_gl_max_surface_px`` measures the limit from the live context; this is the
+# ceiling used when it cannot (no context yet, OpenGL off, unknown driver). It
+# is a deliberate under-estimate: guessing low compresses rows a little early
+# (cosmetic), guessing high reproduces the blank screen.
+MAX_SURFACE_PX_FALLBACK = 8192
+# GLenum values, spelled out because PyOpenGL is not a dependency.
+GL_MAX_TEXTURE_SIZE = 0x0D33
+GL_MAX_RENDERBUFFER_SIZE = 0x84E8
+
 
 def _raster_extent(ms) -> float:
     """Total vertical extent of a raster in row-units, including any gaps
@@ -447,6 +459,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.cursor_time = 0.0
         # Vertical paging for stacked-subplots view
         self.trace_height_px = 120  # pixels per stacked subplot
+        # Device-pixel ceiling on the plot area's height. ``None`` queries the
+        # GL context (falling back to MAX_SURFACE_PX_FALLBACK); an int overrides,
+        # which is how tests exercise the clamp without OpenGL.
+        self.max_surface_px: int | None = None
+        self._gl_surface_limit_cache: tuple | None = None
+        self._height_clamp_warned: set[int] = set()
+        self._height_clamp_note: str | None = None  # shown by _update_status while clamped
+        self._screen_change_hooked = False
 
         # State definitions (hotkeys + label colors). If the caller didn't
         # pre-build a StateConfig, resolve one now from the package-default
@@ -4836,10 +4856,115 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Desired height = n * trace_height_px, but at least the scroll area height
         scroll_h = self.plot_scroll_area.viewport().height() if hasattr(self, "plot_scroll_area") else 600
         desired = n * self.trace_height_px
+        # ... and never taller than the GL surface can back (see
+        # MAX_SURFACE_PX_FALLBACK). Rows then share the clamped height through
+        # the layout's stretch factors; MIN_HEIGHT in _apply_custom_plot_heights
+        # lets them compress.
+        cap = self._max_plot_area_height()
+        if desired > cap:
+            desired = int(cap)
+            self._notify_height_clamped(n, desired)
+        elif self._height_clamp_note is not None:
+            self._height_clamp_note = None
+            if getattr(self, "status", None) is not None:
+                self._update_status()
         if desired > scroll_h:
             self.plot_area.setMinimumHeight(desired)
         else:
             self.plot_area.setMinimumHeight(0)
+
+    def _device_pixel_ratio(self) -> float:
+        """The window's devicePixelRatio (CSS px → device px). Separate so tests can stub it."""
+        try:
+            return float(self.devicePixelRatioF()) or 1.0
+        except Exception:
+            return 1.0
+
+    def _gl_max_surface_px(self) -> int | None:
+        """Largest framebuffer dimension (device px) the plot area's GL context supports.
+
+        ``None`` when it cannot be measured: OpenGL is off (the viewport is a
+        plain QWidget), the widget has not initialised its context yet (before
+        the first show), or the query fails. Successes are cached per context;
+        failures are not, so a pre-show call does not pin the fallback forever.
+        """
+        try:
+            from PySide6.QtOpenGL import (
+                QOpenGLVersionFunctionsFactory,
+                QOpenGLVersionProfile,
+            )
+            from PySide6.QtOpenGLWidgets import QOpenGLWidget
+
+            vp = self.plot_area.viewport()
+            if not isinstance(vp, QOpenGLWidget):
+                return None
+            ctx = vp.context()
+            if ctx is None or not ctx.isValid():
+                return None
+            cached = self._gl_surface_limit_cache
+            if cached is not None and cached[0] is ctx:
+                return cached[1]
+            vp.makeCurrent()
+            try:
+                # ctx.functions().glGetIntegerv does not write back from Python
+                # (returns 0); the versioned functions object does.
+                vf = QOpenGLVersionFunctionsFactory.get(
+                    QOpenGLVersionProfile(ctx.format()), ctx
+                )
+                if vf is None:
+                    return None
+                vf.initializeOpenGLFunctions()
+                # SINGLE-VALUED pnames ONLY. A vector pname such as
+                # GL_MAX_VIEWPORT_DIMS (two ints) segfaults this overload.
+                limit = min(
+                    int(vf.glGetIntegerv(GL_MAX_TEXTURE_SIZE)),
+                    int(vf.glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE)),
+                )
+            finally:
+                vp.doneCurrent()
+            if limit <= 0:
+                return None
+            self._gl_surface_limit_cache = (ctx, limit)
+            return limit
+        except Exception:
+            return None
+
+    def _max_plot_area_height(self) -> float:
+        """Tallest plot area (CSS px) the current screen's GL surface can back."""
+        surface = self.max_surface_px
+        if surface is None:
+            surface = self._gl_max_surface_px()
+        if surface is None:
+            surface = MAX_SURFACE_PX_FALLBACK
+        return float(surface) / self._device_pixel_ratio()
+
+    def _notify_height_clamped(self, n: int, cap_px: int) -> None:
+        """Tell the user the stacked view was compressed to fit the GL surface.
+
+        The status bar carries a persistent note while the clamp binds (it is
+        where the user looks, and the cap changes when the window moves between
+        screens); ``_update_status`` re-emits it on every refresh and
+        ``_update_plot_area_height`` clears it when the clamp stops binding.
+        The warning is issued once per trace count so the pre-show fallback
+        pass and the post-show measured pass do not warn twice for one view.
+        """
+        dpr = self._device_pixel_ratio()
+        msg = (
+            f"Stacked view of {n} traces exceeds the GPU surface limit "
+            f"({cap_px} px at devicePixelRatio {dpr:g}); rows compressed to fit. "
+            f"Use mode='dense' for large channel counts."
+        )
+        self._height_clamp_note = (
+            f"{n} traces compressed to fit the GPU surface limit "
+            f"({cap_px} px @ {dpr:g}x); use mode='dense'"
+        )
+        if getattr(self, "status", None) is not None:
+            self._update_status()
+        if n not in self._height_clamp_warned:
+            self._height_clamp_warned.add(n)
+            import warnings
+
+            warnings.warn(msg, UserWarning, stacklevel=3)
 
     # ---- Dense vertical scrollbars ------------------------------------------
     def _constrain_scrollbar_column(self):
@@ -7198,6 +7323,23 @@ class LoupeApp(QtWidgets.QMainWindow):
         if xs is not None and len(xs):
             self._set_vline_marker_data(item, vb, xs)
 
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # The plot area's GL context does not exist before the first show, so
+        # the construction-time height clamp used the fallback ceiling. Re-run
+        # once the event loop has let the QOpenGLWidget initialise, and again
+        # whenever the window lands on a screen with a different pixel ratio.
+        QtCore.QTimer.singleShot(0, self._update_plot_area_height)
+        if not self._screen_change_hooked:
+            wh = self.windowHandle()
+            if wh is not None:
+                wh.screenChanged.connect(self._on_screen_changed)
+                self._screen_change_hooked = True
+
+    def _on_screen_changed(self, _screen) -> None:
+        # Deferred so the widget's devicePixelRatio reflects the new screen.
+        QtCore.QTimer.singleShot(0, self._update_plot_area_height)
+
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._rescale_all_video_frames()
@@ -7763,6 +7905,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             msg = "Playing..."
         if msg:
             info.append("| " + msg)
+        note = getattr(self, "_height_clamp_note", None)
+        if note:
+            info.append("| " + note)
         self.status.showMessage("  ".join(info))
 
     def _format_cursor_with_state(self):

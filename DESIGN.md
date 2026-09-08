@@ -45,7 +45,7 @@ Layout and sizing
 - Left plot spines (Y axes) are aligned by measuring axis widths and applying the maximum using `setWidth()`.
 - Low‑profile X mode keeps vertical grid lines for upper plots while hiding axis labels/ticks so only the bottom plot shows time tick labels. Loupe turns this on automatically when 3 or more total subplots are loaded at launch.
 - The videos are grouped in a dedicated right‑panel container with its own vertical layout. Each `VideoSlot` carries its own stretch (default 3 for the first slot, 2 for the rest), reallocated via View → Adjust Secondary Videos Size… without fighting other controls.
-- Traces are placed in a `GraphicsLayoutWidget` wrapped in a `QScrollArea` (for stacked-subplot vertical paging). Dense plots add a `QScrollBar` to the right of the plot area for vertical trace navigation.
+- Traces are placed in a `GraphicsLayoutWidget` wrapped in a `QScrollArea` (for stacked-subplot vertical paging). Dense plots add a `QScrollBar` to the right of the plot area for vertical trace navigation. The stacked plot area is one OpenGL surface, so its requested height (`trace_height_px` per subplot) is clamped to the GPU's texture limit divided by the screen's devicePixelRatio (`LoupeApp._update_plot_area_height`); past that, rows compress uniformly and the status bar says so, rather than the framebuffer failing and the view rendering blank. The limit is queried from the live GL context after first show and re-applied on screen changes; `MAX_SURFACE_PX_FALLBACK` (8192, a deliberate under-estimate) applies when it cannot be measured.
 - Individual subplot heights, visibility, and order are controlled via the Subplot Control Board (Ctrl+H). Three plot types are supported: `"ts"` (stacked subplots), `"dense"`, and `"raster"`. Each has a height factor (default 1.0×) that scales from 0.01× to 20.0×. For very small plots (below 0.2×), axis labels are hidden automatically.
 - Subplot order can be customized by dragging rows in the Subplot Control Board. This allows placing dense, raster, and stacked-subplot plots in any order.
 
@@ -84,6 +84,6 @@ Raster viewer rendering
 - Individual plot heights can be further customized via the Subplot Control Board, which interacts with raster proportional sizing when enabled.
 
 Performance notes
-- OpenGL is enabled in pyqtgraph config when available; antialiasing is off for speed.
+- OpenGL is enabled in pyqtgraph config when available; antialiasing is off for speed. One consequence: the scrolled stacked plot area is a single `QOpenGLWidget` framebuffer sized in device pixels, so its height is bounded by `GL_MAX_TEXTURE_SIZE` (16384 on current Apple GPUs, i.e. ~68 subplots at 120 px on a 2× display) — see "Layout and sizing".
 - Pyqtgraph's auto downsample factor scales with viewbox pixel width, so the decimation budget is bounded per plot and adapts to display size.
 - Long‑duration datasets (hours) remain responsive due to windowed slicing combined with pyqtgraph's peak‑preserving downsampling.
