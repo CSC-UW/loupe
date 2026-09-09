@@ -500,6 +500,15 @@ class VideoConfig:
     view_id : str or None
         Optional stable identity for matching saved visibility, layout weight,
         and frame-step selection across analogous recordings.
+    max_frame_distance_s : float or None
+        Maximum distance from the trace cursor to the selected frame timestamp.
+        Otherwise display "No frame at this time", including recording gaps.
+        None uses 0.55 times the median frame interval. A single-frame video
+        needs an explicit value to display beyond its exact timestamp.
+    separate_window : bool or str
+        Display in a separate synchronized window. True groups videos in a
+        window named "Videos"; a string groups them under that window title.
+        Frames remain controlled by the main Loupe cursor and playback.
     """
 
     video_path: "str | list[str]"
@@ -508,6 +517,8 @@ class VideoConfig:
     stretch: int | None = None
     frame_times_correction: float = 0.0
     view_id: str | None = None
+    max_frame_distance_s: float | None = None
+    separate_window: bool | str = False
 
 
 @dataclass

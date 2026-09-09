@@ -2,7 +2,7 @@
 
 Time-synchronized video frames displayed in the right panel, stacked vertically, locked to the trace cursor. Multiple videos play together; each runs in its own `VideoWorker` thread.
 
-Defined in `src/loupe/__init__.py:319-355`.
+Defined in `src/loupe/configs.py`.
 
 ## Full parameter reference
 
@@ -13,6 +13,9 @@ Defined in `src/loupe/__init__.py:319-355`.
 | `name` | `None` | Display label used for the empty-frame placeholder and the View → Show / Frame Step Target menu entries. Defaults to `"Video {i+1}"`. |
 | `stretch` | `None` | Initial vertical layout weight relative to other videos. Defaults to `3` for the first slot and `2` for the rest. |
 | `frame_times_correction` | `0.0` | Scalar (seconds) added to every frame time after loading. Applied uniformly whether `frame_times_path` is a single file or a list. Useful as a quick alignment shim against the trace cursor without rewriting the underlying `.npy` files. |
+| `max_frame_distance_s` | `None` | Maximum distance from the cursor to a frame timestamp. The default is 0.55 × the median frame interval. The frame clears outside this range, so gaps never hold an old image indefinitely. |
+| `separate_window` | `False` | `True` groups videos in a separate window titled "Videos"; a string chooses a shared window title. Four videos with the same title form a 2 × 2 grid. |
+| `view_id` | `None` | Stable identity for saved visibility and layout preferences. |
 
 ## Usage
 
@@ -36,6 +39,18 @@ view(TraceConfig(da), videos=VideoConfig(
 
 A bare `VideoConfig` is accepted as shorthand for a one-element list.
 
+Use `separate_window="Microscope"` on each microscope video to display them
+together in a resizable window while keeping traces in the main window. These
+videos start visible, and their captions show the actual decoded frame index
+and timestamp. Closing the separate window returns its videos to the main panel.
+
+Each timestamp array must be nonempty, finite, strictly increasing, and match
+the decoded frame count of its corresponding file. Concatenated arrays must
+also increase across file boundaries. Playback follows these timestamps and the
+trace cursor's clock; the video's encoded FPS does not set the data clock.
+Supply timestamps already in the data's timebase (for example, ephys seconds)
+and keep `frame_times_correction=0` when that conversion has already been done.
+
 ## Runtime controls
 
 | Action | Binding |
@@ -46,6 +61,7 @@ A bare `VideoConfig` is accepted as shorthand for a one-element list.
 | Toggle playback | `Space` (loops within current window) |
 | Set playback speed | View → Set Playback Speed… (0.25× – 4×) |
 | Choose which video the arrows step | View → Frame Step Target |
+| Move a video to/from a separate window | View → _Video name_ in Separate Window |
 
 A per-window cursor slider sits underneath the top video.
 

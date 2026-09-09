@@ -81,7 +81,12 @@ from loupe.video import (
     MultiFileVideoCapture,
     VideoSlot,
     VideoWorker,
+    VideoWindow,
+    VideoRelay,
     cv2,
+    frame_index_at_time,
+    frame_time_tolerance,
+    validate_frame_times,
 )
 from loupe.viewboxes import (
     DenseViewBox,
@@ -521,6 +526,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         # during _build_ui / _build_menu. Labels and shortcuts top out
         # gracefully when more than 9 slots are supplied.
         self.video_slots: list[VideoSlot] = []
+        self._video_windows: dict[str, VideoWindow] = {}
         configs = list(video_configs) if video_configs else []
         for i, cfg in enumerate(configs):
             thread = QtCore.QThread(self)
@@ -542,7 +548,14 @@ class LoupeApp(QtWidgets.QMainWindow):
                     getattr(cfg, "frame_times_correction", 0.0) or 0.0
                 ),
                 view_id=getattr(cfg, "view_id", None),
-                desired_visible=(i == 0),
+                desired_visible=(i == 0 or bool(getattr(cfg, "separate_window", False))),
+                max_frame_distance_s=getattr(cfg, "max_frame_distance_s", None),
+                separate_window=bool(getattr(cfg, "separate_window", False)),
+                window_group=(
+                    cfg.separate_window
+                    if isinstance(getattr(cfg, "separate_window", False), str)
+                    else "Videos"
+                ),
             )
             self.video_slots.append(slot)
 
@@ -605,8 +618,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         self.y_axis_dialog = None
 
         for slot in self.video_slots:
-            slot.worker.frameReady.connect(partial(self._on_frame_ready, slot))
-            slot.worker.opened.connect(partial(self._on_video_opened, slot))
+            slot.relay = VideoRelay(self, slot)
+            slot.worker.frameReady.connect(slot.relay.frame_ready)
+            slot.worker.opened.connect(slot.relay.opened)
+            slot.worker.frameCounts.connect(slot.relay.frame_counts)
             slot.thread.start()
         # Store dense groups early (before set_series triggers plot creation)
         if dense_groups:
@@ -855,7 +870,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             lbl = QtWidgets.QLabel(f"No {slot.name.lower()}")
             lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             lbl.setMinimumHeight(240 if slot.index == 0 else 200)
-            lbl.setStyleSheet("background-color:#222;border:1px solid #444;")
+            # The layout allocates space; a decoded/scaled pixmap must not feed
+            # its previous dimensions back into the splitter's size hint.
+            lbl.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
+            lbl.setStyleSheet("color:#ddd;background-color:#222;border:1px solid #444;")
             if slot.index != 0:
                 lbl.hide()
             self.videos_layout.addWidget(lbl, slot.stretch)
@@ -1403,6 +1421,13 @@ class LoupeApp(QtWidgets.QMainWindow):
             action.toggled.connect(partial(self._set_video_visible, slot.index))
             mview.addAction(action)
             slot.show_action = action
+
+            popout = QtGui.QAction(f"{slot.name} in Separate Window", self)
+            popout.setCheckable(True)
+            popout.setChecked(slot.separate_window)
+            popout.toggled.connect(partial(self._set_video_separate_window, slot.index))
+            mview.addAction(popout)
+            slot.window_action = popout
 
         adjust_video_sizes_action = QtGui.QAction(
             "Adjust Secondary Videos Size...", self
@@ -5376,12 +5401,15 @@ class LoupeApp(QtWidgets.QMainWindow):
         slot.is_open = False
         slot.frame_times = None
         slot.requested_frame_idx = None
+        slot.expected_frame_counts = None
+        slot.video_frame_counts = None
+        self._clear_video_frame(slot, "Loading video…")
         slot.video_path = vpath
         slot.frame_times_path = ft_path
 
         vpaths = [vpath] if isinstance(vpath, str) else list(vpath)
         ft_paths = [ft_path] if isinstance(ft_path, str) else list(ft_path)
-        if len(vpaths) != len(ft_paths):
+        if not vpaths or len(vpaths) != len(ft_paths):
             QtWidgets.QMessageBox.warning(
                 self,
                 f"{slot.name} config error",
@@ -5398,41 +5426,38 @@ class LoupeApp(QtWidgets.QMainWindow):
             )
             return
 
-        if len(vpaths) == 1:
-            QtCore.QMetaObject.invokeMethod(
-                slot.worker,
-                "open",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, vpaths[0]),
-            )
-        else:
-            QtCore.QMetaObject.invokeMethod(
-                slot.worker,
-                "openConcat",
-                QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG("QStringList", vpaths),
-            )
-
         try:
-            ft_arrays = [np.load(p).astype(float) for p in ft_paths]
-            for ft in ft_arrays:
-                if ft.ndim != 1:
-                    raise ValueError("frame_times.npy must be 1-D")
+            ft_arrays = [validate_frame_times(np.load(p, allow_pickle=False)) for p in ft_paths]
             ft = ft_arrays[0] if len(ft_arrays) == 1 else np.concatenate(ft_arrays)
             corr = slot.frame_times_correction
             if corr:
                 ft = ft + corr
-            slot.frame_times = ft
+            slot.frame_times = validate_frame_times(ft)
+            slot.expected_frame_counts = [len(array) for array in ft_arrays]
+            slot.frame_time_tolerance = frame_time_tolerance(ft, slot.max_frame_distance_s)
             corr_note = f", {corr:+g}s correction" if corr else ""
             self._update_status(
                 f"Loaded frame_times for {slot.name} ({len(ft)} frames{corr_note})."
             )
-            self._request_initial_frame()
         except Exception as e:
             QtWidgets.QMessageBox.warning(
                 self, f"{slot.name} frame times error", str(e)
             )
             slot.frame_times = None
+            return
+
+        # Only open the decoder after timestamps pass validation. The decoder
+        # reports each file's count, so concatenation cannot conceal a mismatch.
+        if len(vpaths) == 1:
+            QtCore.QMetaObject.invokeMethod(
+                slot.worker, "open", QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, vpaths[0]),
+            )
+        else:
+            QtCore.QMetaObject.invokeMethod(
+                slot.worker, "openConcat", QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG("QStringList", vpaths),
+            )
 
     def _on_load_video(self):
         if cv2 is None:
@@ -5463,15 +5488,27 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._load_video_data(self.video_slots[0], vpath, ft_path)
 
+    def _on_video_frame_counts(self, slot: VideoSlot, counts):
+        slot.video_frame_counts = [int(count) for count in counts]
+
     def _on_video_opened(self, slot: VideoSlot, ok, msg):
+        if ok and slot.expected_frame_counts is not None:
+            if slot.video_frame_counts != slot.expected_frame_counts:
+                ok = False
+                msg = (
+                    f"Video frame counts {slot.video_frame_counts} do not match "
+                    f"timestamp counts {slot.expected_frame_counts}."
+                )
         if not ok:
             slot.is_open = False
+            slot.frame_times = None
+            self._clear_video_frame(slot, "Video unavailable")
+            QtCore.QMetaObject.invokeMethod(slot.worker, "stop", QtCore.Qt.QueuedConnection)
             QtWidgets.QMessageBox.warning(self, slot.name, msg or "Failed to open.")
             return
         slot.is_open = True
         slot.requested_frame_idx = None
-        if slot.label is not None:
-            slot.label.setVisible(bool(slot.desired_visible))
+        self._set_video_separate_window(slot.index, slot.separate_window)
         self._sync_video_summary_visibility()
         self._request_initial_frame()
 
@@ -5485,7 +5522,14 @@ class LoupeApp(QtWidgets.QMainWindow):
         if ft is None or len(ft) == 0:
             return
 
-        idx = find_nearest_frame(ft, t)
+        tolerance = slot.frame_time_tolerance
+        if tolerance is None:
+            tolerance = frame_time_tolerance(ft, slot.max_frame_distance_s)
+        idx = frame_index_at_time(ft, t, tolerance)
+        if idx is None:
+            slot.requested_frame_idx = None
+            self._clear_video_frame(slot, "No frame at this time")
+            return
         if slot.requested_frame_idx == idx:
             return
 
@@ -5515,22 +5559,48 @@ class LoupeApp(QtWidgets.QMainWindow):
         if idx != slot.requested_frame_idx:
             return
         if qimg is None or qimg.isNull():
+            self._clear_video_frame(slot, f"Could not decode frame {idx}")
             return
         pix = QtGui.QPixmap.fromImage(qimg)
         if pix.isNull():
             return
         slot.last_pixmap = pix
+        slot.displayed_frame_idx = int(idx)
+        slot.displayed_frame_time = float(slot.frame_times[idx])
+        caption = f"{slot.name} · frame {idx} · {slot.displayed_frame_time:.6f} s"
+        if slot.label is not None:
+            slot.label.setToolTip(caption)
+        if slot.window is not None:
+            slot.window.captions[slot.index].setText(caption)
         self._rescale_video_frame(slot)
 
+    def _clear_video_frame(self, slot: VideoSlot, message: str) -> None:
+        slot.last_pixmap = None
+        slot.displayed_frame_idx = None
+        slot.displayed_frame_time = None
+        labels = [slot.label]
+        if slot.window is not None:
+            labels.append(slot.window.labels[slot.index])
+            slot.window.captions[slot.index].setText(slot.name)
+        for label in labels:
+            if label is not None:
+                label.clear()
+                label.setText(f"{slot.name}\n{message}")
+                label.setToolTip(message)
+
     def _rescale_video_frame(self, slot: VideoSlot):
-        if slot.last_pixmap is None or slot.label is None:
+        if slot.last_pixmap is None:
             return
-        scaled = slot.last_pixmap.scaled(
-            slot.label.size(),
-            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-            QtCore.Qt.TransformationMode.SmoothTransformation,
-        )
-        slot.label.setPixmap(scaled)
+        labels = [slot.label]
+        if slot.window is not None:
+            labels.append(slot.window.labels[slot.index])
+        for label in labels:
+            if label is not None and label.isVisible():
+                scaled = slot.last_pixmap.scaled(
+                    label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                    QtCore.Qt.TransformationMode.SmoothTransformation,
+                )
+                label.setPixmap(scaled)
 
     def _rescale_all_video_frames(self):
         for slot in self.video_slots:
@@ -6961,6 +7031,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 return
             self.is_playing = True
             self.playback_elapsed_timer.start()
+            self._playback_last_elapsed_ns = 0
             self.playback_timer.start(16)
             self._update_status("Playing...")
 
@@ -6969,8 +7040,11 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not self.is_playing:
             return
 
-        dt_ms = self.playback_elapsed_timer.restart()
-        dt_sec = (dt_ms / 1000.0) * float(self.playback_speed)
+        # restart() returns truncated integer milliseconds, losing a fraction
+        # on every tick and slowing a nominal 1x clock by several percent.
+        elapsed_ns = self.playback_elapsed_timer.nsecsElapsed()
+        dt_sec = ((elapsed_ns - self._playback_last_elapsed_ns) / 1e9) * float(self.playback_speed)
+        self._playback_last_elapsed_ns = elapsed_ns
 
         t_start = self.window_start
         t_end = self.window_start + self.window_len
@@ -7746,10 +7820,45 @@ class LoupeApp(QtWidgets.QMainWindow):
         slot.desired_visible = bool(visible)
         if slot.label is None:
             return
-        slot.label.setVisible(bool(visible))
+        slot.label.setVisible(bool(visible) and not slot.separate_window)
+        self._sync_video_windows()
         self._sync_video_summary_visibility()
         self._apply_video_stretches()
         QtCore.QTimer.singleShot(0, self._rescale_all_video_frames)
+
+    def _set_video_separate_window(self, which: int, separate: bool):
+        slot = self.video_slots[which]
+        slot.separate_window = bool(separate)
+        if separate and slot.window is None:
+            window = self._video_windows.get(slot.window_group)
+            if window is None:
+                window = VideoWindow(slot.window_group, self)
+                window.returned.connect(partial(self._return_video_window, slot.window_group))
+                window.resized.connect(self._rescale_all_video_frames)
+                self._video_windows[slot.window_group] = window
+            window.add_video(slot.index, slot.name)
+            slot.window = window
+        if slot.window_action is not None:
+            blocker = QtCore.QSignalBlocker(slot.window_action)
+            slot.window_action.setChecked(bool(separate))
+            del blocker
+        self._set_video_visible(which, slot.desired_visible)
+
+    def _return_video_window(self, group: str) -> None:
+        for slot in self.video_slots:
+            if slot.window_group == group:
+                self._set_video_separate_window(slot.index, False)
+
+    def _sync_video_windows(self) -> None:
+        for group, window in self._video_windows.items():
+            any_visible = False
+            for slot in self.video_slots:
+                if slot.window is not window:
+                    continue
+                visible = slot.separate_window and slot.desired_visible
+                window.panels[slot.index].setVisible(visible)
+                any_visible |= visible
+            window.setVisible(any_visible)
 
     def _sync_video_summary_visibility(self) -> None:
         """Give the summary panel back its space when secondary videos hide."""
@@ -7757,6 +7866,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
         secondary_open = any(
             slot.index != 0 and slot.is_open and slot.desired_visible
+            and not slot.separate_window
             for slot in self.video_slots
         )
         self.interval_label_summary_panel.setVisible(not secondary_open)
@@ -7934,6 +8044,8 @@ class LoupeApp(QtWidgets.QMainWindow):
     def closeEvent(self, ev):
         try:
             self._stop_playback_if_playing()
+            for window in self._video_windows.values():
+                window.hide()
             for slot in self.video_slots:
                 QtCore.QMetaObject.invokeMethod(
                     slot.worker, "stop", QtCore.Qt.QueuedConnection
