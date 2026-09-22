@@ -78,6 +78,7 @@ from loupe.series import (
     Series,
 )
 from loupe.video import (
+    DEFAULT_FRAME_COUNT_SLACK,
     MultiFileVideoCapture,
     VideoSlot,
     VideoWorker,
@@ -530,7 +531,12 @@ class LoupeApp(QtWidgets.QMainWindow):
         configs = list(video_configs) if video_configs else []
         for i, cfg in enumerate(configs):
             thread = QtCore.QThread(self)
-            worker = VideoWorker(cache_frames=120)
+            frame_count_slack = getattr(
+                cfg, "frame_count_slack", DEFAULT_FRAME_COUNT_SLACK
+            )
+            worker = VideoWorker(
+                cache_frames=120, frame_count_slack=frame_count_slack
+            )
             worker.moveToThread(thread)
             name = getattr(cfg, "name", None) or f"Video {i + 1}"
             stretch = getattr(cfg, "stretch", None)
@@ -550,6 +556,7 @@ class LoupeApp(QtWidgets.QMainWindow):
                 view_id=getattr(cfg, "view_id", None),
                 desired_visible=(i == 0 or bool(getattr(cfg, "separate_window", False))),
                 max_frame_distance_s=getattr(cfg, "max_frame_distance_s", None),
+                frame_count_slack=frame_count_slack,
                 separate_window=bool(getattr(cfg, "separate_window", False)),
                 window_group=(
                     cfg.separate_window
@@ -5403,6 +5410,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         slot.requested_frame_idx = None
         slot.expected_frame_counts = None
         slot.video_frame_counts = None
+        slot.header_frame_counts = None
         self._clear_video_frame(slot, "Loading video…")
         slot.video_path = vpath
         slot.frame_times_path = ft_path
@@ -5447,16 +5455,20 @@ class LoupeApp(QtWidgets.QMainWindow):
             return
 
         # Only open the decoder after timestamps pass validation. The decoder
-        # reports each file's count, so concatenation cannot conceal a mismatch.
+        # reconciles each file's indexed frame count against its timestamp
+        # count (tolerating an undecodable truncated tail, rejecting anything
+        # else) and reports the usable counts, so concatenation cannot conceal
+        # a mismatch.
+        expected = QtCore.Q_ARG("QVariantList", list(slot.expected_frame_counts))
         if len(vpaths) == 1:
             QtCore.QMetaObject.invokeMethod(
                 slot.worker, "open", QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG(str, vpaths[0]),
+                QtCore.Q_ARG(str, vpaths[0]), expected,
             )
         else:
             QtCore.QMetaObject.invokeMethod(
                 slot.worker, "openConcat", QtCore.Qt.QueuedConnection,
-                QtCore.Q_ARG("QStringList", vpaths),
+                QtCore.Q_ARG("QStringList", vpaths), expected,
             )
 
     def _on_load_video(self):
@@ -5488,8 +5500,11 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._load_video_data(self.video_slots[0], vpath, ft_path)
 
-    def _on_video_frame_counts(self, slot: VideoSlot, counts):
-        slot.video_frame_counts = [int(count) for count in counts]
+    def _on_video_frame_counts(self, slot: VideoSlot, report):
+        slot.header_frame_counts = [int(count) for count in report.header]
+        slot.video_frame_counts = [int(count) for count in report.usable]
+        if report.notes:
+            self._update_status(f"{slot.name}: " + "; ".join(report.notes))
 
     def _on_video_opened(self, slot: VideoSlot, ok, msg):
         if ok and slot.expected_frame_counts is not None:

@@ -107,8 +107,9 @@ def test_load_video_data_single_file_uses_open_slot(
     assert len(invocations) == 1
     member, args = invocations[0]
     assert member == "open"
-    # Q_ARG carries the path through as the first positional arg.
-    assert len(args) == 1
+    # Q_ARG carries the path and the per-file timestamp counts through.
+    assert len(args) == 2
+    assert slot.expected_frame_counts == [3]
     assert slot.frame_times is not None
     assert slot.frame_times.tolist() == [0.0, 0.1, 0.2]
 
@@ -128,8 +129,10 @@ def test_load_video_data_list_uses_openconcat_slot(
 
     invocations = [(m, a) for tgt, m, a in captured_invokes if tgt is slot.worker]
     assert len(invocations) == 1
-    member, _ = invocations[0]
+    member, args = invocations[0]
     assert member == "openConcat"
+    assert len(args) == 2
+    assert slot.expected_frame_counts == [3, 2]
     assert slot.frame_times is not None
     assert slot.frame_times.tolist() == [0.0, 0.1, 0.2, 1.0, 1.1]
 

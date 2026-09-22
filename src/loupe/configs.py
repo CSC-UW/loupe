@@ -505,6 +505,14 @@ class VideoConfig:
         Otherwise display "No frame at this time", including recording gaps.
         None uses 0.55 times the median frame interval. A single-frame video
         needs an explicit value to display beyond its exact timestamp.
+    frame_count_slack : int or None
+        How many frames a file's container index may list beyond its timestamps
+        before the video is rejected as mismatched. Fragmented MP4s that were
+        closed mid-fragment (the final file of an e3Vision recording) index
+        frames that were never written; such a file is accepted, with playback
+        capped at its timestamp count, when the last timestamped frame decodes
+        and the next one does not. Defaults to 120 (two 60-frame fragments);
+        None removes the bound but keeps the decode check.
     separate_window : bool or str
         Display in a separate synchronized window. True groups videos in a
         window named "Videos"; a string groups them under that window title.
@@ -518,6 +526,7 @@ class VideoConfig:
     frame_times_correction: float = 0.0
     view_id: str | None = None
     max_frame_distance_s: float | None = None
+    frame_count_slack: int | None = 120
     separate_window: bool | str = False
 
 

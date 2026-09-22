@@ -46,8 +46,14 @@ and timestamp. Closing the separate window returns its videos to the main panel.
 
 Each timestamp array must be nonempty, finite, strictly increasing, and match
 the decoded frame count of its corresponding file. Concatenated arrays must
-also increase across file boundaries. Playback follows these timestamps and the
-trace cursor's clock; the video's encoded FPS does not set the data clock.
+also increase across file boundaries. A container whose index lists a few more
+frames than it holds (a fragmented MP4 closed mid-fragment, as the last file of
+an e3Vision recording is) is accepted when its last timestamped frame decodes
+and the next one does not: playback is capped at the timestamp count and the
+status bar notes the excess. `frame_count_slack` (default 120 frames) bounds
+how large that excess may be; any other disagreement is an error. Playback
+follows these timestamps and the trace cursor's clock; the video's encoded FPS
+does not set the data clock.
 Supply timestamps already in the data's timebase (for example, ephys seconds)
 and keep `frame_times_correction=0` when that conversion has already been done.
 

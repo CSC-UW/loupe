@@ -56,6 +56,36 @@ def frame_index_at_time(times: np.ndarray, time: float, tolerance: float) -> int
     return idx if abs(float(times[idx]) - time) <= tolerance + 1e-12 else None
 
 
+# How many indexed-but-undecodable trailing frames a file may have before its
+# frame count is treated as a genuine mismatch rather than a truncated tail.
+# Fragmented MP4s closed mid-fragment (the final file of an e3Vision recording)
+# list up to one fragment of frames that were never written; a fragment is
+# 60 frames at 60 fps there, so two fragments leaves headroom.
+DEFAULT_FRAME_COUNT_SLACK = 120
+
+
+@dataclass
+class FrameCountReport:
+    """Per-file frame counts a decoder reports once a video is open.
+
+    ``header`` is what each container's index claims; ``usable`` is the count
+    playback actually maps through (capped at the timestamp count when a
+    truncated tail was tolerated); ``notes`` explains any cap, one per file.
+    """
+
+    header: list[int]
+    usable: list[int]
+    notes: list[str]
+
+
+def frame_decodes(cap, index: int) -> bool:
+    """Whether seeking *cap* to *index* and decoding yields a frame."""
+    if not cap.set(cv2.CAP_PROP_POS_FRAMES, int(index)):
+        return False
+    ok, _ = cap.read()
+    return bool(ok)
+
+
 class VideoRelay(QtCore.QObject):
     """Deliver decoder signals to GUI-owned slots on the GUI thread.
 
@@ -135,20 +165,97 @@ class MultiFileVideoCapture:
     Implements the subset of the cv2.VideoCapture interface used by
     VideoWorker: isOpened, set(CAP_PROP_POS_FRAMES, idx), read, release,
     get(prop). Frame indices are global across the concatenated sequence;
-    seeking transparently switches between underlying captures.
+    seeking transparently switches between underlying captures. Reads past
+    the usable frame count fail rather than falling through to frames the
+    container indexes but never wrote.
     """
 
     def __init__(self, paths: list[str]):
         if cv2 is None:
             raise RuntimeError("OpenCV (cv2) is not installed.")
         self._caps = [cv2.VideoCapture(p) for p in paths]
-        counts = [int(c.get(cv2.CAP_PROP_FRAME_COUNT)) for c in self._caps]
-        self.frame_counts = counts
-        # _cumulative[i] = total frames in files 0..i-1; _cumulative[-1] = total.
-        self._cumulative = np.concatenate(([0], np.cumsum(counts))).astype(np.int64)
-        self._total_frames = int(self._cumulative[-1])
+        # What each container's index claims. A fragmented MP4 closed
+        # mid-fragment lists frames past the end of the file, so this is only
+        # an upper bound on what decodes; frame_counts holds the usable counts.
+        self.header_frame_counts = [
+            int(c.get(cv2.CAP_PROP_FRAME_COUNT)) for c in self._caps
+        ]
         self._active_idx = 0
         self._next_frame_idx = 0
+        self._set_frame_counts(self.header_frame_counts)
+
+    def _set_frame_counts(self, counts: list[int]) -> None:
+        """Define the per-file frame counts that global indices map through."""
+        self.frame_counts = [int(c) for c in counts]
+        # _cumulative[i] = total frames in files 0..i-1; _cumulative[-1] = total.
+        self._cumulative = np.concatenate(
+            ([0], np.cumsum(self.frame_counts))
+        ).astype(np.int64)
+        self._total_frames = int(self._cumulative[-1])
+
+    def apply_expected_frame_counts(
+        self, expected: list[int], slack: int | None
+    ) -> list[str]:
+        """Reconcile each file's indexed frame count with its timestamp count.
+
+        A container may list more frames than there are timestamps only when
+        the last timestamped frame decodes and the first frame past it does
+        not: that is a truncated tail, and the file's usable count is capped at
+        the timestamp count so global frame indices stay aligned with the
+        concatenated timestamps. *slack* bounds the tolerated excess (``None``
+        for no bound). Returns one note per capped file; raises ``ValueError``
+        when the counts genuinely disagree. Leaves every capture at frame 0.
+        """
+        expected = [int(n) for n in expected]
+        if len(expected) != len(self._caps):
+            raise ValueError(
+                f"{len(expected)} timestamp arrays for {len(self._caps)} video files."
+            )
+        mismatch = (
+            f"Video frame counts {self.header_frame_counts} do not match "
+            f"timestamp counts {expected}"
+        )
+        usable: list[int] = []
+        notes: list[str] = []
+        for i, (cap, n_header, n_expected) in enumerate(
+            zip(self._caps, self.header_frame_counts, expected)
+        ):
+            label = f"file {i + 1}" if len(self._caps) > 1 else "video"
+            if n_header == n_expected:
+                usable.append(n_header)
+                continue
+            if n_header < n_expected:
+                raise ValueError(
+                    f"{mismatch}: {label} has {n_expected - n_header} "
+                    "timestamp(s) past the end of the video."
+                )
+            excess = n_header - n_expected
+            if slack is not None and excess > slack:
+                raise ValueError(
+                    f"{mismatch}: {label} lists {excess} more frames than "
+                    f"timestamps, above the {slack}-frame allowance for a "
+                    "truncated tail."
+                )
+            if n_expected < 1 or not frame_decodes(cap, n_expected - 1):
+                raise ValueError(
+                    f"{mismatch}: {label}'s last timestamped frame "
+                    f"({n_expected - 1}) does not decode."
+                )
+            if frame_decodes(cap, n_expected):
+                raise ValueError(
+                    f"{mismatch}: {label} decodes frame {n_expected}, "
+                    "which has no timestamp."
+                )
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            usable.append(n_expected)
+            notes.append(
+                f"{label} lists {excess} frame(s) past its last timestamp that "
+                f"do not decode (truncated tail); playback capped at {n_expected}"
+            )
+        self._set_frame_counts(usable)
+        self._active_idx = 0
+        self._next_frame_idx = 0
+        return notes
 
     def isOpened(self) -> bool:
         return self._total_frames > 0 and all(c.isOpened() for c in self._caps)
@@ -214,47 +321,71 @@ class VideoWorker(QtCore.QObject):
     opened = QtCore.Signal(bool, str)
     frameCounts = QtCore.Signal(object)
 
-    def __init__(self, cache_frames=120):
+    def __init__(self, cache_frames=120, frame_count_slack=DEFAULT_FRAME_COUNT_SLACK):
         super().__init__()
         self.cap = None
         self.cache = OrderedDict()
         self.cache_frames = int(cache_frames)
+        self.frame_count_slack = (
+            None if frame_count_slack is None else int(frame_count_slack)
+        )
         self._requested_idx: int | None = None
         self._request_queued = False
         self._next_frame_idx = 0
 
     @QtCore.Slot(str)
-    def open(self, path):
-        self._open([path])
+    @QtCore.Slot(str, "QVariantList")
+    def open(self, path, expected_frame_counts=None):
+        self._open([path], expected_frame_counts)
 
     @QtCore.Slot("QStringList")
-    def openConcat(self, paths):
-        self._open(list(paths))
+    @QtCore.Slot("QStringList", "QVariantList")
+    def openConcat(self, paths, expected_frame_counts=None):
+        self._open(list(paths), expected_frame_counts)
 
-    def _open(self, paths: list[str]):
+    def _open(self, paths: list[str], expected_frame_counts=None):
+        """Open *paths* as one capture, emitting frameCounts then opened.
+
+        *expected_frame_counts* (one per file, the timestamp array lengths)
+        is reconciled against the containers' indexed counts; see
+        :meth:`MultiFileVideoCapture.apply_expected_frame_counts`. Without it
+        the indexed counts are taken at face value.
+        """
         if cv2 is None:
             self.opened.emit(False, "OpenCV (cv2) not installed.")
             return
         try:
             if self.cap is not None:
                 self.cap.release()
-            if len(paths) == 1:
-                self.cap = cv2.VideoCapture(paths[0])
-            else:
-                self.cap = MultiFileVideoCapture(paths)
+            self.cap = None
             self.cache.clear()
             self._requested_idx = None
             self._request_queued = False
             self._next_frame_idx = 0
-            ok = bool(self.cap.isOpened())
-            if ok:
-                counts = (
-                    self.cap.frame_counts if isinstance(self.cap, MultiFileVideoCapture)
-                    else [int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))]
+            cap = MultiFileVideoCapture(paths)
+            if not cap.isOpened():
+                cap.release()
+                self.opened.emit(False, f"Failed to open: {paths}")
+                return
+            notes: list[str] = []
+            if expected_frame_counts is not None:
+                try:
+                    notes = cap.apply_expected_frame_counts(
+                        [int(n) for n in expected_frame_counts],
+                        self.frame_count_slack,
+                    )
+                except Exception:
+                    cap.release()
+                    raise
+            self.cap = cap
+            self.frameCounts.emit(
+                FrameCountReport(
+                    header=list(cap.header_frame_counts),
+                    usable=list(cap.frame_counts),
+                    notes=notes,
                 )
-                self.frameCounts.emit(counts)
-            msg = "" if ok else f"Failed to open: {paths}"
-            self.opened.emit(ok, msg)
+            )
+            self.opened.emit(True, "")
         except Exception as e:
             self.opened.emit(False, str(e))
 
@@ -368,8 +499,12 @@ class VideoSlot:
     desired_visible: bool = True
     max_frame_distance_s: float | None = None
     frame_time_tolerance: float | None = None
+    frame_count_slack: int | None = DEFAULT_FRAME_COUNT_SLACK
     expected_frame_counts: list[int] | None = None
+    # Usable per-file counts the decoder reported (capped at the timestamps
+    # when a truncated tail was tolerated) and the raw container counts.
     video_frame_counts: list[int] | None = None
+    header_frame_counts: list[int] | None = None
     displayed_frame_idx: int | None = None
     displayed_frame_time: float | None = None
     separate_window: bool = False
