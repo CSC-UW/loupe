@@ -107,6 +107,9 @@ def segment_for_window(t, y, t0, t1, max_pts=4000):
     if t1 <= t0:
         return np.empty(0), np.empty(0)
 
+    if hasattr(y, "window_envelope"):
+        return y.window_envelope(t, t0, t1, max_pts)
+
     # 1) slice to window (with 1-sample guard on each side)
     i0 = max(0, np.searchsorted(t, t0) - 1)
     i1 = min(len(t), np.searchsorted(t, t1) + 1)

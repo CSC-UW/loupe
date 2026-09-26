@@ -297,6 +297,10 @@ def _plot_state(app, target: _Target) -> dict[str, Any]:
         state["dense"] = {
             "gain": float(group.gain),
             "step": int(group.step),
+            "hidden_trace_labels": [
+                str(group.trace_labels[index]) for index in sorted(group.hidden_traces)
+                if 0 <= index < len(group.trace_labels)
+            ],
             "traces_per_page": (
                 int(group.traces_per_page)
                 if group.traces_per_page is not None
@@ -866,6 +870,14 @@ def _apply_dense_state(app, target: _Target, state: Mapping[str, Any], report) -
         return
     group = app.dense_groups[target.index]
     rebuild = False
+    if "hidden_trace_labels" in raw:
+        labels = raw["hidden_trace_labels"]
+        if isinstance(labels, list) and all(isinstance(label, str) for label in labels):
+            hidden = set(labels)
+            group.hidden_traces = {i for i, label in enumerate(group.trace_labels) if str(label) in hidden}
+            rebuild = True
+        else:
+            report.skipped.append(f"{target.ref.label}: invalid hidden_trace_labels")
     gain = _number(raw, "gain", report, lo=0.001)
     if gain is not None:
         group.gain = float(gain)

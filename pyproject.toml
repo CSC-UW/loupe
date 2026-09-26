@@ -19,6 +19,14 @@ dependencies = [
     "zarr>=2.18,<3",
 ]
 
+[project.optional-dependencies]
+tdt = [
+    "tdt>=0.7.2,<0.8",
+]
+
+[project.scripts]
+loupe = "loupe.__main__:main"
+
 [build-system]
 requires = ["uv_build>=0.9.28,<0.10.0"]
 build-backend = "uv_build"

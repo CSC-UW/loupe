@@ -1,0 +1,1143 @@
+[
+  {
+    "block": "ACRTO_P1-sleep_calibration",
+    "discovery_s": 1.0513476370251738,
+    "duration_s": 14813.477004289627,
+    "parity": [
+      {
+        "store": "LFP_",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 153
+      },
+      {
+        "store": "LFP_",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 153
+      },
+      {
+        "store": "LFP_",
+        "channel": 1,
+        "t": 14811.477004289627,
+        "samples": 152
+      },
+      {
+        "store": "LFP_",
+        "channel": 16,
+        "t": 0.0,
+        "samples": 153
+      },
+      {
+        "store": "LFP_",
+        "channel": 16,
+        "t": 10.0,
+        "samples": 153
+      },
+      {
+        "store": "LFP_",
+        "channel": 16,
+        "t": 14811.477004289627,
+        "samples": 152
+      },
+      {
+        "store": "NNXr",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 24415
+      },
+      {
+        "store": "NNXr",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 24414
+      },
+      {
+        "store": "NNXr",
+        "channel": 1,
+        "t": 14811.477004289627,
+        "samples": 24414
+      },
+      {
+        "store": "NNXr",
+        "channel": 16,
+        "t": 0.0,
+        "samples": 24415
+      },
+      {
+        "store": "NNXr",
+        "channel": 16,
+        "t": 10.0,
+        "samples": 24414
+      },
+      {
+        "store": "NNXr",
+        "channel": 16,
+        "t": 14811.477004289627,
+        "samples": 24414
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 1018
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 1017
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "t": 14811.477004289627,
+        "samples": 1018
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "t": 0.0,
+        "samples": 1018
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "t": 10.0,
+        "samples": 1017
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "t": 14811.477004289627,
+        "samples": 1018
+      },
+      {
+        "store": "NRe2",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 24415
+      },
+      {
+        "store": "NRe2",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 24414
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 1018
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 1017
+      }
+    ],
+    "native_clock_checks": [
+      {
+        "store": "LFP_",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 1,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 1,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 2,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 2,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 2,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 3,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 3,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 3,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 4,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 4,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 4,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 5,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 5,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 5,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 6,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 6,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 6,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 7,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 7,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 7,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 8,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 8,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 8,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 9,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 9,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 9,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 10,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 10,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 10,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 11,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 11,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 11,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 12,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 12,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 12,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 13,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 13,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 13,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 14,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 14,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 14,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 15,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 15,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 15,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "LFP_",
+        "channel": 16,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "LFP_",
+        "channel": 16,
+        "packet": 70635,
+        "sample": 1130160,
+        "time_s": 7406.616576
+      },
+      {
+        "store": "LFP_",
+        "channel": 16,
+        "packet": 141270,
+        "sample": 2260320,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "NNXr",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 1,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 1,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 2,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 2,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 2,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 3,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 3,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 3,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 4,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 4,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 4,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 5,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 5,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 5,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 6,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 6,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 6,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 7,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 7,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 7,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 8,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 8,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 8,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 9,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 9,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 9,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 10,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 10,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 10,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 11,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 11,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 11,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 12,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 12,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 12,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 13,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 13,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 13,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 14,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 14,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 14,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 15,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 15,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 15,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "NNXr",
+        "channel": 16,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NNXr",
+        "channel": 16,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NNXr",
+        "channel": 16,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "packet": 58863,
+        "sample": 7534464,
+        "time_s": 7406.67949056
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "packet": 117725,
+        "sample": 15068800,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "packet": 58863,
+        "sample": 7534464,
+        "time_s": 7406.67949056
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "packet": 117725,
+        "sample": 15068800,
+        "time_s": 14813.233152
+      },
+      {
+        "store": "NRe2",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "NRe2",
+        "channel": 1,
+        "packet": 88294,
+        "sample": 180826112,
+        "time_s": 7406.63754752
+      },
+      {
+        "store": "NRe2",
+        "channel": 1,
+        "packet": 176588,
+        "sample": 361652224,
+        "time_s": 14813.27509504
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "packet": 58863,
+        "sample": 7534464,
+        "time_s": 7406.67949056
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "packet": 117725,
+        "sample": 15068800,
+        "time_s": 14813.233152
+      }
+    ],
+    "prepare_s": 0.1198111730045639,
+    "window_s": 0.18956519500352442,
+    "navigation_s": [
+      0.032822900044266135,
+      0.02792185201542452,
+      0.025604230002500117,
+      0.025774930021725595,
+      0.025943053944502026,
+      0.02542716101743281,
+      0.024339717987459153,
+      0.023681388003751636,
+      0.022012953006196767,
+      0.028379597002640367
+    ],
+    "video": [
+      {
+        "open": true,
+        "frames": [
+          148133
+        ]
+      }
+    ],
+    "max_rss_mb": 695.71484375
+  },
+  {
+    "block": "HALOMOL_3-251214-101210",
+    "discovery_s": 0.28505344601580873,
+    "duration_s": 85902.28172168655,
+    "parity": [
+      {
+        "store": "EEG_",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 153
+      },
+      {
+        "store": "EEG_",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 153
+      },
+      {
+        "store": "EEG_",
+        "channel": 1,
+        "t": 85900.28172168655,
+        "samples": 153
+      },
+      {
+        "store": "EEG_",
+        "channel": 2,
+        "t": 0.0,
+        "samples": 153
+      },
+      {
+        "store": "EEG_",
+        "channel": 2,
+        "t": 10.0,
+        "samples": 153
+      },
+      {
+        "store": "EEG_",
+        "channel": 2,
+        "t": 85900.28172168655,
+        "samples": 153
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 1018
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 1017
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "t": 85900.28172168655,
+        "samples": 1017
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "t": 0.0,
+        "samples": 1018
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "t": 10.0,
+        "samples": 1017
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "t": 85900.28172168655,
+        "samples": 1017
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "t": 0.0,
+        "samples": 1018
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "t": 10.0,
+        "samples": 1017
+      }
+    ],
+    "native_clock_checks": [
+      {
+        "store": "EEG_",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "EEG_",
+        "channel": 1,
+        "packet": 409614,
+        "sample": 6553824,
+        "time_s": 42951.1409664
+      },
+      {
+        "store": "EEG_",
+        "channel": 1,
+        "packet": 819227,
+        "sample": 13107632,
+        "time_s": 85902.1770752
+      },
+      {
+        "store": "EEG_",
+        "channel": 2,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "EEG_",
+        "channel": 2,
+        "packet": 409614,
+        "sample": 6553824,
+        "time_s": 42951.1409664
+      },
+      {
+        "store": "EEG_",
+        "channel": 2,
+        "packet": 819227,
+        "sample": 13107632,
+        "time_s": 85902.1770752
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "packet": 341345,
+        "sample": 43692160,
+        "time_s": 42951.1409664
+      },
+      {
+        "store": "EEGr",
+        "channel": 1,
+        "packet": 682689,
+        "sample": 87384192,
+        "time_s": 85902.15610368
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "packet": 341345,
+        "sample": 43692160,
+        "time_s": 42951.1409664
+      },
+      {
+        "store": "EEGr",
+        "channel": 2,
+        "packet": 682689,
+        "sample": 87384192,
+        "time_s": 85902.15610368
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "packet": 0,
+        "sample": 0,
+        "time_s": 0.0
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "packet": 341345,
+        "sample": 43692160,
+        "time_s": 42951.1409664
+      },
+      {
+        "store": "Wavt",
+        "channel": 1,
+        "packet": 682689,
+        "sample": 87384192,
+        "time_s": 85902.15610368
+      }
+    ],
+    "prepare_s": 0.031566300021950155,
+    "window_s": 0.11324605601839721,
+    "navigation_s": [
+      0.015055229014251381,
+      0.013444710988551378,
+      0.01420179201522842,
+      0.017053085030056536,
+      0.0174000829574652,
+      0.02153907302999869,
+      0.02556937700137496,
+      0.019123360980302095,
+      0.019470990053378046,
+      0.013412692002020776
+    ],
+    "video": [
+      {
+        "open": true,
+        "frames": [
+          85902
+        ]
+      }
+    ],
+    "max_rss_mb": 758.65625
+  }
+]
