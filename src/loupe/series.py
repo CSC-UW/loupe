@@ -13,16 +13,20 @@ populated at runtime) so this module is cheap to import.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pyqtgraph as pg
+
+if TYPE_CHECKING:
+    from loupe.file_series import FileSignal, UniformTimeAxis
 
 
 @dataclass
 class Series:
     name: str
-    t: np.ndarray  # seconds, monotonic
-    y: np.ndarray
+    t: np.ndarray | UniformTimeAxis  # seconds, monotonic; may be disk-backed
+    y: np.ndarray | FileSignal
 
 
 @dataclass

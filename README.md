@@ -6,6 +6,11 @@ This document is organized around the **plot types** Loupe exposes. Each plot ty
 
 For technical design and implementation details, see [DESIGN.md](DESIGN.md).
 
+Open native TDT recordings with **File → Extensions → TDT → Open block…**.
+Install the optional SDK with `uv add 'loupe[tdt]'`, then launch `loupe` (or
+`python -m loupe`). The [extension guide](docs/extensions.md) covers streams,
+epocs, spike rasters, synchronized video, annotations, and saved block configs.
+
 ---
 
 ### Quick start

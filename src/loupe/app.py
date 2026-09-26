@@ -39,6 +39,7 @@ from loupe.interval_labels import (
     IntervalLabelSet,
 )
 from loupe.state_config import StateConfig, load_state_config
+from loupe.file_series import amplitude_preview, FileSignal
 
 from loupe._decimation import (
     _scatter_kwargs_for_marker,
@@ -311,7 +312,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         self._view_plot_identities: dict[str, list[dict]] = {}
 
         pg.setConfigOptions(
-            antialias=False, useOpenGL=True, background="k", foreground="w"
+            antialias=False,
+            useOpenGL=QtWidgets.QApplication.platformName() not in {"offscreen", "minimal"},
+            background="k", foreground="w"
         )
 
         # Data & plots
@@ -637,7 +640,7 @@ class LoupeApp(QtWidgets.QMainWindow):
             self.dense_visible = [True] * len(dense_groups)
             # Cache per-trace means for display transform
             self._dense_means = [
-                [float(np.nanmean(s.y)) for s in g.series]
+                [float(np.nanmean(amplitude_preview(s.y))) for s in g.series]
                 for g in dense_groups
             ]
 
@@ -1096,6 +1099,9 @@ class LoupeApp(QtWidgets.QMainWindow):
 
     def _build_menu(self):
         mfile = self.menuBar().addMenu("&File")
+        from loupe.extensions import install_menu
+        install_menu(self, mfile)
+        mfile.addSeparator()
         a = QtGui.QAction("Load &Time Series…", self)
         a.triggered.connect(self._on_load_time_series)
         mfile.addAction(a)
@@ -3958,7 +3964,7 @@ class LoupeApp(QtWidgets.QMainWindow):
 
             if self.fixed_scale:
                 try:
-                    y = np.asarray(s.y, dtype=float)
+                    y = amplitude_preview(s.y)
                     if idx < len(self.overlay_series) and self.overlay_series[idx]:
                         y = np.concatenate(
                             [y]
@@ -4737,7 +4743,9 @@ class LoupeApp(QtWidgets.QMainWindow):
         # Per-group vertical scrollbar as a proxy widget for the graphics layout.
         # An explicit stylesheet is required: QScrollBar inside a QGraphicsProxyWidget
         # doesn't reliably paint the native handle, so we draw it via CSS.
-        sb = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical, self)
+        # QGraphicsProxyWidget owns its embedded widget; a QWidget parent here
+        # prevents embedding and leaves the dense scrollbar invisible.
+        sb = QtWidgets.QScrollBar(QtCore.Qt.Orientation.Vertical)
         sb.setFixedWidth(14)
         sb.setStyleSheet(
             """
@@ -4836,6 +4844,10 @@ class LoupeApp(QtWidgets.QMainWindow):
             yacc = [[] for _ in mks] if mks else None
             for li, (si, offset) in enumerate(zip(visible, offsets)):
                 s = group.series[si]
+                if isinstance(s.y, FileSignal) and not mks:
+                    ts, ys = segment_for_window(s.t, s.y, t0, t1, self._target_pts())
+                    curves[li].setData(ts, (ys - means[si]) * group.gain + offset, _callSync="off")
+                    continue
                 i0 = max(0, np.searchsorted(s.t, t0) - 1)
                 i1 = min(len(s.t), np.searchsorted(s.t, t1) + 1)
                 ts = s.t[i0:i1]
@@ -5994,7 +6006,7 @@ class LoupeApp(QtWidgets.QMainWindow):
         if not (0 <= idx < len(self.plots)) or idx >= len(self.series):
             return
         try:
-            y = np.asarray(self.series[idx].y, dtype=float)
+            y = amplitude_preview(self.series[idx].y)
             if idx < len(self.overlay_series) and self.overlay_series[idx]:
                 y = np.concatenate(
                     [y]
@@ -7192,6 +7204,9 @@ class LoupeApp(QtWidgets.QMainWindow):
 
         self._refresh_curves()
         self._sync_window_interval_label_visuals()
+        extension_session = getattr(self, "extension_session", None)
+        if extension_session is not None:
+            extension_session.refresh_overlays(self)
 
         # Keep the pinned label strip aligned to (and clipped to) the current
         # window; its visible label set changes as we pan/zoom/page.
@@ -7293,6 +7308,10 @@ class LoupeApp(QtWidgets.QMainWindow):
         else:
             for idx, (s, curve) in enumerate(zip(self.series, self.curves)):
                 if not self._is_trace_plot_visible(idx):
+                    continue
+                if isinstance(s.y, FileSignal) and not self.sample_markers:
+                    ts, ys = segment_for_window(s.t, s.y, t0, t1, self._target_pts())
+                    curve.setData(ts, ys, _callSync="off")
                     continue
                 i0 = max(0, np.searchsorted(s.t, t0) - 1)
                 i1 = min(len(s.t), np.searchsorted(s.t, t1) + 1)
@@ -8070,6 +8089,9 @@ class LoupeApp(QtWidgets.QMainWindow):
             for slot in self.video_slots:
                 if not slot.thread.wait(1000):
                     slot.thread.terminate()
+            session = getattr(self, "extension_session", None)
+            if session is not None:
+                session.close()
         except Exception as e:
             print(f"ERROR: Exception during closeEvent: {e}")
         super().closeEvent(ev)
